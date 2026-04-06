@@ -278,26 +278,6 @@ void clearDisplayBuffer() {
 }
 
 
-/* This could be a prototype for the keyboard scan task, showing the queue feature to push key events */
-static void vKeyboardSimuTask( void *pvParameters )
-{
-
-    uint8_t keyevent[11] = {35+128,  18+128, 38+128, 38+128, 24+128, 53+128, 17+128, 24+128, 19+128, 38+128, 32+128 }; // all keydown events 
-    for (int i=0; i<10; i++) {
-    for (int m=0; m < 11; m++ ){
-        //keyevent++;
-        //if (xQueueSend( keyboard , (void *)&keyevent , portMAX_DELAY) == pdTRUE) {
-        if (xQueueSend( keyboard , &keyevent[ m ] , portMAX_DELAY) == pdTRUE) {
-            printf("Item Send: %d \n", keyevent[ m ]);
-        }
-        else {
-            printf("Item Send FALSE\n");
-        }
-    }}
-    vTaskDelete( NULL ); // needs to be called for the task to finish without errors.
-}
- 
-
 
 /* And this could be the processing of the keyboard keys using the keymapping*/
 static void vProcessKeyTask( void *pvParameters )
@@ -377,20 +357,8 @@ static const char *TAG = "mkbd";
 #define PIN_KBD_LE 10
 
 #define SCANTIMEOUT 500    // in number of scans
-#define SCANPERIOD 1200  // us
-#define KBD_INTR_FLAG (ESP_INTR_FLAG_IRAM | ESP_INTR_FLAG_EDGE | ESP_INTR_FLAG_LOWMED)
-//#define KBD_INTR_FLAG (ESP_INTR_FLAG_IRAM | ESP_INTR_FLAG_LOWMED)
+#define SCANPERIOD 1200  // us  Minimum response time (min debounce/denoise) is 8 consecutive periods.
 
-//#define GPIO_PIN_INT_ENA_M  (BIT(13))
-//static IRAM_ATTR void mask_gpio_interrupt_direct(int gpio_num) {
-//    // GPIO_PIN0_REG + (gpio_num * 4) is the register address
-//    CLEAR_PERI_REG_MASK(GPIO_PIN0_REG + (gpio_num * 4), GPIO_PIN_INT_ENA_M);
-//}
-//
-//static IRAM_ATTR void unmask_gpio_interrupt_direct(int gpio_num) {
-//    // GPIO_PIN0_REG + (gpio_num * 4) is the register address
-//    SET_PERI_REG_MASK(GPIO_PIN0_REG + (gpio_num * 4), GPIO_PIN_INT_ENA_M);
-//}
 const volatile int KBD_IO[IOSIZE] = {PIN_KBD_IO0, PIN_KBD_IO1, PIN_KBD_IO2, PIN_KBD_IO3, 
 	                             PIN_KBD_IO4, PIN_KBD_IO5, PIN_KBD_IO6, PIN_KBD_IO7};
 volatile uint32_t KBD_IO_MASK = ((1UL << PIN_KBD_IO0) | (1UL << PIN_KBD_IO1) | (1UL << PIN_KBD_IO2) |  
@@ -402,48 +370,16 @@ esp_timer_handle_t KBD_SCAN_TIMER;
 volatile uint8_t KBD_COLS[IOSIZE];     // here uint8_t assuming 8 rows.
 volatile uint8_t KBD_COLFLAGS[IOSIZE];  // this is keeping the flag for scanning
 volatile uint8_t KBD_BUFFER[ (IOSIZE * IOSIZE) ]; // keeps the status of the keyboard
-static portMUX_TYPE KBD_MUTEX = portMUX_INITIALIZER_UNLOCKED;
 volatile int KBD_SCANCOUNT;
-volatile bool KBD_BUSY = true;    // ignores interrupt
 volatile bool KBD_NOKEY = true;   // wether no keys are pressed
-volatile bool KBD_SCAN = false;   // do a full matrix scan iteration (set periodically by the timer)
-volatile bool KBD_STDBY = false;
 
 static inline IRAM_ATTR void cycle(uint32_t cycles) {
      // One cycle at 240 MHz is 4.16ns, 160 MHz is 6.25 ns
      for (int i=0; i < cycles; i++) __asm__ __volatile__("nop");
 }
 
-static inline IRAM_ATTR void kbd_isr(void *arg)
-{
-    uint32_t status = GPIO.status;  // identify which pin triggered the interrupt
-    GPIO.status_w1tc = status;  // clear the status bit
-    int pin = __builtin_ffs(status) -1;
-	 
-    if (KBD_BUSY) {
-        //ESP_EARLY_LOGI(TAG, "ISR busy [][][]");
-        return;
-    }
-    else {
-	taskENTER_CRITICAL_ISR(&KBD_MUTEX);
-	KBD_BUSY = true;
-        ESP_EARLY_LOGI(TAG, "Entered in the ISR...GPIO %d", pin);
-        KBD_SCANCOUNT = SCANTIMEOUT;
-        ESP_ERROR_CHECK(esp_timer_start_periodic(KBD_SCAN_TIMER, SCANPERIOD));
-        //ESP_ERROR_CHECK(esp_timer_start_once(mkbd->scan_timer, 20000));
-	taskEXIT_CRITICAL_ISR(&KBD_MUTEX);
-    }
-}
 
 static IRAM_ATTR void kbd_scan(void* arg)
-//{
-//	taskENTER_CRITICAL_ISR(&KBD_MUTEX);
-//	KBD_SCAN = true;
-//	taskEXIT_CRITICAL_ISR(&KBD_MUTEX);
-//}
-//
-//
-//static IRAM_ATTR void kbd_run(void* arg)
 {
     ///kbd_t *kbd = (kbd_t *)arg;
     int col = -1;
@@ -511,7 +447,7 @@ static IRAM_ATTR void kbd_scan(void* arg)
     }
     else {  // GO TO STANDBY MODE
       ESP_ERROR_CHECK(esp_timer_stop(KBD_SCAN_TIMER)); // no more scanning
-      ESP_LOGI(TAG, "timer stopped, trying to enter light sleep...");
+      //ESP_LOGI(TAG, "timer stopped, trying to enter light sleep...");
       GPIO.out_w1ts = (1UL << KBD_OE); // set OE high (active low)
       cycle(16);
       GPIO.enable_w1ts = KBD_IO_MASK;  // set gpios to output
@@ -527,44 +463,14 @@ static IRAM_ATTR void kbd_scan(void* arg)
       cycle(32);
       GPIO.out_w1tc = (1UL << KBD_OE); // set OE low to enable output
       cycle(16);
-      //ESP_LOGI(TAG, "----------STANDBY Mode   ");
-      //taskENTER_CRITICAL(&KBD_MUTEX);
-      ////KBD_STDBY = true;
-      //KBD_BUSY = false;
-      //taskEXIT_CRITICAL(&KBD_MUTEX);
-      // Then goto sleep.
-      for (int m=0; m < IOSIZE; m++) {
-        GPIO.pin[KBD_IO[m]].int_ena = 0;
-        GPIO.pin[KBD_IO[m]].int_type = 0;
-        GPIO.pin[KBD_IO[m]].int_type = 4;
-        gpio_wakeup_enable(KBD_IO[m], GPIO_INTR_LOW_LEVEL);
-      }
-      GPIO.status_w1tc = KBD_IO_MASK;
-      esp_sleep_enable_gpio_wakeup(); 
-      //KBD_BUSY = false;
-      //for (int m=0; m < IOSIZE; m++) GPIO.pin[KBD_IO[m]].int_ena = 1;
-      // Feed the task watchdog
-      //esp_task_wdt_reset();
+
+
       ESP_ERROR_CHECK(esp_light_sleep_start());
 
-      //esp_sleep_disable_gpio_wakeup(); 
-      for (int m=0; m < IOSIZE; m++) {
-        gpio_wakeup_disable(KBD_IO[m]);
-        GPIO.pin[KBD_IO[m]].int_type = 0;
-        GPIO.pin[KBD_IO[m]].int_type = 2;
-        GPIO.pin[KBD_IO[m]].int_ena = 1;
-      }
-      GPIO.status_w1tc = KBD_IO_MASK;
+      KBD_SCANCOUNT = SCANTIMEOUT;
+      ESP_ERROR_CHECK(esp_timer_start_periodic(KBD_SCAN_TIMER, SCANPERIOD));
 
-      taskENTER_CRITICAL(&KBD_MUTEX);
-      //KBD_STDBY = true;
-      KBD_BUSY = false;
-      taskEXIT_CRITICAL(&KBD_MUTEX);
-      ESP_LOGI(TAG, "woken up...");
-      //esp_light_sleep_start();
-      /* THe light sleep is triggering the watchdog.... instead, start incorporating the 
-       * key event queue, as for the sharp display, and arrage the light_sleep in that task,
-       * when there is no queue and all the keys are processed.  */
+      //ESP_LOGI(TAG, "woken up...");
     }
 }
 
@@ -586,7 +492,7 @@ void kbd_start()
 
     gpio_config_t io_conf = {
         .pin_bit_mask = KBD_IO_MASK,
-        .intr_type = GPIO_INTR_NEGEDGE,  //  GPIO_INTR_LOW_LEVEL   
+        .intr_type = GPIO_INTR_DISABLE,  
         .mode = GPIO_MODE_INPUT_OUTPUT,
         .pull_down_en = 0,
         .pull_up_en = GPIO_PULLUP_ENABLE,
@@ -623,86 +529,24 @@ void kbd_start()
     uart_write_bytes(2, (const char *)data , strlen(data));
 
 
-    GPIO.out_w1ts = (1UL << KBD_OE); // set OE high (active low)
-    ESP_LOGI(TAG, "*** Set OE (pin %d) HIGH: %d", KBD_OE, GPIO.out);
-    cycle(160);
-    GPIO.enable_w1ts = KBD_IO_MASK;  // set gpios to output
-    cycle(320);
-    ESP_LOGI(TAG, "*** Set IO pins (%d) to OUTPUT: %d",KBD_IO_MASK, GPIO.enable);
-    GPIO.out_w1tc = KBD_IO_MASK;  // set all pins to low (for ROWS)
-    ESP_LOGI(TAG, "*** Set ALL IO pins (%d) to LOW: %d", KBD_IO_MASK, GPIO.out);
-    GPIO.out_w1ts = (1UL << KBD_LE); // set LE high to transfer to OUTPUT (D->Q)
-    cycle(40);
-    ESP_LOGI(TAG, "*** Set LE (pin %d) to HIGH: %d", KBD_LE, GPIO.out);
-    GPIO.out_w1tc = (1UL << KBD_LE); // set LE low to latch
-    cycle(320);
-    ESP_LOGI(TAG, "*** Set LE (pin %d) to LOW: %d", KBD_LE, GPIO.out);
-    cycle(40);
-    GPIO.enable_w1tc = KBD_IO_MASK;  // set gpios to input (they are pulled up anyhow)
-    cycle(320);
-    ESP_LOGI(TAG, "*** Set IO pins (%d) to INPUT: %d",KBD_IO_MASK, GPIO.enable);
-    GPIO.out_w1tc = (1UL << KBD_OE); // set OE low to enable output
-    cycle(160);
-    ESP_LOGI(TAG, "*** Set OE (pin %d)LOW: %d", KBD_OE,  GPIO.out);
-    cycle(1600);
-    uint32_t readout = GPIO.in;
-    ESP_LOGI(TAG, "*** READ IO INPUTS: %d", readout);
-
-    // Clear all interrupts pending before initializing the ISR
-    gpio_intr_disable(GPIO_NUM_2);   // GPIO 02 is used in UM feather S3 as the VBAT SENSE IO
-    uint32_t status = GPIO.status;  
-    GPIO.status_w1tc = status;  
-
-    gpio_isr_register(kbd_isr, (void*)NULL, KBD_INTR_FLAG, NULL);
+    /* Now, the interrupts are changed. They keyboard scanning process is not trigger by the edge interrupt. 
+     * of a GPIO input. Rather, the board is woke up with the GPIO interrupt and continue the scanning process
+     * without extra interrupts.
+     */
     for (int i=0; i < IOSIZE; i++) {
-        gpio_intr_enable(KBD_IO[i]);
-	//gpio_wakeup_enable(KBD_IO[i], GPIO_INTR_LOW_LEVEL);
+	gpio_wakeup_enable(KBD_IO[i], GPIO_INTR_LOW_LEVEL);
     }
+    esp_sleep_enable_gpio_wakeup(); 
 
-}
+    KBD_SCANCOUNT = SCANTIMEOUT;
+    ESP_ERROR_CHECK(esp_timer_start_periodic(KBD_SCAN_TIMER, SCANPERIOD));
 
-static inline void vTaskStandBy(void * pvParameters) {
-            ESP_LOGI(TAG, "----------STANDBY task ceated   ");
-    //esp_sleep_enable_gpio_wakeup(); 
-    //esp_sleep_pd_config(ESP_PD_DOMAIN_VDDSDIO, ESP_PD_OPTION_ON);
-    //esp_wifi_stop();
-    //esp_bt_controller_disable();
-    for ( ;; ) {
-        if (KBD_STDBY) {
-            ESP_LOGI(TAG, "----------STANDBY Mode   ");
-            for (int m=0; m < IOSIZE; m++) {
-              GPIO.pin[m].int_ena = 0;
-              GPIO.pin[m].int_type = 0;
-              //GPIO.pin[m].int_type = 4;
-              gpio_wakeup_enable(KBD_IO[m], GPIO_INTR_LOW_LEVEL);
-            }
-            GPIO.status_w1tc = KBD_IO_MASK;
-            esp_sleep_enable_gpio_wakeup(); 
-            for (int m=0; m < IOSIZE; m++) GPIO.pin[m].int_ena = 1;
-            ESP_ERROR_CHECK(esp_light_sleep_start());
-
-            for (int m=0; m < IOSIZE; m++) {
-              GPIO.pin[m].int_ena = 0;
-              gpio_wakeup_disable(KBD_IO[m]);
-              GPIO.pin[m].int_type = 0;
-              GPIO.pin[m].int_type = 2;
-              GPIO.pin[m].int_ena = 1;
-            }
-            GPIO.status_w1tc = KBD_IO_MASK;
-            taskENTER_CRITICAL(&KBD_MUTEX);
-            KBD_BUSY = false;
-            KBD_STDBY = false;
-            taskEXIT_CRITICAL(&KBD_MUTEX);
-        }
-	else vTaskDelay(pdMS_TO_TICKS(1));
-    }
 }
 
 
 void app_main(void)
 {
 
-    kbd_start();
 
     // Setup the light sleep mode
     //esp_sleep_enable_gpio_wakeup(); 
@@ -713,7 +557,6 @@ void app_main(void)
     esp_rom_delay_us(500);
     //xTaskCreate(vTaskStandBy, "standby", 2048, NULL, 5, NULL);
     // Keyboard start to work
-    ESP_LOGI(TAG, "Keyboard started");
 
     displayInit();
     clearDisplay();
@@ -730,5 +573,6 @@ void app_main(void)
                          &kbd_StaticQueue ); // The buffer that will hold the queue structure.
     xTaskCreate(vProcessKeyTask, "keyboard", 2048, (void *) cur, 5, NULL);
 
-    KBD_BUSY = false;
+    kbd_start();
+    ESP_LOGI(TAG, "Keyboard started");
 }
