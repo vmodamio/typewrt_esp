@@ -32,7 +32,7 @@
 #include "esp_timer.h"
 #include "esp_sleep.h"
 #include "driver/gpio.h"
-#include "driver/uart.h"
+//#include "driver/uart.h"
 #include "driver/spi_master.h"
 //#include "driver/gpio_filter.h"
 #include "soc/gpio_struct.h"
@@ -357,7 +357,7 @@ static const char *TAG = "mkbd";
 #define PIN_KBD_LE 10
 
 #define SCANTIMEOUT 500    // in number of scans
-#define SCANPERIOD 1200  // us  Minimum response time (min debounce/denoise) is 8 consecutive periods.
+#define SCANPERIOD 2000  // us  Minimum response time (min debounce/denoise) is 8 consecutive periods.
 
 const volatile int KBD_IO[IOSIZE] = {PIN_KBD_IO0, PIN_KBD_IO1, PIN_KBD_IO2, PIN_KBD_IO3, 
 	                             PIN_KBD_IO4, PIN_KBD_IO5, PIN_KBD_IO6, PIN_KBD_IO7};
@@ -384,6 +384,7 @@ static IRAM_ATTR void kbd_scan(void* arg)
     ///kbd_t *kbd = (kbd_t *)arg;
     int col = -1;
     int row = -1;
+    uint8_t key_event = 0;
 
     //ESP_LOGI(TAG, "-------------------  Matrix Scan Start ---------- ct: %d", KBD_SCANCOUNT);
 
@@ -424,19 +425,21 @@ static IRAM_ATTR void kbd_scan(void* arg)
               if ((KBD_BUFFER[(IOSIZE*row + col)]) == 0x00 ) {
                 KBD_COLS[row] &= ~( 1  << col);
           	KBD_SCANCOUNT = SCANTIMEOUT;
-                ESP_LOGI(TAG, "Key  PRESSED  %d", (IOSIZE*row + col));
-                const char* kkk = "key event from ESP32s3\n";
-                uart_write_bytes(2, (const char *)kkk , strlen(kkk));
-		uint8_t d = 35+128;
-                xQueueSend( keyboard , &d , portMAX_DELAY);
+                //ESP_LOGI(TAG, "Key  PRESSED  %d", (IOSIZE*row + col));
+                //const char* kkk = "key event from ESP32s3\n";
+                //uart_write_bytes(2, (const char *)kkk , strlen(kkk));
+		key_event = KBDMAP[(IOSIZE*row + col)] | KEYDOWN_MASK;
+                xQueueSend( keyboard , &key_event , portMAX_DELAY);
           	KBD_COLFLAGS[row] &= (~(1 << col) & ((1<< IOSIZE) -1));
               }
               if ((KBD_BUFFER[(IOSIZE*row + col)]) == 0xFF ) {
                 KBD_COLS[row] |= ( 1  << col);
           	KBD_SCANCOUNT = SCANTIMEOUT;
-                ESP_LOGI(TAG, "Key RELEASED  %d", (IOSIZE*row + col));
-                const char* kkk = "key event from ESP32s3\n";
-                uart_write_bytes(2, (const char *)kkk , strlen(kkk));
+                //ESP_LOGI(TAG, "Key RELEASED  %d", (IOSIZE*row + col));
+                //const char* kkk = "key event from ESP32s3\n";
+                //uart_write_bytes(2, (const char *)kkk , strlen(kkk));
+		key_event = KBDMAP[(IOSIZE*row + col)];
+                xQueueSend( keyboard , &key_event , portMAX_DELAY);
           	KBD_COLFLAGS[row] &= (~(1 << col) & ((1<< IOSIZE) -1));
               }
               scan &= (scan - 1);  // clears the lowest set bit
@@ -463,7 +466,6 @@ static IRAM_ATTR void kbd_scan(void* arg)
       cycle(32);
       GPIO.out_w1tc = (1UL << KBD_OE); // set OE low to enable output
       cycle(16);
-
 
       ESP_ERROR_CHECK(esp_light_sleep_start());
 
@@ -512,21 +514,21 @@ void kbd_start()
 
     gpio_config(&ol_config);
 
-    uart_config_t uart_conf = {
-	    .baud_rate = 115200,
-	    .data_bits = UART_DATA_8_BITS,
-	    .parity    = UART_PARITY_DISABLE,
-	    .stop_bits  = UART_STOP_BITS_1,
-            .flow_ctrl  = UART_HW_FLOWCTRL_DISABLE,
-	    .source_clk = UART_SCLK_DEFAULT,
-    };
+    //uart_config_t uart_conf = {
+    //        .baud_rate = 115200,
+    //        .data_bits = UART_DATA_8_BITS,
+    //        .parity    = UART_PARITY_DISABLE,
+    //        .stop_bits  = UART_STOP_BITS_1,
+    //        .flow_ctrl  = UART_HW_FLOWCTRL_DISABLE,
+    //        .source_clk = UART_SCLK_DEFAULT,
+    //};
 
-    ESP_ERROR_CHECK(uart_driver_install(2, 512 , 0, 0, NULL, ESP_INTR_FLAG_IRAM));
-    ESP_ERROR_CHECK(uart_param_config(2, &uart_conf));
-    ESP_ERROR_CHECK(uart_set_pin(2, 8, 9, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
-    //uart_write_bytes(2, (const char *) data, len);
-    const char* data = "Trying UART from ESP32s3\n";
-    uart_write_bytes(2, (const char *)data , strlen(data));
+    //ESP_ERROR_CHECK(uart_driver_install(2, 512 , 0, 0, NULL, ESP_INTR_FLAG_IRAM));
+    //ESP_ERROR_CHECK(uart_param_config(2, &uart_conf));
+    //ESP_ERROR_CHECK(uart_set_pin(2, 8, 9, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+    ////uart_write_bytes(2, (const char *) data, len);
+    //const char* data = "Trying UART from ESP32s3\n";
+    //uart_write_bytes(2, (const char *)data , strlen(data));
 
 
     /* Now, the interrupts are changed. They keyboard scanning process is not trigger by the edge interrupt. 
