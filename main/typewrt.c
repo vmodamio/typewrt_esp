@@ -422,8 +422,9 @@ static IRAM_ATTR void kbd_scan(void* arg)
           while (scan) {
               col = __builtin_ffs(scan) -1;
               KBD_BUFFER[(IOSIZE*row + col)] = ((KBD_BUFFER[(IOSIZE*row + col)]) << 1 ) | ((cols_in >> col) & 1);
-              if ((KBD_BUFFER[(IOSIZE*row + col)]) == 0x00 ) {
+              if (((KBD_BUFFER[(IOSIZE*row + col)]) == 0x00 ) && (KBD_COLS[row] & (1 << col))) {
                 KBD_COLS[row] &= ~( 1  << col);
+                //KBD_BUFFER[(IOSIZE*row + col)] = 0xFF; 
           	KBD_SCANCOUNT = SCANTIMEOUT;
                 //ESP_LOGI(TAG, "Key  PRESSED  %d", (IOSIZE*row + col));
                 //const char* kkk = "key event from ESP32s3\n";
@@ -432,8 +433,9 @@ static IRAM_ATTR void kbd_scan(void* arg)
                 xQueueSend( keyboard , &key_event , portMAX_DELAY);
           	KBD_COLFLAGS[row] &= (~(1 << col) & ((1<< IOSIZE) -1));
               }
-              if ((KBD_BUFFER[(IOSIZE*row + col)]) == 0xFF ) {
+              if (((KBD_BUFFER[(IOSIZE*row + col)]) == 0xFF ) && ~(KBD_COLS[row] & (1 << col)) ) {
                 KBD_COLS[row] |= ( 1  << col);
+                //KBD_BUFFER[(IOSIZE*row + col)] = 0x00; 
           	KBD_SCANCOUNT = SCANTIMEOUT;
                 //ESP_LOGI(TAG, "Key RELEASED  %d", (IOSIZE*row + col));
                 //const char* kkk = "key event from ESP32s3\n";
