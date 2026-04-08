@@ -338,9 +338,6 @@ static void vProcessKeyTask( void *pvParameters )
 
 
 
-
-
-
 static const char *TAG = "mkbd";
 
 #define IOSIZE 8
@@ -357,7 +354,7 @@ static const char *TAG = "mkbd";
 #define PIN_KBD_LE 10
 
 #define SCANTIMEOUT 500    // in number of scans
-#define SCANPERIOD 2000  // us  Minimum response time (min debounce/denoise) is 8 consecutive periods.
+#define SCANPERIOD 1500  // us  Minimum response time (min debounce/denoise) is 8 consecutive periods.
 
 const volatile int KBD_IO[IOSIZE] = {PIN_KBD_IO0, PIN_KBD_IO1, PIN_KBD_IO2, PIN_KBD_IO3, 
 	                             PIN_KBD_IO4, PIN_KBD_IO5, PIN_KBD_IO6, PIN_KBD_IO7};
