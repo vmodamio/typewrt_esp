@@ -33,7 +33,7 @@
 //// hold the queue structure.
 ///configSUPPORT_STATIC_ALLOCATION: Must be enabled in menuconfig?
 StaticQueue_t kbd_StaticQueue;
-uint8_t kbd_QueueStorage[ KBD_EVENT_QUEUE_LENGTH * KBD_EVENT_SIZE ];
+extern uint8_t kbd_QueueStorage[ KBD_EVENT_QUEUE_LENGTH * KBD_EVENT_SIZE ];
 QueueHandle_t keyboard;
 
 spi_device_handle_t spi;
