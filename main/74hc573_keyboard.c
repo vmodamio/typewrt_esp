@@ -1,5 +1,30 @@
+#include <stdio.h>
 
-static const char *TAG = "mkbd";
+#include <stdlib.h>
+#include <string.h>
+#include <inttypes.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+#include "freertos/timers.h"
+#include "esp_system.h"
+#include "esp_log.h"
+#include "esp_check.h"
+#include "esp_timer.h"
+#include "esp_sleep.h"
+#include "driver/gpio.h"
+//#include "driver/uart.h"
+#include "driver/spi_master.h"
+//#include "driver/gpio_filter.h"
+#include "soc/gpio_struct.h"
+#include "soc/soc.h"
+#include "soc/gpio_reg.h"
+#include "esp_private/gpio.h"
+//#include "esp_task_wdt.h"
+//#include "esp_intr_alloc.h"
+#include "74hc573_keyboard.h"
+
+
 
 #define IOSIZE 8
 

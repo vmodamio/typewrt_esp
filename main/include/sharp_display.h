@@ -37,7 +37,6 @@ extern uint8_t kbd_QueueStorage[ KBD_EVENT_QUEUE_LENGTH * KBD_EVENT_SIZE ];
 QueueHandle_t keyboard;
 
 spi_device_handle_t spi;
-DMA_ATTR uint8_t *sharpmem_buffer = NULL;
 
 typedef struct {
     enum Mode {

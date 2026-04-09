@@ -42,6 +42,10 @@
 //#include "esp_task_wdt.h"
 //#include "esp_intr_alloc.h"
 
+#include "74hc573_keyboard.h"
+#include "sharp_display.h"
+#include "keyboard_input.h"
+
 
 /* And this could be the processing of the keyboard keys using the keymapping*/
 static void vProcessKeyTask( void *pvParameters )

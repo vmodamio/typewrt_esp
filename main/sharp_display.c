@@ -15,7 +15,9 @@
 #include "esp_private/gpio.h"
 #include "zap-vga16-raw-neg.h"
 #include "keyboard_input.h"
+#include "sharp_display.h"
 
+DMA_ATTR uint8_t *sharpmem_buffer = NULL;
 
 void displayInit(void)
 {
