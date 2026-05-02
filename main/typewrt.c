@@ -344,14 +344,14 @@ static const char *TAG = "mkbd";
 
 #define PIN_KBD_IO7  1
 #define PIN_KBD_IO6  7
-#define PIN_KBD_IO5  5
-#define PIN_KBD_IO4  6
-#define PIN_KBD_IO3 12
-#define PIN_KBD_IO2 14
-#define PIN_KBD_IO1 18
-#define PIN_KBD_IO0 17
-#define PIN_KBD_OE 11
-#define PIN_KBD_LE 10
+#define PIN_KBD_IO5 10
+#define PIN_KBD_IO4 11
+#define PIN_KBD_IO3  5
+#define PIN_KBD_IO2  6
+#define PIN_KBD_IO1 12
+#define PIN_KBD_IO0 14
+#define PIN_KBD_OE 16
+#define PIN_KBD_LE 15
 
 #define SCANTIMEOUT 500    // in number of scans
 #define SCANPERIOD 1500  // us  Minimum response time (min debounce/denoise) is 8 consecutive periods.
