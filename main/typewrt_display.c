@@ -199,3 +199,36 @@ void typewrt_display_clear_buffer(void)
 {
     memset(s_sharpmem_buffer, 0xff, (TYPEWRT_DISPLAY_WIDTH * TYPEWRT_DISPLAY_HEIGHT) / 8);
 }
+
+void typewrt_display_draw_text_line(uint8_t row, const char *text, int text_len,
+                                    int cursor_column, int cursor_visible)
+{
+    if (row >= TYPEWRT_DISPLAY_PHYSICAL_TEXT_ROWS) {
+        return;
+    }
+
+    if (text_len < 0) {
+        text_len = 0;
+        while (text[text_len]) {
+            text_len++;
+        }
+    }
+
+    for (uint8_t column = 0; column < TYPEWRT_DISPLAY_TEXT_COLUMNS; column++) {
+        uint8_t ch = ' ';
+        if (column < text_len && text[column] != '\n' && text[column] != '\0') {
+            ch = (uint8_t)text[column];
+        }
+
+        for (int m = 0; m < TYPEWRT_DISPLAY_GLYPH_HEIGHT; m++) {
+            uint8_t glyph = zap_vga16_psf[ch * TYPEWRT_DISPLAY_GLYPH_HEIGHT + m];
+            if (cursor_visible && column == cursor_column) {
+                glyph = (uint8_t)~glyph;
+            }
+            s_sharpmem_buffer[(((row * TYPEWRT_DISPLAY_GLYPH_HEIGHT + m) * TYPEWRT_DISPLAY_WIDTH) + 8 * column) / 8] =
+                glyph;
+        }
+    }
+
+    typewrt_display_update_text_row(row);
+}
