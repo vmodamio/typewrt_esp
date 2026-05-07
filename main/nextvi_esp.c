@@ -27,6 +27,11 @@
 #define NEXTVI_HARD_WRAP_WIDTH TYPEWRT_DISPLAY_TEXT_COLUMNS
 #define NEXTVI_HWBRK "\342\200\213"
 #define NEXTVI_HWBRK_LEN 3
+#define NEXTVI_STATUS_TIMEOUT_TICKS pdMS_TO_TICKS(3000)
+#define NEXTVI_SPLASH_WIDTH TYPEWRT_DISPLAY_WIDTH
+#define NEXTVI_SPLASH_HEIGHT 160
+#define NEXTVI_SPLASH_STRIDE (NEXTVI_SPLASH_WIDTH / 8)
+#define NEXTVI_SPLASH_CURSOR_ROW 13
 
 typedef enum {
     NEXTVI_MODE_NORMAL,
@@ -94,6 +99,10 @@ typedef struct {
     int left;
     int preferred_col;
     bool modified;
+    bool splash_visible;
+    bool splash_ready;
+    bool status_visible;
+    TickType_t status_until;
     NextviMode mode;
     NextviMode prev_mode;
     char status[NEXTVI_STATUS_MAX];
@@ -129,21 +138,23 @@ typedef struct {
     int undo_len;
     BufferSnapshot redo[NEXTVI_UNDO_DEPTH];
     int redo_len;
+    uint8_t *splash_bitmap;
 } NextviEditor;
 
 static void editor_set_status(NextviEditor *ed, const char *status);
+static void editor_show_status(NextviEditor *ed, const char *status);
 
 static bool nextvi_storage_load(NextviEditor *ed, const char *path)
 {
     (void)path;
-    editor_set_status(ed, "load waits for SD card");
+    editor_show_status(ed, "load waits for SD card");
     return false;
 }
 
 static bool nextvi_storage_save(NextviEditor *ed, const char *path)
 {
     (void)path;
-    editor_set_status(ed, "save waits for SD card");
+    editor_show_status(ed, "save waits for SD card");
     return false;
 }
 
@@ -199,6 +210,120 @@ static int line_body_start(const char *line, int len)
 static void editor_set_status(NextviEditor *ed, const char *status)
 {
     snprintf(ed->status, sizeof(ed->status), "%s", status);
+}
+
+static void editor_show_status(NextviEditor *ed, const char *status)
+{
+    editor_set_status(ed, status);
+    ed->status_visible = true;
+    ed->status_until = xTaskGetTickCount() + NEXTVI_STATUS_TIMEOUT_TICKS;
+}
+
+static bool editor_hide_expired_status(NextviEditor *ed)
+{
+    if (!ed->status_visible) {
+        return false;
+    }
+    if (ed->mode == NEXTVI_MODE_COMMAND || ed->mode == NEXTVI_MODE_SEARCH) {
+        return false;
+    }
+    if ((int32_t)(xTaskGetTickCount() - ed->status_until) < 0) {
+        return false;
+    }
+    ed->status_visible = false;
+    return true;
+}
+
+static void splash_set_pixel(NextviEditor *ed, int x, int y, bool black)
+{
+    if (x < 0 || x >= NEXTVI_SPLASH_WIDTH || y < 0 || y >= NEXTVI_SPLASH_HEIGHT) {
+        return;
+    }
+    uint8_t *byte = &ed->splash_bitmap[y * NEXTVI_SPLASH_STRIDE + (x >> 3)];
+    uint8_t mask = 0x80 >> (x & 7);
+    if (black) {
+        *byte |= mask;
+    } else {
+        *byte &= (uint8_t)~mask;
+    }
+}
+
+static const uint16_t splash_typewrt_spans[][3] = {
+    {63, 55, 27}, {64, 54, 29}, {65, 54, 29}, {65, 251, 6},
+    {66, 54, 29}, {66, 249, 8}, {67, 54, 29}, {67, 248, 9},
+    {68, 54, 29}, {68, 247, 10}, {69, 55, 28}, {69, 245, 12},
+    {70, 61, 16}, {70, 86, 12}, {70, 107, 6}, {70, 117, 9},
+    {70, 131, 7}, {70, 156, 9}, {70, 174, 12}, {70, 194, 7},
+    {70, 209, 6}, {70, 219, 10}, {70, 234, 5}, {70, 244, 19},
+    {71, 61, 16}, {71, 86, 13}, {71, 107, 6}, {71, 116, 11},
+    {71, 129, 11}, {71, 153, 15}, {71, 174, 12}, {71, 193, 9},
+    {71, 209, 6}, {71, 218, 12}, {71, 232, 8}, {71, 242, 21},
+    {72, 61, 16}, {72, 86, 13}, {72, 106, 7}, {72, 116, 25},
+    {72, 151, 19}, {72, 174, 13}, {72, 192, 10}, {72, 208, 7},
+    {72, 218, 12}, {72, 231, 9}, {72, 242, 21}, {73, 61, 16},
+    {73, 87, 13}, {73, 106, 6}, {73, 116, 25}, {73, 150, 21},
+    {73, 175, 12}, {73, 192, 11}, {73, 208, 6}, {73, 218, 22},
+    {73, 242, 21}, {74, 61, 16}, {74, 87, 13}, {74, 105, 7},
+    {74, 116, 26}, {74, 149, 11}, {74, 163, 8}, {74, 175, 12},
+    {74, 191, 12}, {74, 208, 6}, {74, 218, 22}, {74, 243, 20},
+    {75, 61, 16}, {75, 88, 13}, {75, 105, 6}, {75, 116, 26},
+    {75, 148, 11}, {75, 164, 8}, {75, 175, 12}, {75, 191, 12},
+    {75, 207, 7}, {75, 218, 22}, {75, 245, 12}, {76, 61, 16},
+    {76, 88, 13}, {76, 105, 6}, {76, 116, 27}, {76, 148, 11},
+    {76, 164, 8}, {76, 176, 12}, {76, 191, 13}, {76, 207, 6},
+    {76, 218, 22}, {76, 245, 12}, {77, 61, 16}, {77, 89, 13},
+    {77, 104, 7}, {77, 116, 12}, {77, 131, 12}, {77, 148, 11},
+    {77, 163, 9}, {77, 176, 12}, {77, 190, 14}, {77, 206, 7},
+    {77, 218, 13}, {77, 234, 5}, {77, 245, 12}, {78, 61, 16},
+    {78, 89, 13}, {78, 104, 6}, {78, 116, 12}, {78, 132, 11},
+    {78, 147, 25}, {78, 176, 12}, {78, 190, 14}, {78, 206, 7},
+    {78, 218, 12}, {78, 236, 2}, {78, 245, 12}, {79, 61, 16},
+    {79, 90, 20}, {79, 116, 12}, {79, 132, 11}, {79, 147, 24},
+    {79, 177, 35}, {79, 218, 12}, {79, 245, 12}, {80, 61, 16},
+    {80, 90, 19}, {80, 116, 12}, {80, 132, 11}, {80, 147, 24},
+    {80, 177, 35}, {80, 218, 12}, {80, 245, 12}, {81, 61, 16},
+    {81, 91, 18}, {81, 116, 12}, {81, 132, 11}, {81, 147, 22},
+    {81, 178, 33}, {81, 218, 12}, {81, 245, 12}, {82, 61, 16},
+    {82, 91, 17}, {82, 116, 12}, {82, 132, 11}, {82, 147, 12},
+    {82, 178, 33}, {82, 218, 12}, {82, 245, 12}, {83, 61, 16},
+    {83, 92, 16}, {83, 116, 13}, {83, 131, 12}, {83, 147, 12},
+    {83, 179, 15}, {83, 195, 16}, {83, 218, 12}, {83, 245, 14},
+    {83, 262, 2}, {84, 61, 16}, {84, 92, 15}, {84, 116, 26},
+    {84, 148, 12}, {84, 168, 3}, {84, 179, 15}, {84, 196, 14},
+    {84, 218, 12}, {84, 246, 19}, {85, 61, 16}, {85, 93, 14},
+    {85, 116, 26}, {85, 148, 24}, {85, 179, 14}, {85, 196, 14},
+    {85, 218, 12}, {85, 246, 19}, {86, 61, 16}, {86, 94, 12},
+    {86, 116, 26}, {86, 149, 23}, {86, 180, 13}, {86, 196, 13},
+    {86, 218, 12}, {86, 246, 19}, {87, 61, 16}, {87, 94, 12},
+    {87, 116, 25}, {87, 150, 22}, {87, 180, 12}, {87, 197, 12},
+    {87, 218, 12}, {87, 247, 18}, {88, 61, 16}, {88, 95, 10},
+    {88, 116, 12}, {88, 129, 11}, {88, 152, 19}, {88, 181, 11},
+    {88, 197, 11}, {88, 218, 12}, {88, 249, 15}, {89, 62, 14},
+    {89, 95, 10}, {89, 116, 12}, {89, 130, 8}, {89, 154, 14},
+    {89, 182, 9}, {89, 199, 8}, {89, 219, 10}, {89, 251, 11},
+    {90, 94, 10}, {90, 116, 12}, {91, 89, 15}, {91, 116, 12},
+    {92, 88, 15}, {92, 116, 12}, {93, 88, 14}, {93, 116, 11},
+    {94, 88, 13}, {94, 116, 11}, {95, 88, 12}, {95, 116, 11},
+    {96, 89, 8}, {96, 117, 10},
+};
+
+static void splash_prepare(NextviEditor *ed)
+{
+    if (ed->splash_ready) {
+        return;
+    }
+
+    memset(ed->splash_bitmap, 0, NEXTVI_SPLASH_STRIDE * NEXTVI_SPLASH_HEIGHT);
+    for (int i = 0; i < (int)(sizeof(splash_typewrt_spans) / sizeof(splash_typewrt_spans[0])); i++) {
+        int y = splash_typewrt_spans[i][0];
+        int x = splash_typewrt_spans[i][1];
+        int len = splash_typewrt_spans[i][2];
+        for (int dx = 0; dx < len; dx++) {
+            splash_set_pixel(ed, x + dx, y, true);
+        }
+    }
+
+    ed->splash_ready = true;
 }
 
 static void snapshot_free(BufferSnapshot *snap)
@@ -280,12 +405,16 @@ static void editor_init(NextviEditor *ed)
     ed->lines = xmalloc(sizeof(ed->lines[0]) * ed->line_cap);
     ed->lengths = xmalloc(sizeof(ed->lengths[0]) * ed->line_cap);
     ed->caps = xmalloc(sizeof(ed->caps[0]) * ed->line_cap);
+    ed->splash_bitmap = xmalloc(NEXTVI_SPLASH_STRIDE * NEXTVI_SPLASH_HEIGHT);
     ed->lines[0] = line_new_empty();
     ed->lengths[0] = 0;
     ed->caps[0] = NEXTVI_INITIAL_LINE_LEN;
     ed->line_count = 1;
     ed->mode = NEXTVI_MODE_NORMAL;
     ed->search_dir = 1;
+    ed->splash_visible = true;
+    ed->status_visible = true;
+    ed->status_until = portMAX_DELAY;
     editor_set_status(ed, "normal");
 }
 
@@ -297,6 +426,7 @@ static void editor_free(NextviEditor *ed)
     free(ed->lines);
     free(ed->lengths);
     free(ed->caps);
+    free(ed->splash_bitmap);
     free(ed->yank);
     history_clear(ed->undo, &ed->undo_len);
     history_clear(ed->redo, &ed->redo_len);
@@ -374,13 +504,13 @@ static void clamp_cursor(NextviEditor *ed)
     }
 }
 
-static void keep_cursor_visible(NextviEditor *ed)
+static void keep_cursor_visible(NextviEditor *ed, int text_rows)
 {
     int visible_col = ed->col - line_body_start(ed->lines[ed->row], ed->lengths[ed->row]);
     if (ed->row < ed->top) {
         ed->top = ed->row;
-    } else if (ed->row >= ed->top + TYPEWRT_DISPLAY_TEXT_ROWS) {
-        ed->top = ed->row - TYPEWRT_DISPLAY_TEXT_ROWS + 1;
+    } else if (ed->row >= ed->top + text_rows) {
+        ed->top = ed->row - text_rows + 1;
     }
 
     if (visible_col < ed->left) {
@@ -467,10 +597,67 @@ static const char *mode_name(NextviMode mode)
 static void editor_draw(NextviEditor *ed)
 {
     clamp_cursor(ed);
-    keep_cursor_visible(ed);
+    bool prompt_visible = ed->mode == NEXTVI_MODE_COMMAND || ed->mode == NEXTVI_MODE_SEARCH;
+    bool status_visible = prompt_visible || ed->status_visible;
+
+    if (ed->splash_visible) {
+        splash_prepare(ed);
+        typewrt_display_draw_bitmap(0, 0, NEXTVI_SPLASH_WIDTH, NEXTVI_SPLASH_HEIGHT,
+                                    ed->splash_bitmap, NEXTVI_SPLASH_STRIDE);
+
+        for (int row = NEXTVI_SPLASH_HEIGHT / TYPEWRT_DISPLAY_GLYPH_HEIGHT;
+             row < NEXTVI_SPLASH_CURSOR_ROW; row++) {
+            typewrt_display_draw_text_line(row, "", 0, -1, 0);
+        }
+
+        char rowbuf[TYPEWRT_DISPLAY_TEXT_COLUMNS + 1];
+        int out_len = 0;
+        int start = line_body_start(ed->lines[ed->row], ed->lengths[ed->row]);
+        for (int i = 0; i < TYPEWRT_DISPLAY_TEXT_COLUMNS; i++) {
+            int col = start + ed->left + i;
+            if (col < ed->lengths[ed->row]) {
+                rowbuf[out_len++] = ed->lines[ed->row][col];
+            } else {
+                break;
+            }
+        }
+        rowbuf[out_len] = '\0';
+        typewrt_display_draw_text_line(NEXTVI_SPLASH_CURSOR_ROW, rowbuf, out_len,
+                                       ed->col - start - ed->left, 1);
+
+        char status[TYPEWRT_DISPLAY_TEXT_COLUMNS + 1];
+        memset(status, ' ', TYPEWRT_DISPLAY_TEXT_COLUMNS);
+        status[TYPEWRT_DISPLAY_TEXT_COLUMNS] = '\0';
+        if (prompt_visible) {
+            const char prefix = ed->prompt_kind == PROMPT_SEARCH_BACKWARD ? '?' :
+                                ed->prompt_kind == PROMPT_COMMAND ? ':' : '/';
+            status[0] = prefix;
+            memcpy(&status[1], ed->prompt, MIN(ed->prompt_len, TYPEWRT_DISPLAY_TEXT_COLUMNS - 1));
+        } else {
+            const char *mode = mode_name(ed->mode);
+            int mode_len = MIN((int)strlen(mode), TYPEWRT_DISPLAY_TEXT_COLUMNS);
+            memcpy(status, mode, mode_len);
+            if (mode_len < TYPEWRT_DISPLAY_TEXT_COLUMNS) {
+                status[mode_len++] = ' ';
+            }
+            memcpy(&status[mode_len], ed->status,
+                   MIN((int)strlen(ed->status), TYPEWRT_DISPLAY_TEXT_COLUMNS - mode_len));
+        }
+        typewrt_display_draw_text_line(TYPEWRT_DISPLAY_STATUS_ROW, status, -1, -1, 0);
+        return;
+    }
+
+    int text_rows = status_visible ? TYPEWRT_DISPLAY_TEXT_ROWS : TYPEWRT_DISPLAY_PHYSICAL_TEXT_ROWS;
+
+    if (ed->row < ed->top) {
+        ed->top = ed->row;
+    } else if (ed->row >= ed->top + text_rows) {
+        ed->top = ed->row - text_rows + 1;
+    }
+    keep_cursor_visible(ed, text_rows);
 
     char rowbuf[TYPEWRT_DISPLAY_TEXT_COLUMNS + 1];
-    for (int screen_row = 0; screen_row < TYPEWRT_DISPLAY_TEXT_ROWS; screen_row++) {
+    for (int screen_row = 0; screen_row < text_rows; screen_row++) {
         int buffer_row = ed->top + screen_row;
         if (buffer_row < ed->line_count) {
             int out_len = 0;
@@ -489,6 +676,10 @@ static void editor_draw(NextviEditor *ed)
         } else {
             typewrt_display_draw_text_line(screen_row, "~", 1, -1, 0);
         }
+    }
+
+    if (!status_visible) {
+        return;
     }
 
     char pos[32];
@@ -518,6 +709,20 @@ static void set_mode(NextviEditor *ed, NextviMode mode, const char *status)
     if (status) {
         editor_set_status(ed, status);
     }
+}
+
+static void splash_begin_edit(NextviEditor *ed)
+{
+    if (!ed->splash_visible) {
+        return;
+    }
+    ed->splash_visible = false;
+    ed->status_visible = false;
+    ed->top = 0;
+    ed->left = 0;
+    ed->row = 0;
+    ed->col = 0;
+    ed->preferred_col = 0;
 }
 
 static int command_count(NextviEditor *ed)
@@ -1198,7 +1403,7 @@ static void apply_operator(NextviEditor *ed, PendingOp op, Cursor beg, Cursor en
     if (op == OP_YANK) {
         ed->row = beg.row;
         ed->col = beg.col;
-        editor_set_status(ed, "yanked");
+        editor_show_status(ed, "yanked");
         return;
     }
 
@@ -1227,7 +1432,7 @@ static void apply_operator(NextviEditor *ed, PendingOp op, Cursor beg, Cursor en
 static void paste_yank(NextviEditor *ed, bool after)
 {
     if (!ed->yank || !ed->yank_len) {
-        editor_set_status(ed, "nothing to put");
+        editor_show_status(ed, "nothing to put");
         return;
     }
     begin_change(ed);
@@ -1263,13 +1468,13 @@ static void paste_yank(NextviEditor *ed, bool after)
     }
     hardwrap_reflow(ed, ed->row);
     ed->modified = true;
-    editor_set_status(ed, "put");
+    editor_show_status(ed, "put");
 }
 
 static void undo(NextviEditor *ed)
 {
     if (!ed->undo_len) {
-        editor_set_status(ed, "undo failed");
+        editor_show_status(ed, "undo failed");
         return;
     }
     history_push(ed->redo, &ed->redo_len, snapshot_make(ed));
@@ -1277,13 +1482,13 @@ static void undo(NextviEditor *ed)
     snapshot_restore(ed, &snap);
     ed->modified = true;
     clamp_cursor(ed);
-    editor_set_status(ed, "undo");
+    editor_show_status(ed, "undo");
 }
 
 static void redo(NextviEditor *ed)
 {
     if (!ed->redo_len) {
-        editor_set_status(ed, "redo failed");
+        editor_show_status(ed, "redo failed");
         return;
     }
     history_push(ed->undo, &ed->undo_len, snapshot_make(ed));
@@ -1291,7 +1496,7 @@ static void redo(NextviEditor *ed)
     snapshot_restore(ed, &snap);
     ed->modified = true;
     clamp_cursor(ed);
-    editor_set_status(ed, "redo");
+    editor_show_status(ed, "redo");
 }
 
 static bool event_to_key(uint8_t event, EditorKey *key)
@@ -1354,6 +1559,9 @@ static void handle_insert_key(NextviEditor *ed, EditorKey key)
     } else if (key.vk == VK_DOWN) {
         move_vertical(ed, 1);
     } else {
+        if (key.vk == VK_ENTER || key.vk == VK_TAB || printable_key(key)) {
+            splash_begin_edit(ed);
+        }
         begin_change(ed);
         if (key.vk == VK_ENTER) {
             split_line_raw(ed);
@@ -1389,6 +1597,7 @@ static void begin_prompt(NextviEditor *ed, PromptKind kind)
     ed->prompt_kind = kind;
     ed->prompt_len = 0;
     ed->prompt[0] = '\0';
+    ed->status_visible = false;
 }
 
 static void execute_command(NextviEditor *ed)
@@ -1402,11 +1611,11 @@ static void execute_command(NextviEditor *ed)
     } else if (!strcmp(cmd, "e") || !strcmp(cmd, "edit")) {
         nextvi_storage_load(ed, NULL);
     } else if (!strcmp(cmd, "q") || !strcmp(cmd, "quit")) {
-        editor_set_status(ed, "quit not available");
+        editor_show_status(ed, "quit not available");
     } else if (!strcmp(cmd, "wq") || !strcmp(cmd, "x")) {
         nextvi_storage_save(ed, NULL);
     } else if (!strcmp(cmd, "set")) {
-        editor_set_status(ed, "set not available");
+        editor_show_status(ed, "set not available");
     } else if (cmd[0] == '%' && cmd[1] == 'd' && !cmd[2]) {
         begin_change(ed);
         while (ed->line_count > 1) {
@@ -1417,20 +1626,20 @@ static void execute_command(NextviEditor *ed)
         ed->row = 0;
         ed->col = 0;
         ed->modified = true;
-        editor_set_status(ed, "buffer cleared");
+        editor_show_status(ed, "buffer cleared");
     } else if (!strcmp(cmd, "gw")) {
         begin_change(ed);
         if (hardwrap_reflow(ed, ed->row)) {
             ed->modified = true;
         }
-        editor_set_status(ed, "wrapped line");
+        editor_show_status(ed, "wrapped line");
     } else if (!strcmp(cmd, "gq")) {
         begin_change(ed);
         hardwrap_all(ed);
         ed->modified = true;
-        editor_set_status(ed, "wrapped buffer");
+        editor_show_status(ed, "wrapped buffer");
     } else {
-        editor_set_status(ed, "ex command unavailable");
+        editor_show_status(ed, "ex command unavailable");
     }
 }
 
@@ -1455,9 +1664,9 @@ static void handle_prompt_key(NextviEditor *ed, EditorKey key)
             ed->search_dir = ed->prompt_kind == PROMPT_SEARCH_BACKWARD ? -1 : 1;
             set_mode(ed, NEXTVI_MODE_NORMAL, NULL);
             if (search_from(ed, ed->search, ed->search_dir, 1)) {
-                editor_set_status(ed, "match");
+                editor_show_status(ed, "match");
             } else {
-                editor_set_status(ed, "not found");
+                editor_show_status(ed, "not found");
             }
         }
         return;
@@ -1521,10 +1730,10 @@ static MotionKind motion_from_key(NextviEditor *ed, int ch, int count, Cursor *o
         move_to_line(ed, ed->top);
         break;
     case 'M':
-        move_to_line(ed, ed->top + TYPEWRT_DISPLAY_TEXT_ROWS / 2);
+        move_to_line(ed, ed->top + TYPEWRT_DISPLAY_PHYSICAL_TEXT_ROWS / 2);
         break;
     case 'L':
-        move_to_line(ed, ed->top + TYPEWRT_DISPLAY_TEXT_ROWS - 1);
+        move_to_line(ed, ed->top + TYPEWRT_DISPLAY_PHYSICAL_TEXT_ROWS - 1);
         break;
     default:
         return MOTION_NONE;
@@ -1537,6 +1746,11 @@ static MotionKind motion_from_key(NextviEditor *ed, int ch, int count, Cursor *o
 
 static void open_line(NextviEditor *ed, bool below)
 {
+    if (ed->splash_visible) {
+        (void)below;
+        set_mode(ed, NEXTVI_MODE_INSERT, "insert");
+        return;
+    }
     begin_change(ed);
     int row = ed->row + (below ? 1 : 0);
     insert_line_raw(ed, row, line_new_empty(), 0, NEXTVI_INITIAL_LINE_LEN);
@@ -1595,7 +1809,7 @@ static void handle_normal_key(NextviEditor *ed, EditorKey key)
     if (ed->awaiting_find) {
         ed->awaiting_find = false;
         if (printable_key(key) && !find_char_on_line(ed, ed->find_cmd, (char)key.ascii, command_count(ed))) {
-            editor_set_status(ed, "not found");
+            editor_show_status(ed, "not found");
         }
         clear_pending(ed);
         return;
@@ -1608,14 +1822,14 @@ static void handle_normal_key(NextviEditor *ed, EditorKey key)
             if (ed->awaiting_mark_set) {
                 ed->marks[idx] = (Cursor){ed->row, ed->col};
                 ed->mark_set[idx] = true;
-                editor_set_status(ed, "mark set");
+                editor_show_status(ed, "mark set");
             } else if (ed->mark_set[idx]) {
                 ed->row = ed->marks[idx].row;
                 ed->col = ed->awaiting_mark_line ? first_nonblank(ed, ed->row) :
                           MIN(ed->marks[idx].col, line_last_col(ed, ed->row));
                 ed->preferred_col = ed->col;
             } else {
-                editor_set_status(ed, "mark not set");
+                editor_show_status(ed, "mark not set");
             }
         }
         clear_pending(ed);
@@ -1632,12 +1846,12 @@ static void handle_normal_key(NextviEditor *ed, EditorKey key)
             if (hardwrap_reflow(ed, ed->row)) {
                 ed->modified = true;
             }
-            editor_set_status(ed, "wrapped line");
+            editor_show_status(ed, "wrapped line");
         } else if (ch == 'q') {
             begin_change(ed);
             hardwrap_all(ed);
             ed->modified = true;
-            editor_set_status(ed, "wrapped buffer");
+            editor_show_status(ed, "wrapped buffer");
         } else if (ch == '~' || ch == 'u' || ch == 'U') {
             PendingOp op = ch == '~' ? OP_CASE_SWAP : ch == 'u' ? OP_CASE_LOWER : OP_CASE_UPPER;
             Cursor end;
@@ -1655,9 +1869,9 @@ static void handle_normal_key(NextviEditor *ed, EditorKey key)
         if (ch == '\n') {
             ed->top = ed->row;
         } else if (ch == '.') {
-            ed->top = MAX(0, ed->row - TYPEWRT_DISPLAY_TEXT_ROWS / 2);
+            ed->top = MAX(0, ed->row - TYPEWRT_DISPLAY_PHYSICAL_TEXT_ROWS / 2);
         } else if (ch == '-') {
-            ed->top = MAX(0, ed->row - TYPEWRT_DISPLAY_TEXT_ROWS + 1);
+            ed->top = MAX(0, ed->row - TYPEWRT_DISPLAY_PHYSICAL_TEXT_ROWS + 1);
         }
         clear_pending(ed);
         return;
@@ -1752,18 +1966,18 @@ static void handle_normal_key(NextviEditor *ed, EditorKey key)
     Cursor ignored;
     switch (ch) {
     case NEXTVI_CTRL('b'):
-        move_vertical(ed, -TYPEWRT_DISPLAY_TEXT_ROWS * count);
-        ed->top = MAX(0, ed->top - TYPEWRT_DISPLAY_TEXT_ROWS * count);
+        move_vertical(ed, -TYPEWRT_DISPLAY_PHYSICAL_TEXT_ROWS * count);
+        ed->top = MAX(0, ed->top - TYPEWRT_DISPLAY_PHYSICAL_TEXT_ROWS * count);
         break;
     case NEXTVI_CTRL('f'):
-        move_vertical(ed, TYPEWRT_DISPLAY_TEXT_ROWS * count);
-        ed->top = MIN(MAX(0, ed->line_count - 1), ed->top + TYPEWRT_DISPLAY_TEXT_ROWS * count);
+        move_vertical(ed, TYPEWRT_DISPLAY_PHYSICAL_TEXT_ROWS * count);
+        ed->top = MIN(MAX(0, ed->line_count - 1), ed->top + TYPEWRT_DISPLAY_PHYSICAL_TEXT_ROWS * count);
         break;
     case NEXTVI_CTRL('u'):
-        move_vertical(ed, -(TYPEWRT_DISPLAY_TEXT_ROWS / 2) * count);
+        move_vertical(ed, -(TYPEWRT_DISPLAY_PHYSICAL_TEXT_ROWS / 2) * count);
         break;
     case NEXTVI_CTRL('d'):
-        move_vertical(ed, (TYPEWRT_DISPLAY_TEXT_ROWS / 2) * count);
+        move_vertical(ed, (TYPEWRT_DISPLAY_PHYSICAL_TEXT_ROWS / 2) * count);
         break;
     case NEXTVI_CTRL('e'):
         ed->top = MIN(MAX(0, ed->line_count - 1), ed->top + count);
@@ -1847,7 +2061,7 @@ static void handle_normal_key(NextviEditor *ed, EditorKey key)
     case 'r':
         ed->awaiting_replace = true;
         ed->count = count;
-        editor_set_status(ed, "replace char");
+        editor_show_status(ed, "replace char");
         break;
     case 'd':
         ed->pending_op = OP_DELETE;
@@ -1895,7 +2109,7 @@ static void handle_normal_key(NextviEditor *ed, EditorKey key)
     case 'n':
     case 'N':
         if (!search_from(ed, ed->search, ch == 'n' ? ed->search_dir : -ed->search_dir, count)) {
-            editor_set_status(ed, "not found");
+            editor_show_status(ed, "not found");
         }
         break;
     case 'f':
@@ -1908,7 +2122,7 @@ static void handle_normal_key(NextviEditor *ed, EditorKey key)
         break;
     case ';':
         if (!ed->last_find_char || !find_char_on_line(ed, ed->last_find_cmd, ed->last_find_char, count)) {
-            editor_set_status(ed, "not found");
+            editor_show_status(ed, "not found");
         }
         break;
     case ',':
@@ -1916,7 +2130,7 @@ static void handle_normal_key(NextviEditor *ed, EditorKey key)
             int cmd = ed->last_find_cmd == 'f' ? 'F' : ed->last_find_cmd == 'F' ? 'f' :
                       ed->last_find_cmd == 't' ? 'T' : 't';
             if (!find_char_on_line(ed, cmd, ed->last_find_char, count)) {
-                editor_set_status(ed, "not found");
+                editor_show_status(ed, "not found");
             }
         }
         break;
@@ -1924,14 +2138,14 @@ static void handle_normal_key(NextviEditor *ed, EditorKey key)
         ed->awaiting_mark = true;
         ed->awaiting_mark_set = true;
         ed->count = count;
-        editor_set_status(ed, "mark");
+        editor_show_status(ed, "mark");
         break;
     case '`':
     case '\'':
         ed->awaiting_mark = true;
         ed->awaiting_mark_set = false;
         ed->awaiting_mark_line = ch == '\'';
-        editor_set_status(ed, "jump mark");
+        editor_show_status(ed, "jump mark");
         break;
     case 'g':
         ed->awaiting_g = true;
@@ -1988,15 +2202,25 @@ void nextvi_esp_run(QueueHandle_t keyboard)
     editor_draw(&editor);
 
     while (1) {
-        if (xQueueReceive(keyboard, &event, portMAX_DELAY) == pdTRUE && event_to_key(event, &key)) {
-            if (editor.mode == NEXTVI_MODE_INSERT || editor.mode == NEXTVI_MODE_REPLACE) {
-                handle_insert_key(&editor, key);
-            } else if (editor.mode == NEXTVI_MODE_COMMAND || editor.mode == NEXTVI_MODE_SEARCH) {
-                handle_prompt_key(&editor, key);
-            } else {
-                handle_normal_key(&editor, key);
+        TickType_t wait_ticks = editor.status_visible ? pdMS_TO_TICKS(100) : portMAX_DELAY;
+        if (xQueueReceive(keyboard, &event, wait_ticks) == pdTRUE) {
+            if (event_to_key(event, &key)) {
+                if (editor_hide_expired_status(&editor)) {
+                    editor_draw(&editor);
+                }
+                if (editor.mode == NEXTVI_MODE_INSERT || editor.mode == NEXTVI_MODE_REPLACE) {
+                    handle_insert_key(&editor, key);
+                } else if (editor.mode == NEXTVI_MODE_COMMAND || editor.mode == NEXTVI_MODE_SEARCH) {
+                    handle_prompt_key(&editor, key);
+                } else {
+                    handle_normal_key(&editor, key);
+                }
+                editor_draw(&editor);
             }
-            editor_draw(&editor);
+        } else {
+            if (editor_hide_expired_status(&editor)) {
+                editor_draw(&editor);
+            }
         }
         vTaskDelay(1);
     }

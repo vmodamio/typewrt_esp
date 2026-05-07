@@ -17,6 +17,16 @@ The ESP version does not use a terminal. It reads key events from `typewrt_keybo
 | Command | Partial | `:` prompt exists, but full ex is not ported. |
 | Search | Partial | `/`, `?`, `n`, `N` use plain substring search, not regex. |
 
+## Status Row
+
+The status row is hidden by default so the editor can use all 15 physical text rows on the display. It appears temporarily for command feedback and errors, and it stays visible while entering `:` commands or `/` and `?` searches. After a short timeout it is replaced by the normal text view again.
+
+## Startup Splash
+
+When no text file is loaded, the editor starts with a 320x160 monochrome bitmap splash in the top two thirds of the display. The splash contains `Typewrt` rendered from `Chango-Regular.ttf`. The editable cursor line is shown below the splash, just above the status row.
+
+Entering insert mode keeps the splash visible. The first printable key, Enter, or Tab clears the splash and starts editing at the first buffer line.
+
 ## Implemented Normal Commands
 
 | Command | ESP behavior |
@@ -87,5 +97,5 @@ This is intentionally hard wrapping, not soft wrapping: the buffer is rewritten 
 - `main/nextvi_esp.c`: editor state, vi commands, hard wrapping, keyboard event handling.
 - `include/nextvi_esp.h`: app entry point.
 - `include/typewrt_display.h`, `main/typewrt_display.c`: display API used by the editor.
+- `typewrt_display_draw_bitmap(...)`: renders 1-bit row-major bitmap images, with set bits drawn as black pixels.
 - `include/typewrt_keyboard.h`, `main/typewrt_keyboard_api.c`: keyboard API used by the editor.
-

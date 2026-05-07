@@ -14,6 +14,9 @@
 
 #include "zap-vga16-raw-neg.h"
 
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+
 #define SHARPMEM_BIT_WRITECMD (0x01)
 #define SHARPMEM_BIT_CLEAR (0x04)
 
@@ -193,6 +196,41 @@ void typewrt_display_draw_glyph(uint8_t glyph_index, uint8_t column, uint8_t row
     }
 
     typewrt_display_update_text_row(row);
+}
+
+void typewrt_display_draw_bitmap(int16_t x, int16_t y, uint16_t width, uint16_t height,
+                                 const uint8_t *bitmap, uint16_t stride_bytes)
+{
+    if (!bitmap || !width || !height || !stride_bytes) {
+        return;
+    }
+
+    int16_t x_end = x + width;
+    int16_t y_end = y + height;
+    int16_t draw_x0 = MAX(0, x);
+    int16_t draw_y0 = MAX(0, y);
+    int16_t draw_x1 = MIN((int16_t)TYPEWRT_DISPLAY_WIDTH, x_end);
+    int16_t draw_y1 = MIN((int16_t)TYPEWRT_DISPLAY_HEIGHT, y_end);
+
+    if (draw_x0 >= draw_x1 || draw_y0 >= draw_y1) {
+        return;
+    }
+
+    for (int16_t py = draw_y0; py < draw_y1; py++) {
+        int src_y = py - y;
+        for (int16_t px = draw_x0; px < draw_x1; px++) {
+            int src_x = px - x;
+            uint8_t mask = 0x80 >> (src_x & 7);
+            uint8_t bit = bitmap[src_y * stride_bytes + (src_x >> 3)] & mask;
+            typewrt_display_set_pixel(px, py, bit ? 0 : 1);
+        }
+    }
+
+    uint8_t first_row = draw_y0 / TYPEWRT_DISPLAY_GLYPH_HEIGHT;
+    uint8_t last_row = (draw_y1 - 1) / TYPEWRT_DISPLAY_GLYPH_HEIGHT;
+    for (uint8_t row = first_row; row <= last_row && row < TYPEWRT_DISPLAY_PHYSICAL_TEXT_ROWS; row++) {
+        typewrt_display_update_text_row(row);
+    }
 }
 
 void typewrt_display_clear_buffer(void)
