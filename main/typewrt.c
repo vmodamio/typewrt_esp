@@ -11,6 +11,7 @@
 
 #define PIN_LDO2_EN 39
 #define PIN_LEDN 17
+#define PIN_RST_EN 18
 
 static const char *TAG = "typewrt";
 
@@ -27,7 +28,7 @@ static void power_mng_init(void)
     gpio_hold_en(PIN_LDO2_EN);
 
     gpio_config_t led_conf = {
-        .pin_bit_mask = (1ULL << PIN_LEDN),
+        .pin_bit_mask = (1ULL << PIN_LEDN ) | (1ULL << PIN_RST_EN),
         .intr_type = GPIO_INTR_DISABLE,
         .mode = GPIO_MODE_OUTPUT_OD,
         .pull_up_en = GPIO_PULLUP_ENABLE,
@@ -36,6 +37,8 @@ static void power_mng_init(void)
     gpio_config(&led_conf);
     gpio_set_level(PIN_LEDN, 0);
     gpio_hold_en(PIN_LEDN);
+    gpio_set_level(PIN_RST_EN, 0);
+    gpio_hold_en(PIN_RST_EN);
 }
 
 void app_main(void)

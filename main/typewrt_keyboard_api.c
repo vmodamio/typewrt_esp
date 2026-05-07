@@ -38,7 +38,6 @@ static StaticQueue_t s_kbd_static_queue;
 static uint8_t s_kbd_queue_storage[KBD_EVENT_QUEUE_LENGTH * KBD_EVENT_SIZE];
 static QueueHandle_t s_keyboard_queue;
 static TaskHandle_t s_sleep_task;
-static volatile typewrt_keyboard_debug_t s_debug;
 
 static const volatile int KBD_IO[IOSIZE] = {
     PIN_KBD_IO0, PIN_KBD_IO1, PIN_KBD_IO2, PIN_KBD_IO3,
@@ -71,7 +70,6 @@ static IRAM_ATTR void kbd_scan(void *arg)
     uint8_t key_event = 0;
 
     if (KBD_SCANCOUNT) {
-        s_debug.scans++;
         KBD_NOKEY = true;
         for (row = 0; row < IOSIZE; row++) {
             GPIO.out_w1ts = (1UL << KBD_OE);
@@ -111,8 +109,6 @@ static IRAM_ATTR void kbd_scan(void *arg)
                     KBD_COLS[row] &= ~(1 << col);
                     KBD_SCANCOUNT = SCANTIMEOUT;
                     key_event = KBDMAP[(IOSIZE * row + col)] | KEYDOWN_MASK;
-                    s_debug.press_events++;
-                    s_debug.last_event = key_event;
                     xQueueSend(s_keyboard_queue, &key_event, 0);
                     KBD_COLFLAGS[row] &= (~(1 << col) & ((1 << IOSIZE) - 1));
                 }
@@ -121,8 +117,6 @@ static IRAM_ATTR void kbd_scan(void *arg)
                     KBD_COLS[row] |= (1 << col);
                     KBD_SCANCOUNT = SCANTIMEOUT;
                     key_event = KBDMAP[(IOSIZE * row + col)];
-                    s_debug.release_events++;
-                    s_debug.last_event = key_event;
                     xQueueSend(s_keyboard_queue, &key_event, 0);
                     KBD_COLFLAGS[row] &= (~(1 << col) & ((1 << IOSIZE) - 1));
                 }
@@ -177,7 +171,6 @@ static void kbd_sleep_task(void *arg)
         }
 
         kbd_enter_wakeup_state();
-        s_debug.sleep_entries++;
         ESP_ERROR_CHECK(esp_light_sleep_start());
 
         KBD_SLEEP_PENDING = false;
@@ -237,15 +230,4 @@ QueueHandle_t typewrt_keyboard_init(void)
     ESP_ERROR_CHECK(esp_timer_start_periodic(KBD_SCAN_TIMER, SCANPERIOD));
 
     return s_keyboard_queue;
-}
-
-void typewrt_keyboard_debug_snapshot(typewrt_keyboard_debug_t *debug)
-{
-    *debug = (typewrt_keyboard_debug_t){
-        .scans = s_debug.scans,
-        .press_events = s_debug.press_events,
-        .release_events = s_debug.release_events,
-        .sleep_entries = s_debug.sleep_entries,
-        .last_event = s_debug.last_event,
-    };
 }
