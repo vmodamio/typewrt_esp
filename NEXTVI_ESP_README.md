@@ -23,7 +23,7 @@ The status row is hidden by default so the editor can use all 15 physical text r
 
 ## Startup Splash
 
-When no text file is loaded, the editor starts with a 320x160 monochrome bitmap splash in the top two thirds of the display. The splash contains `Typewrt` rendered from `Chango-Regular.ttf`. The editable cursor line is shown below the splash, just above the status row.
+When no text file is loaded, the editor starts with a 320x160 monochrome bitmap splash in the top two thirds of the display. The splash contains `Typewrt` rendered from `MomoTrustDisplay-Regular.ttf`, with `Mark 2 (v2.0)` below it in the editor VGA font, right-aligned to the wordmark. The editable cursor line is shown below the splash, just above the status row.
 
 Entering insert mode keeps the splash visible. The first printable key, Enter, or Tab clears the splash and starts editing at the first buffer line.
 
