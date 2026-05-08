@@ -20,6 +20,7 @@
 #include <stdio.h>
 
 #include <stdlib.h>
+#include <stdbool.h>
 #include <string.h>
 #include <inttypes.h>
 #include "freertos/FreeRTOS.h"
@@ -44,6 +45,8 @@
 
 #include "zap-vga16-raw-neg.h"
 #include "keyboard_input.h"
+#include "typewrt_splash.h"
+#include "vi.h"
 
 
 /* DISPLAY DEFINITIONS */
@@ -69,6 +72,8 @@
 
 #define KBD_EVENT_QUEUE_LENGTH 32
 #define KBD_EVENT_SIZE sizeof( uint8_t )
+#define TYPEWRT_ENABLE_LIGHT_SLEEP 0
+#define TYPEWRT_REFRESH_FULL_DISPLAY 0
 
 #define SPI_TAG "spi_protocol"
 void displayInit(void);
@@ -84,6 +89,12 @@ QueueHandle_t keyboard;
 
 spi_device_handle_t spi;
 DMA_ATTR uint8_t *sharpmem_buffer = NULL;
+static char display_shadow[NEXTVI_DISPLAY_ROWS + 1][NEXTVI_DISPLAY_COLS + 1];
+static bool splash_active = true;
+static bool splash_drawn;
+static bool display_cursor_drawn;
+static int display_cursor_row = -1;
+static int display_cursor_col = -1;
 
 typedef struct {
     enum Mode {
@@ -226,6 +237,7 @@ void refreshDisplay(void) {
 
 void updateRow(uint8_t row) {
   uint8_t i;
+  uint16_t physical_line;
 
   esp_err_t ret;
   spi_transaction_t t;
@@ -240,17 +252,18 @@ void updateRow(uint8_t row) {
 
   uint8_t bytes_per_line = PXWIDTH / 8;
   uint8_t line[bytes_per_line + 2];
-  line[0] = (uint8_t)(PSF_GLYPH_SIZE * row);
+  physical_line = PSF_GLYPH_SIZE * row;
 
   for (i = 0; i < PSF_GLYPH_SIZE; i++) {
-    memcpy(line + 1, sharpmem_buffer + line[0]*bytes_per_line, bytes_per_line);
-    line[0]++;
+    line[0] = (uint8_t)(physical_line + 1);
+    memcpy(line + 1, sharpmem_buffer + physical_line * bytes_per_line, bytes_per_line);
     line[bytes_per_line + 1] = 0x00;
 
     t.length = (bytes_per_line+2) *8; // bytes_per_line+2
     t.tx_buffer = line;
     ret = spi_device_transmit(spi, &t);
     assert(ret==ESP_OK);
+    physical_line++;
   }
   // Send another trailing 8 bits for the last line
   int last_line[1] = {0x00};
@@ -265,75 +278,252 @@ void updateRow(uint8_t row) {
   }
 
 
-void displayChar(uint8_t index, Cursor_t *cur) {
-    for (int m =0; m < PSF_GLYPH_SIZE; m++) {
-       sharpmem_buffer[(( (cur->y) * PSF_GLYPH_SIZE +m)*PXWIDTH + 8 * (cur->x)) / 8] = zap_vga16_psf[ index * PSF_GLYPH_SIZE +m];
-    }
-    updateRow(cur->y);
-}
-
-
 void clearDisplayBuffer() {
   memset(sharpmem_buffer, 0xFF, (PXWIDTH * PXHEIGHT) / 8);
 }
 
-
-
-/* And this could be the processing of the keyboard keys using the keymapping*/
-static void vProcessKeyTask( void *pvParameters )
+static void displayGlyph(uint8_t col, uint8_t row, uint8_t index)
 {
-    uint8_t key = 0;   // received key-event data
-    uint8_t fontchar = 0;
-    Cursor_t *cur = (Cursor_t *) pvParameters;
-    while (1) {
-        if (xQueueReceive( keyboard , (void *)&key, portMAX_DELAY) == pdTRUE) {  //this is blocking inf.
-	    bool keydown = (key & KEYDOWN_MASK);
-	    bool modifier = (key & MOD_MASK);
-
-	    if ( modifier ) {
-		    printf("Key is a modifier \n");
-		    if ( keydown ) KBD_MODS |= (key & KEY_MASK );
-		    else KBD_MODS &= ~(key & KEY_MASK );
-	    }
-	    else if ( keydown ) {
-		    Virtual_Key vk = keymap[ (key & KEY_MASK) ];
-		    if (vk < VKCHAROFFSET) {
-		        printf("Key is a control key (non printable) \n");
-		    }
-		    else {
-		        fontchar = fontmap[vk - VKCHAROFFSET];
-                        displayChar(fontchar, cur);
-			cur->x++;
-			if (cur->x == 40) {
-			    cur->y++;
-			    cur->x = 0;
-			    if (cur->y == 14) cur->y = 0;
-			}
-	                //curx++;
-			//if (curx > 39) { 
-			//	curx = 0 ; 
-			//	cury++;
-			//	cury = cury %15;
-			//}
-		    }
-	    }
-	    /* Associate the key event with a key through the keymap,
-	     * Then, if it is a modifier, change the modifiers byte, 
-	     * Then, if check what does result from the combination of all modifiers,
-	     * If it results in a system/control, call the respective function.
-	     * If it results in a printable character,
-	     * check if the combination produces another control secquence (either
-	     * in the editor or in any other framework...(editor normal mode, wifi menu...)
-	     * Depending on the status, the printable character is then
-	     * interpreted as unicode to save the text, and simultaneously
-	     * mapped to the font to produce the glyph on display.
-	     */
-        }
-        else {
-            printf("Item Receive FALSE\n");
-        }
-        vTaskDelay(1);
+    if (col >= NEXTVI_DISPLAY_COLS || row > NEXTVI_DISPLAY_ROWS) {
+        return;
     }
+    for (int m = 0; m < PSF_GLYPH_SIZE; m++) {
+       sharpmem_buffer[((row * PSF_GLYPH_SIZE + m) * PXWIDTH + 8 * col) / 8] =
+           zap_vga16_psf[index * PSF_GLYPH_SIZE + m];
+    }
+}
+
+static void markPhysicalRowRedrawn(int row)
+{
+    if (display_cursor_drawn && display_cursor_row == row) {
+        display_cursor_drawn = false;
+    }
+}
+
+static void copyDisplayShadow(int row, const char *text, int cols)
+{
+    if (row < 0 || row > NEXTVI_DISPLAY_ROWS) {
+        return;
+    }
+    cols = cols > NEXTVI_DISPLAY_COLS ? NEXTVI_DISPLAY_COLS : cols;
+    for (int col = 0; col < NEXTVI_DISPLAY_COLS; col++) {
+        display_shadow[row][col] = col < cols && text[col] ? text[col] : ' ';
+    }
+    display_shadow[row][NEXTVI_DISPLAY_COLS] = '\0';
+}
+
+static void renderTextRow(int physical_row, const char *text)
+{
+    if (!sharpmem_buffer || physical_row < 0 || physical_row > NEXTVI_DISPLAY_ROWS) {
+        return;
+    }
+
+    for (int col = 0; col < NEXTVI_DISPLAY_COLS; col++) {
+        unsigned char ch = (unsigned char)text[col];
+        displayGlyph(col, physical_row, ch ? ch : ' ');
+    }
+    markPhysicalRowRedrawn(physical_row);
+#if TYPEWRT_REFRESH_FULL_DISPLAY
+    refreshDisplay();
+#else
+    updateRow((uint8_t)physical_row);
+#endif
+}
+
+static void renderBlankTextRow(int physical_row)
+{
+    static const char blank[NEXTVI_DISPLAY_COLS + 1] = "                                        ";
+
+    renderTextRow(physical_row, blank);
+}
+
+static void renderSplashBitmapRow(int text_row)
+{
+    int bytes_per_line = PXWIDTH / 8;
+    int physical_line = text_row * PSF_GLYPH_SIZE;
+
+    if (!sharpmem_buffer || text_row < 0 || text_row >= TYPEWRT_SPLASH_HEIGHT / PSF_GLYPH_SIZE) {
+        return;
+    }
+    for (int m = 0; m < PSF_GLYPH_SIZE; m++) {
+        memcpy(sharpmem_buffer + (physical_line + m) * bytes_per_line,
+            typewrt_splash_bits + (physical_line + m) * bytes_per_line,
+            bytes_per_line);
+    }
+    markPhysicalRowRedrawn(text_row);
+    updateRow((uint8_t)text_row);
+}
+
+static int mapSplashRow(int row)
+{
+    return splash_active && row == 0 ? NEXTVI_DISPLAY_ROWS - 1 : row;
+}
+
+static void drawSplashLayout(void)
+{
+    if (!splash_active || splash_drawn) {
+        return;
+    }
+    for (int row = 0; row < TYPEWRT_SPLASH_HEIGHT / PSF_GLYPH_SIZE; row++) {
+        renderSplashBitmapRow(row);
+    }
+    for (int row = TYPEWRT_SPLASH_HEIGHT / PSF_GLYPH_SIZE; row < NEXTVI_DISPLAY_ROWS - 1; row++) {
+        renderBlankTextRow(row);
+    }
+    renderTextRow(NEXTVI_DISPLAY_ROWS - 1, display_shadow[0]);
+    splash_drawn = true;
+}
+
+static void disableSplash(void)
+{
+    if (!splash_active) {
+        return;
+    }
+    splash_active = false;
+    splash_drawn = false;
+    display_cursor_drawn = false;
+    for (int row = 0; row <= NEXTVI_DISPLAY_ROWS; row++) {
+        renderTextRow(row, display_shadow[row]);
+    }
+}
+
+void nextvi_display_refresh_line(int row, const char *text, int cols)
+{
+    if (!sharpmem_buffer || row < 0 || row > NEXTVI_DISPLAY_ROWS) {
+        return;
+    }
+
+    copyDisplayShadow(row, text, cols);
+    if (splash_active) {
+        drawSplashLayout();
+        if (row == 0) {
+            renderTextRow(NEXTVI_DISPLAY_ROWS - 1, display_shadow[0]);
+        } else if (row == NEXTVI_DISPLAY_ROWS) {
+            renderTextRow(row, display_shadow[row]);
+        }
+        return;
+    }
+
+    renderTextRow(row, display_shadow[row]);
+}
+
+static int cursorCellValid(int row, int col)
+{
+    return sharpmem_buffer && row >= 0 && row <= NEXTVI_DISPLAY_ROWS &&
+        col >= 0 && col < NEXTVI_DISPLAY_COLS;
+}
+
+static void invertCursorCell(int row, int col)
+{
+    for (int m = 0; m < PSF_GLYPH_SIZE; m++) {
+        sharpmem_buffer[((row * PSF_GLYPH_SIZE + m) * PXWIDTH + 8 * col) / 8] ^= 0xff;
+    }
+}
+
+void nextvi_display_refresh_cursor(int row, int col, int on)
+{
+    if (!on) {
+        if (display_cursor_drawn) {
+            invertCursorCell(display_cursor_row, display_cursor_col);
+            updateRow((uint8_t)display_cursor_row);
+            display_cursor_drawn = false;
+        }
+        return;
+    }
+
+    row = mapSplashRow(row);
+    if (!cursorCellValid(row, col)) {
+        return;
+    }
+    invertCursorCell(row, col);
+    updateRow((uint8_t)row);
+    display_cursor_row = row;
+    display_cursor_col = col;
+    display_cursor_drawn = true;
+}
+
+void nextvi_display_move_cursor(int old_row, int old_col, int new_row, int new_col, int on)
+{
+    bool old_valid = display_cursor_drawn &&
+        cursorCellValid(display_cursor_row, display_cursor_col);
+    int new_physical_row = mapSplashRow(new_row);
+    bool new_valid = on && cursorCellValid(new_physical_row, new_col);
+
+    if (!old_valid && !new_valid) {
+        return;
+    }
+    if (old_valid && new_valid && display_cursor_row == new_physical_row &&
+            display_cursor_col == new_col) {
+        return;
+    }
+    if (old_valid) {
+        invertCursorCell(display_cursor_row, display_cursor_col);
+    }
+    if (new_valid) {
+        invertCursorCell(new_physical_row, new_col);
+    }
+    if (old_valid) {
+        updateRow((uint8_t)display_cursor_row);
+    }
+    if (new_valid && (!old_valid || new_physical_row != display_cursor_row)) {
+        updateRow((uint8_t)new_physical_row);
+    }
+    display_cursor_drawn = new_valid;
+    display_cursor_row = new_valid ? new_physical_row : -1;
+    display_cursor_col = new_valid ? new_col : -1;
+    (void)old_row;
+    (void)old_col;
+}
+
+void nextvi_display_note_insert(void)
+{
+    disableSplash();
+}
+
+static unsigned char nextvi_keyboard_translate_event(unsigned char event)
+{
+    unsigned char press = event & KEYDOWN_MASK;
+    unsigned char code = event & KEY_MASK;
+
+    if ((event & MOD_MASK) != 0) {
+        unsigned char nextvi_mod = 0;
+
+        if (code & (1 << 0)) nextvi_mod |= NEXTVI_MOD_SHIFT;
+        if (code & (1 << 1)) nextvi_mod |= NEXTVI_MOD_CTRL;
+        if (code & (1 << 2)) nextvi_mod |= NEXTVI_MOD_WIN;
+        if (code & (1 << 3)) nextvi_mod |= NEXTVI_MOD_ALT;
+        if (code & (1 << 4)) nextvi_mod |= NEXTVI_MOD_CAPS;
+        if (code & (1 << 5)) nextvi_mod |= NEXTVI_KEY_SIDE;
+
+        return press | NEXTVI_KEY_MODIFIER | nextvi_mod;
+    }
+
+    if (code == 29) {
+        return press | NEXTVI_KEY_MODIFIER | NEXTVI_MOD_CAPS;
+    }
+
+    return event;
+}
+
+int nextvi_keyboard_read(unsigned char *event)
+{
+    if (!keyboard) {
+        return 0;
+    }
+    if (xQueueReceive(keyboard, event, portMAX_DELAY) != pdTRUE) {
+        return 0;
+    }
+    *event = nextvi_keyboard_translate_event(*event);
+    return 1;
+}
+
+static void vNextviTask(void *pvParameters)
+{
+    char *argv[] = {"vi"};
+
+    (void)pvParameters;
+    nextvi_main(1, argv);
+    vTaskDelete(NULL);
 }
 
 
@@ -427,10 +617,10 @@ static IRAM_ATTR void kbd_scan(void* arg)
                 //const char* kkk = "key event from ESP32s3\n";
                 //uart_write_bytes(2, (const char *)kkk , strlen(kkk));
 		key_event = KBDMAP[(IOSIZE*row + col)] | KEYDOWN_MASK;
-                xQueueSend( keyboard , &key_event , portMAX_DELAY);
+                xQueueSend( keyboard , &key_event , 0);
           	KBD_COLFLAGS[row] &= (~(1 << col) & ((1<< IOSIZE) -1));
               }
-              if (((KBD_BUFFER[(IOSIZE*row + col)]) == 0xFF ) && ~(KBD_COLS[row] & (1 << col)) ) {
+              if (((KBD_BUFFER[(IOSIZE*row + col)]) == 0xFF ) && !(KBD_COLS[row] & (1 << col)) ) {
                 KBD_COLS[row] |= ( 1  << col);
                 //KBD_BUFFER[(IOSIZE*row + col)] = 0x00; 
           	KBD_SCANCOUNT = SCANTIMEOUT;
@@ -438,7 +628,7 @@ static IRAM_ATTR void kbd_scan(void* arg)
                 //const char* kkk = "key event from ESP32s3\n";
                 //uart_write_bytes(2, (const char *)kkk , strlen(kkk));
 		key_event = KBDMAP[(IOSIZE*row + col)];
-                xQueueSend( keyboard , &key_event , portMAX_DELAY);
+                xQueueSend( keyboard , &key_event , 0);
           	KBD_COLFLAGS[row] &= (~(1 << col) & ((1<< IOSIZE) -1));
               }
               scan &= (scan - 1);  // clears the lowest set bit
@@ -448,6 +638,7 @@ static IRAM_ATTR void kbd_scan(void* arg)
       if (KBD_NOKEY) KBD_SCANCOUNT--;
     }
     else {  // GO TO STANDBY MODE
+#if TYPEWRT_ENABLE_LIGHT_SLEEP
       ESP_ERROR_CHECK(esp_timer_stop(KBD_SCAN_TIMER)); // no more scanning
       //ESP_LOGI(TAG, "timer stopped, trying to enter light sleep...");
       GPIO.out_w1ts = (1UL << KBD_OE); // set OE high (active low)
@@ -472,6 +663,9 @@ static IRAM_ATTR void kbd_scan(void* arg)
       ESP_ERROR_CHECK(esp_timer_start_periodic(KBD_SCAN_TIMER, SCANPERIOD));
 
       //ESP_LOGI(TAG, "woken up...");
+#else
+      KBD_SCANCOUNT = SCANTIMEOUT;
+#endif
     }
 }
 
@@ -534,10 +728,12 @@ void kbd_start()
      * of a GPIO input. Rather, the board is woke up with the GPIO interrupt and continue the scanning process
      * without extra interrupts.
      */
+#if TYPEWRT_ENABLE_LIGHT_SLEEP
     for (int i=0; i < IOSIZE; i++) {
 	gpio_wakeup_enable(KBD_IO[i], GPIO_INTR_LOW_LEVEL);
     }
-    esp_sleep_enable_gpio_wakeup(); 
+    esp_sleep_enable_gpio_wakeup();
+#endif
 
     KBD_SCANCOUNT = SCANTIMEOUT;
     ESP_ERROR_CHECK(esp_timer_start_periodic(KBD_SCAN_TIMER, SCANPERIOD));
@@ -562,17 +758,12 @@ void app_main(void)
     displayInit();
     clearDisplay();
 
-    static Cursor_t cursor; // initializes to position (0,0)
-    cursor.mode = NORMAL;
-    Cursor_t *cur = &cursor;
-    //cur->x = 0;
-    
-    // Start reading the keyboard
+    // Start the keyboard queue before Nextvi begins reading input.
     keyboard = xQueueCreateStatic( KBD_EVENT_QUEUE_LENGTH, // The number of items the queue can hold.
                          KBD_EVENT_SIZE,      // The size of each item in the queue
                          &( kbd_QueueStorage[ 0 ] ), // The buffer that will hold the items in the queue.
                          &kbd_StaticQueue ); // The buffer that will hold the queue structure.
-    xTaskCreate(vProcessKeyTask, "keyboard", 2048, (void *) cur, 5, NULL);
+    xTaskCreate(vNextviTask, "nextvi", 16384, NULL, 5, NULL);
 
     kbd_start();
     ESP_LOGI(TAG, "Keyboard started");
