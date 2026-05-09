@@ -66,6 +66,11 @@
 #define PXWIDTH 320
 #define PXHEIGHT 240
 
+#define PIN_LDO2_EN 39
+#define PIN_LEDN 17
+#define PIN_RST_EN 18
+
+
 
 #define KEY(r, c) ((r << 3) + c)
 #define CUR( x, y ) (x + y*PXWIDTH/8)  
@@ -92,6 +97,7 @@ DMA_ATTR uint8_t *sharpmem_buffer = NULL;
 static char display_shadow[NEXTVI_DISPLAY_ROWS + 1][NEXTVI_DISPLAY_COLS + 1];
 static bool splash_active = true;
 static bool splash_drawn;
+static bool splash_disable_pending;
 static bool display_cursor_drawn;
 static int display_cursor_row = -1;
 static int display_cursor_col = -1;
@@ -277,7 +283,6 @@ void updateRow(uint8_t row) {
   assert(ret==ESP_OK);
   }
 
-
 void clearDisplayBuffer() {
   memset(sharpmem_buffer, 0xFF, (PXWIDTH * PXHEIGHT) / 8);
 }
@@ -310,6 +315,19 @@ static void copyDisplayShadow(int row, const char *text, int cols)
         display_shadow[row][col] = col < cols && text[col] ? text[col] : ' ';
     }
     display_shadow[row][NEXTVI_DISPLAY_COLS] = '\0';
+}
+
+static bool displayShadowRowHasVisibleText(int row)
+{
+    if (row < 0 || row > NEXTVI_DISPLAY_ROWS) {
+        return false;
+    }
+    for (int col = 0; col < NEXTVI_DISPLAY_COLS; col++) {
+        if (display_shadow[row][col] != ' ') {
+            return true;
+        }
+    }
+    return false;
 }
 
 static void renderTextRow(int physical_row, const char *text)
@@ -359,6 +377,9 @@ static int mapSplashRow(int row)
     return splash_active && row == 0 ? NEXTVI_DISPLAY_ROWS - 1 : row;
 }
 
+static int cursorCellValid(int row, int col);
+static void invertCursorCell(int row, int col);
+
 static void drawSplashLayout(void)
 {
     if (!splash_active || splash_drawn) {
@@ -379,9 +400,15 @@ static void disableSplash(void)
     if (!splash_active) {
         return;
     }
+    if (display_cursor_drawn && cursorCellValid(display_cursor_row, display_cursor_col)) {
+        invertCursorCell(display_cursor_row, display_cursor_col);
+    }
     splash_active = false;
     splash_drawn = false;
+    splash_disable_pending = false;
     display_cursor_drawn = false;
+    display_cursor_row = -1;
+    display_cursor_col = -1;
     for (int row = 0; row <= NEXTVI_DISPLAY_ROWS; row++) {
         renderTextRow(row, display_shadow[row]);
     }
@@ -394,6 +421,11 @@ void nextvi_display_refresh_line(int row, const char *text, int cols)
     }
 
     copyDisplayShadow(row, text, cols);
+    if (splash_active && splash_disable_pending && row == 0 &&
+            displayShadowRowHasVisibleText(row)) {
+        disableSplash();
+        return;
+    }
     if (splash_active) {
         drawSplashLayout();
         if (row == 0) {
@@ -477,7 +509,11 @@ void nextvi_display_move_cursor(int old_row, int old_col, int new_row, int new_c
 
 void nextvi_display_note_insert(void)
 {
-    disableSplash();
+    if (displayShadowRowHasVisibleText(0)) {
+        disableSplash();
+    } else {
+        splash_disable_pending = true;
+    }
 }
 
 static unsigned char nextvi_keyboard_translate_event(unsigned char event)
@@ -740,6 +776,32 @@ void kbd_start()
 
 }
 
+static void power_mng_init(void)
+{
+    gpio_config_t power_conf = {
+        .pin_bit_mask = (1ULL << PIN_LDO2_EN),
+        .intr_type = GPIO_INTR_DISABLE,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+    };
+    gpio_config(&power_conf);
+    gpio_set_level(PIN_LDO2_EN, 1);
+    gpio_hold_en(PIN_LDO2_EN);
+
+    gpio_config_t led_conf = {
+        .pin_bit_mask = (1ULL << PIN_LEDN ) | (1ULL << PIN_RST_EN),
+        .intr_type = GPIO_INTR_DISABLE,
+        .mode = GPIO_MODE_OUTPUT_OD,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+    };
+    gpio_config(&led_conf);
+    gpio_set_level(PIN_LEDN, 0);
+    gpio_hold_en(PIN_LEDN);
+    gpio_set_level(PIN_RST_EN, 0);
+    gpio_hold_en(PIN_RST_EN);
+}
+
 
 void app_main(void)
 {
@@ -750,6 +812,7 @@ void app_main(void)
     //esp_sleep_pd_config(ESP_PD_DOMAIN_VDDSDIO, ESP_PD_OPTION_ON);
     //esp_wifi_stop();
     //esp_bt_controller_disable();
+    power_mng_init();
 
     esp_rom_delay_us(500);
     //xTaskCreate(vTaskStandBy, "standby", 2048, NULL, 5, NULL);
