@@ -19,6 +19,7 @@
 
 #include <stdio.h>
 
+#include <ctype.h>
 #include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
@@ -26,6 +27,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -39,6 +42,7 @@
 #include "esp_vfs_fat.h"
 #include "driver/gpio.h"
 //#include "driver/uart.h"
+#include "driver/i2c_master.h"
 #include "driver/spi_master.h"
 #include "sdmmc_cmd.h"
 //#include "driver/gpio_filter.h"
@@ -70,6 +74,8 @@
 #define PIN_NUM_CLK  36
 #define PIN_NUM_CS   38
 #define PIN_NUM_SD_CS 33
+#define PIN_NUM_RTC_SDA 8
+#define PIN_NUM_RTC_SCL 9
 //#define PIN_NUM_VCOM   33
 #define PIN_BLUE_LED   13
 
@@ -93,6 +99,13 @@
 #define TYPEWRT_ENABLE_LIGHT_SLEEP 0
 #define TYPEWRT_REFRESH_FULL_DISPLAY 0
 #define TYPEWRT_SD_MOUNT_POINT "/sdcard"
+#define TYPEWRT_RTC_I2C_PORT I2C_NUM_0
+#define TYPEWRT_RTC_I2C_FREQ_HZ 100000
+#define PCF8523_I2C_ADDRESS 0x68
+#define PCF8523_CONTROL_1_REG 0x00
+#define PCF8523_CONTROL_1_STOP BIT(5)
+#define PCF8523_TIME_REG 0x03
+#define PCF8523_SECONDS_OS BIT(7)
 
 #define SPI_TAG "spi_protocol"
 void displayInit(void);
@@ -109,6 +122,8 @@ QueueHandle_t keyboard;
 spi_device_handle_t spi;
 static sdmmc_card_t *sd_card;
 static bool sd_card_mounted;
+static i2c_master_bus_handle_t rtc_i2c_bus;
+static i2c_master_dev_handle_t rtc_i2c_dev;
 DMA_ATTR uint8_t *sharpmem_buffer = NULL;
 static char display_shadow[NEXTVI_DISPLAY_ROWS + 1][NEXTVI_DISPLAY_COLS + 1];
 static bool splash_active = true;
@@ -117,6 +132,9 @@ static bool splash_disable_pending;
 static bool display_cursor_drawn;
 static int display_cursor_row = -1;
 static int display_cursor_col = -1;
+static esp_timer_handle_t splash_clock_timer;
+static char splash_clock_last[24];
+bool typewrt_rtc_get_datetime(char *out, size_t out_len);
 
 typedef struct {
     enum Mode {
@@ -358,6 +376,49 @@ static void renderBlankTextRow(int physical_row)
     renderTextRow(physical_row, blank);
 }
 
+static void splashStatusLine(char line[NEXTVI_DISPLAY_COLS + 1])
+{
+    char timestamp[24];
+    size_t ts_len;
+
+    memcpy(line, display_shadow[NEXTVI_DISPLAY_ROWS], NEXTVI_DISPLAY_COLS);
+    line[NEXTVI_DISPLAY_COLS] = '\0';
+    if (!typewrt_rtc_get_datetime(timestamp, sizeof(timestamp))) {
+        return;
+    }
+    ts_len = strlen(timestamp);
+    if (ts_len > NEXTVI_DISPLAY_COLS) {
+        return;
+    }
+    memcpy(line + NEXTVI_DISPLAY_COLS - ts_len, timestamp, ts_len);
+}
+
+static void refreshSplashStatusClock(void)
+{
+    char timestamp[sizeof(splash_clock_last)];
+    char status_line[NEXTVI_DISPLAY_COLS + 1];
+
+    if (!splash_active || !splash_drawn) {
+        return;
+    }
+    if (!typewrt_rtc_get_datetime(timestamp, sizeof(timestamp))) {
+        return;
+    }
+    if (!strcmp(timestamp, splash_clock_last)) {
+        return;
+    }
+    strncpy(splash_clock_last, timestamp, sizeof(splash_clock_last) - 1);
+    splash_clock_last[sizeof(splash_clock_last) - 1] = '\0';
+    splashStatusLine(status_line);
+    renderTextRow(NEXTVI_DISPLAY_ROWS, status_line);
+}
+
+static void splashClockTimerCallback(void *arg)
+{
+    (void)arg;
+    refreshSplashStatusClock();
+}
+
 static void renderSplashBitmapRow(int text_row)
 {
     int bytes_per_line = PXWIDTH / 8;
@@ -385,6 +446,8 @@ static void invertCursorCell(int row, int col);
 
 static void drawSplashLayout(void)
 {
+    char status_line[NEXTVI_DISPLAY_COLS + 1];
+
     if (!splash_active || splash_drawn) {
         return;
     }
@@ -395,6 +458,9 @@ static void drawSplashLayout(void)
         renderBlankTextRow(row);
     }
     renderTextRow(NEXTVI_DISPLAY_ROWS - 1, display_shadow[0]);
+    splashStatusLine(status_line);
+    renderTextRow(NEXTVI_DISPLAY_ROWS, status_line);
+    typewrt_rtc_get_datetime(splash_clock_last, sizeof(splash_clock_last));
     splash_drawn = true;
 }
 
@@ -402,6 +468,9 @@ static void disableSplash(void)
 {
     if (!splash_active) {
         return;
+    }
+    if (splash_clock_timer) {
+        (void)esp_timer_stop(splash_clock_timer);
     }
     if (display_cursor_drawn && cursorCellValid(display_cursor_row, display_cursor_col)) {
         invertCursorCell(display_cursor_row, display_cursor_col);
@@ -434,7 +503,9 @@ void nextvi_display_refresh_line(int row, const char *text, int cols)
         if (row == 0) {
             renderTextRow(NEXTVI_DISPLAY_ROWS - 1, display_shadow[0]);
         } else if (row == NEXTVI_DISPLAY_ROWS) {
-            renderTextRow(row, display_shadow[row]);
+            char status_line[NEXTVI_DISPLAY_COLS + 1];
+            splashStatusLine(status_line);
+            renderTextRow(row, status_line);
         }
         return;
     }
@@ -571,6 +642,303 @@ static void vNextviTask(void *pvParameters)
 
 
 static const char *TAG = "mkbd";
+
+static int bcd_to_dec(uint8_t value)
+{
+    return ((value >> 4) * 10) + (value & 0x0f);
+}
+
+static uint8_t dec_to_bcd(int value)
+{
+    return (uint8_t)(((value / 10) << 4) | (value % 10));
+}
+
+static esp_err_t rtc_pcf8523_read_reg(uint8_t reg, uint8_t *value)
+{
+    return i2c_master_transmit_receive(rtc_i2c_dev, &reg, sizeof(reg),
+        value, sizeof(*value), 1000);
+}
+
+static esp_err_t rtc_pcf8523_write_reg(uint8_t reg, uint8_t value)
+{
+    uint8_t data[2] = {reg, value};
+
+    return i2c_master_transmit(rtc_i2c_dev, data, sizeof(data), 1000);
+}
+
+static esp_err_t rtc_pcf8523_clear_bits(uint8_t reg, uint8_t bits)
+{
+    uint8_t value;
+    esp_err_t ret = rtc_pcf8523_read_reg(reg, &value);
+
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    return rtc_pcf8523_write_reg(reg, value & ~bits);
+}
+
+static esp_err_t rtc_pcf8523_start_oscillator(void)
+{
+    return rtc_pcf8523_clear_bits(PCF8523_CONTROL_1_REG, PCF8523_CONTROL_1_STOP);
+}
+
+static esp_err_t rtc_pcf8523_write_time(const struct tm *rtc_tm)
+{
+    uint8_t data[8] = {
+        PCF8523_TIME_REG,
+        dec_to_bcd(rtc_tm->tm_sec),
+        dec_to_bcd(rtc_tm->tm_min),
+        dec_to_bcd(rtc_tm->tm_hour),
+        dec_to_bcd(rtc_tm->tm_mday),
+        dec_to_bcd(rtc_tm->tm_wday),
+        dec_to_bcd(rtc_tm->tm_mon + 1),
+        dec_to_bcd((rtc_tm->tm_year + 1900) % 100),
+    };
+
+    return i2c_master_transmit(rtc_i2c_dev, data, sizeof(data), 1000);
+}
+
+static bool rtc_time_is_valid(const struct tm *rtc_tm)
+{
+    int year = rtc_tm->tm_year + 1900;
+
+    return year >= 2024 && year <= 2099 &&
+        rtc_tm->tm_mon >= 0 && rtc_tm->tm_mon <= 11 &&
+        rtc_tm->tm_mday >= 1 && rtc_tm->tm_mday <= 31 &&
+        rtc_tm->tm_hour >= 0 && rtc_tm->tm_hour <= 23 &&
+        rtc_tm->tm_min >= 0 && rtc_tm->tm_min <= 59 &&
+        rtc_tm->tm_sec >= 0 && rtc_tm->tm_sec <= 59;
+}
+
+static bool rtc_pcf8523_read_regs(uint8_t data[7])
+{
+    uint8_t reg = PCF8523_TIME_REG;
+    esp_err_t ret = i2c_master_transmit_receive(rtc_i2c_dev, &reg, sizeof(reg),
+        data, 7, 1000);
+
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "PCF8523 read failed: %s", esp_err_to_name(ret));
+        return false;
+    }
+    return true;
+}
+
+static void rtc_pcf8523_regs_to_tm(const uint8_t data[7], struct tm *rtc_tm)
+{
+    memset(rtc_tm, 0, sizeof(*rtc_tm));
+    rtc_tm->tm_sec = bcd_to_dec(data[0] & 0x7f);
+    rtc_tm->tm_min = bcd_to_dec(data[1] & 0x7f);
+    rtc_tm->tm_hour = bcd_to_dec(data[2] & 0x3f);
+    rtc_tm->tm_mday = bcd_to_dec(data[3] & 0x3f);
+    rtc_tm->tm_wday = bcd_to_dec(data[4] & 0x07);
+    rtc_tm->tm_mon = bcd_to_dec(data[5] & 0x1f) - 1;
+    rtc_tm->tm_year = bcd_to_dec(data[6]) + 100;
+    rtc_tm->tm_isdst = -1;
+}
+
+static bool rtc_pcf8523_read_time(struct tm *rtc_tm)
+{
+    uint8_t data[7];
+    bool oscillator_stop;
+
+    if (!rtc_pcf8523_read_regs(data)) {
+        return false;
+    }
+
+    oscillator_stop = data[0] & PCF8523_SECONDS_OS;
+    rtc_pcf8523_regs_to_tm(data, rtc_tm);
+
+    if (!rtc_time_is_valid(rtc_tm)) {
+        ESP_LOGW(TAG, "PCF8523 returned an invalid date/time");
+        return false;
+    }
+
+    if (oscillator_stop) {
+        esp_err_t ret = rtc_pcf8523_write_reg(PCF8523_TIME_REG,
+            data[0] & ~PCF8523_SECONDS_OS);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "PCF8523 failed to clear oscillator-stop flag: %s",
+                esp_err_to_name(ret));
+            return false;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+        if (!rtc_pcf8523_read_regs(data)) {
+            return false;
+        }
+        if (data[0] & PCF8523_SECONDS_OS) {
+            ESP_LOGW(TAG, "PCF8523 oscillator-stop flag is set; RTC time is not trusted");
+            return false;
+        }
+        rtc_pcf8523_regs_to_tm(data, rtc_tm);
+        if (!rtc_time_is_valid(rtc_tm)) {
+            ESP_LOGW(TAG, "PCF8523 returned an invalid date/time after clearing OS flag");
+            return false;
+        }
+        ESP_LOGI(TAG, "PCF8523 oscillator-stop flag was set and has been cleared");
+    }
+
+    return true;
+}
+
+static bool rtc_parse_datetime(const char *datetime, struct tm *rtc_tm)
+{
+    int year, month, day, hour, minute, second, used = 0;
+
+    if (sscanf(datetime, "%d-%d-%d %d:%d:%d%n",
+            &year, &month, &day, &hour, &minute, &second, &used) != 6 &&
+        sscanf(datetime, "%d-%d-%d %d.%d.%d%n",
+            &year, &month, &day, &hour, &minute, &second, &used) != 6 &&
+        sscanf(datetime, "%d-%d-%d %d %d %d%n",
+            &year, &month, &day, &hour, &minute, &second, &used) != 6) {
+        return false;
+    }
+    while (isspace((unsigned char)datetime[used])) {
+        used++;
+    }
+    if (datetime[used]) {
+        return false;
+    }
+
+    memset(rtc_tm, 0, sizeof(*rtc_tm));
+    rtc_tm->tm_year = year - 1900;
+    rtc_tm->tm_mon = month - 1;
+    rtc_tm->tm_mday = day;
+    rtc_tm->tm_hour = hour;
+    rtc_tm->tm_min = minute;
+    rtc_tm->tm_sec = second;
+    rtc_tm->tm_isdst = -1;
+    if (!rtc_time_is_valid(rtc_tm)) {
+        return false;
+    }
+
+    time_t normalized = mktime(rtc_tm);
+    if (normalized == (time_t)-1) {
+        return false;
+    }
+    return rtc_tm->tm_year == year - 1900 &&
+        rtc_tm->tm_mon == month - 1 &&
+        rtc_tm->tm_mday == day &&
+        rtc_tm->tm_hour == hour &&
+        rtc_tm->tm_min == minute &&
+        rtc_tm->tm_sec == second;
+}
+
+static bool rtc_set_system_time(const struct tm *rtc_tm)
+{
+    struct tm tm_copy = *rtc_tm;
+    time_t rtc_time = mktime(&tm_copy);
+    if (rtc_time == (time_t)-1) {
+        ESP_LOGW(TAG, "RTC time conversion failed");
+        return false;
+    }
+
+    struct timeval tv = {
+        .tv_sec = rtc_time,
+        .tv_usec = 0,
+    };
+    if (settimeofday(&tv, NULL) != 0) {
+        ESP_LOGW(TAG, "settimeofday from RTC failed: %s", strerror(errno));
+        return false;
+    }
+    return true;
+}
+
+bool typewrt_rtc_get_datetime(char *out, size_t out_len)
+{
+    struct tm rtc_tm;
+
+    if (!out || out_len == 0) {
+        return false;
+    }
+    if (!rtc_i2c_dev || !rtc_pcf8523_read_time(&rtc_tm)) {
+        time_t now = time(NULL);
+        localtime_r(&now, &rtc_tm);
+    }
+    return strftime(out, out_len, "%d %b %Y  %H:%M", &rtc_tm) > 0;
+}
+
+const char *typewrt_rtc_set_datetime(const char *datetime, char *out, size_t out_len)
+{
+    struct tm rtc_tm;
+    esp_err_t ret;
+
+    if (!rtc_i2c_dev) {
+        return "rtc unavailable";
+    }
+    if (!rtc_parse_datetime(datetime, &rtc_tm)) {
+        return "rtc syntax: YYYY-MM-DD HH.MM.SS";
+    }
+    ret = rtc_pcf8523_start_oscillator();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "PCF8523 start oscillator failed: %s", esp_err_to_name(ret));
+        return "rtc start failed";
+    }
+    ret = rtc_pcf8523_write_time(&rtc_tm);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "PCF8523 write time failed: %s", esp_err_to_name(ret));
+        return "rtc write failed";
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
+    if (!rtc_pcf8523_read_time(&rtc_tm)) {
+        return "rtc verify failed";
+    }
+    if (!rtc_set_system_time(&rtc_tm)) {
+        return "system clock failed";
+    }
+    if (out && out_len) {
+        typewrt_rtc_get_datetime(out, out_len);
+    }
+    return NULL;
+}
+
+static bool rtc_init(void)
+{
+    i2c_master_bus_config_t bus_config = {
+        .i2c_port = TYPEWRT_RTC_I2C_PORT,
+        .sda_io_num = PIN_NUM_RTC_SDA,
+        .scl_io_num = PIN_NUM_RTC_SCL,
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
+    };
+    esp_err_t ret = i2c_new_master_bus(&bus_config, &rtc_i2c_bus);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "I2C init for RTC failed: %s", esp_err_to_name(ret));
+        return false;
+    }
+
+    i2c_device_config_t dev_config = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = PCF8523_I2C_ADDRESS,
+        .scl_speed_hz = TYPEWRT_RTC_I2C_FREQ_HZ,
+    };
+    ret = i2c_master_bus_add_device(rtc_i2c_bus, &dev_config, &rtc_i2c_dev);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "PCF8523 add-device failed: %s", esp_err_to_name(ret));
+        return false;
+    }
+
+    ret = i2c_master_probe(rtc_i2c_bus, PCF8523_I2C_ADDRESS, 1000);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "PCF8523 not found at I2C address 0x%02x: %s",
+            PCF8523_I2C_ADDRESS, esp_err_to_name(ret));
+        return false;
+    }
+
+    struct tm rtc_tm;
+    if (!rtc_pcf8523_read_time(&rtc_tm)) {
+        return false;
+    }
+
+    if (!rtc_set_system_time(&rtc_tm)) {
+        return false;
+    }
+
+    char time_buf[32];
+    strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", &rtc_tm);
+    ESP_LOGI(TAG, "System clock set from PCF8523: %s", time_buf);
+    return true;
+}
 
 static void sdcard_spi_pins_prepare(void)
 {
@@ -874,6 +1242,20 @@ void kbd_start()
 
 }
 
+static void splash_clock_start(void)
+{
+    const esp_timer_create_args_t timer_args = {
+        .callback = splashClockTimerCallback,
+        .name = "splash_clock",
+    };
+
+    if (splash_clock_timer) {
+        return;
+    }
+    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &splash_clock_timer));
+    ESP_ERROR_CHECK(esp_timer_start_periodic(splash_clock_timer, 1000000));
+}
+
 static void power_mng_init(void)
 {
     gpio_config_t power_conf = {
@@ -916,6 +1298,7 @@ void app_main(void)
     //xTaskCreate(vTaskStandBy, "standby", 2048, NULL, 5, NULL);
     // Keyboard start to work
 
+    rtc_init();
     sdcard_spi_pins_prepare();
     displayInit();
     clearDisplay();
@@ -929,5 +1312,6 @@ void app_main(void)
     xTaskCreate(vNextviTask, "nextvi", 16384, NULL, 5, NULL);
 
     kbd_start();
+    splash_clock_start();
     ESP_LOGI(TAG, "Keyboard started");
 }

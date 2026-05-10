@@ -749,6 +749,21 @@ EX COMMANDS
 
              No argument uses secondary or a working directory path.
 
+     rtc[datetime]
+             Embedded RTC command for the Typewrt ESP-IDF backend
+
+             No argument prints the current RTC/system time.
+             With an argument, sets the external PCF8523 RTC and updates the
+             system clock used by FATFS file timestamps.
+
+             Because <:> is the ex command separator, use dots or spaces
+             between hour, minute, and second.
+
+             Example: set the RTC
+             :rtc 2026-05-10 22.45.00
+             Example: alternate time separator
+             :rtc 2026-05-10 22 45 00
+
      inc[regex]
              Include regex for :fd calculation
 

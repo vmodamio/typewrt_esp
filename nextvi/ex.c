@@ -39,7 +39,10 @@ static int xgdep;		/* global command recursion depth */
 static int xexp = '%';		/* ex command internal state expand  */
 static char xuerr[] = "unreported error";
 #ifdef NEXTVI_EMBEDDED
+#include <stdbool.h>
 static char ex_vcwd[4096] = "/sdcard";
+bool typewrt_rtc_get_datetime(char *out, size_t out_len);
+const char *typewrt_rtc_set_datetime(const char *datetime, char *out, size_t out_len);
 #endif
 static char xserr[] = "syntax error";
 static char xirerr[] = "invalid range";
@@ -1401,6 +1404,26 @@ static void *ec_krsset(char *loc, char *cmd, char *arg)
 	return xkwdrs ? NULL : xserr;
 }
 
+static void *ec_rtc(char *loc, char *cmd, char *arg)
+{
+#ifdef NEXTVI_EMBEDDED
+	char buf[32];
+	const char *err;
+	(void)loc;
+	(void)cmd;
+	if (*arg) {
+		err = typewrt_rtc_set_datetime(arg, buf, sizeof(buf));
+		if (err)
+			return (void*)err;
+	} else if (!typewrt_rtc_get_datetime(buf, sizeof(buf)))
+		return "rtc read failed";
+	ex_print(buf)
+	return NULL;
+#else
+	return "unsupported command";
+#endif
+}
+
 static int eo_val(char *arg)
 {
 	int val = atoi(arg);
@@ -1484,6 +1507,7 @@ static struct excmd {
 	{"reg", ec_regprint},
 	{"re", ec_krsset},
 	{"rd", ec_undoredo},
+	{"rtc", ec_rtc},
 	{"r", ec_read},
 	{"wq!", ec_write},
 	{"wq", ec_write},
