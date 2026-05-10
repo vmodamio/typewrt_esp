@@ -23,6 +23,10 @@
 #include <stdbool.h>
 #include <string.h>
 #include <inttypes.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -32,9 +36,11 @@
 #include "esp_check.h"
 #include "esp_timer.h"
 #include "esp_sleep.h"
+#include "esp_vfs_fat.h"
 #include "driver/gpio.h"
 //#include "driver/uart.h"
 #include "driver/spi_master.h"
+#include "sdmmc_cmd.h"
 //#include "driver/gpio_filter.h"
 #include "soc/gpio_struct.h"
 #include "soc/soc.h"
@@ -46,6 +52,8 @@
 #include "zap-vga16-raw-neg.h"
 #include "keyboard_input.h"
 #include "typewrt_splash.h"
+#undef MIN
+#undef MAX
 #include "vi.h"
 
 
@@ -58,8 +66,10 @@
 
 #define ESP_HOST    SPI2_HOST // SPI2
 #define PIN_NUM_MOSI 35
+#define PIN_NUM_MISO 37
 #define PIN_NUM_CLK  36
 #define PIN_NUM_CS   38
+#define PIN_NUM_SD_CS 33
 //#define PIN_NUM_VCOM   33
 #define PIN_BLUE_LED   13
 
@@ -72,6 +82,9 @@
 
 
 
+#define SHARPMEM_BYTES_PER_LINE (PXWIDTH / 8)
+#define SHARPMEM_BUFFER_BYTES ((PXWIDTH * PXHEIGHT) / 8)
+
 #define KEY(r, c) ((r << 3) + c)
 #define CUR( x, y ) (x + y*PXWIDTH/8)  
 
@@ -79,6 +92,7 @@
 #define KBD_EVENT_SIZE sizeof( uint8_t )
 #define TYPEWRT_ENABLE_LIGHT_SLEEP 0
 #define TYPEWRT_REFRESH_FULL_DISPLAY 0
+#define TYPEWRT_SD_MOUNT_POINT "/sdcard"
 
 #define SPI_TAG "spi_protocol"
 void displayInit(void);
@@ -93,6 +107,8 @@ QueueHandle_t keyboard;
 
 
 spi_device_handle_t spi;
+static sdmmc_card_t *sd_card;
+static bool sd_card_mounted;
 DMA_ATTR uint8_t *sharpmem_buffer = NULL;
 static char display_shadow[NEXTVI_DISPLAY_ROWS + 1][NEXTVI_DISPLAY_COLS + 1];
 static bool splash_active = true;
@@ -120,7 +136,7 @@ void displayInit(void)
 
     esp_err_t ret;
     /* Allocate pixel buffer for SHARP DISP*/
-    sharpmem_buffer = (uint8_t *)malloc((PXWIDTH * PXHEIGHT) / 8);
+    sharpmem_buffer = (uint8_t *)malloc(SHARPMEM_BUFFER_BYTES);
     if (!sharpmem_buffer) {
       printf("Error: sharpmem_buffer was NOT allocated\n\n");
       return;
@@ -129,7 +145,7 @@ void displayInit(void)
     gpio_set_direction(PIN_NUM_CS, GPIO_MODE_OUTPUT);                   // Setting the CS' pin to work in OUTPUT mode
 
     spi_bus_config_t buscfg = {                                         // Provide details to the SPI_bus_sturcture of pins and maximum data size
-        .miso_io_num = -1,
+        .miso_io_num = PIN_NUM_MISO,
         .mosi_io_num = PIN_NUM_MOSI,
         .sclk_io_num = PIN_NUM_CLK,
         .quadwp_io_num = -1,
@@ -150,7 +166,8 @@ void displayInit(void)
 
     ret = spi_bus_add_device(ESP_HOST, &devcfg, &spi);                  // Attach the Slave device to the SPI bus
     ESP_ERROR_CHECK(ret);
-    printf("SPI initialized. MOSI:%d CLK:%d CS:%d\n", PIN_NUM_MOSI, PIN_NUM_CLK, PIN_NUM_CS);
+    printf("SPI initialized. MISO:%d MOSI:%d CLK:%d DISPLAY_CS:%d\n",
+        PIN_NUM_MISO, PIN_NUM_MOSI, PIN_NUM_CLK, PIN_NUM_CS);
     gpio_set_level((gpio_num_t)PIN_NUM_CS, 0);
 
     // Wait and clear display
@@ -179,112 +196,98 @@ uint8_t getPixel(uint16_t x, uint16_t y) {
   return sharpmem_buffer[(y * PXWIDTH + x) / 8] & set[x & 7] ? 1 : 0;
 }
 
-void clearDisplay() {
-  memset(sharpmem_buffer, 0xff, (PXWIDTH * PXHEIGHT) / 8);
+static void sharpmem_select(uint32_t delay_us)
+{
   gpio_set_level((gpio_num_t)PIN_NUM_CS, 1);
-  esp_rom_delay_us(6);
-  uint8_t clear_data[2] = {(uint8_t)(SHARPMEM_BIT_CLEAR), 0x00};
-  esp_err_t ret;
-  spi_transaction_t t;
-  memset(&t, 0, sizeof(t));        //Zero out the transaction
-  t.length = sizeof(clear_data)*8; //Each data byte is 8 bits Einstein
-  t.tx_buffer = clear_data;
-  ret = spi_device_polling_transmit(spi, &t); // spi_device_polling_transmit
+  esp_rom_delay_us(delay_us);
+}
+
+static void sharpmem_deselect(uint32_t delay_us)
+{
   gpio_set_level((gpio_num_t)PIN_NUM_CS, 0);
-  esp_rom_delay_us(2);
-  //printf("clearDisplay b1:%02x 2:%02x lenght:%d\n\n", clear_data[0], clear_data[1], t.length);
+  esp_rom_delay_us(delay_us);
+}
+
+static void sharpmem_transmit(spi_transaction_t *t)
+{
+  esp_err_t ret;
+
+  ret = spi_device_transmit(spi, t);
+  assert(ret==ESP_OK);
+}
+
+static void sharpmem_start_write(spi_transaction_t *t, uint32_t delay_us)
+{
+  uint8_t write_data[1] = {(uint8_t)SHARPMEM_BIT_WRITECMD};
+
+  memset(t, 0, sizeof(*t));
+  sharpmem_select(delay_us);
+  t->length = sizeof(write_data) * 8;
+  t->tx_buffer = write_data;
+  sharpmem_transmit(t);
+}
+
+static void sharpmem_finish_write(spi_transaction_t *t, uint32_t delay_us)
+{
+  int last_line[1] = {0x00};
+
+  t->length = 8;
+  t->tx_buffer = last_line;
+  sharpmem_transmit(t);
+  sharpmem_deselect(delay_us);
+}
+
+static void sharpmem_send_physical_line(spi_transaction_t *t, uint16_t physical_line)
+{
+  uint8_t line[SHARPMEM_BYTES_PER_LINE + 2];
+
+  line[0] = (uint8_t)(physical_line + 1);
+  memcpy(line + 1, sharpmem_buffer + physical_line * SHARPMEM_BYTES_PER_LINE,
+      SHARPMEM_BYTES_PER_LINE);
+  line[SHARPMEM_BYTES_PER_LINE + 1] = 0x00;
+
+  t->length = (SHARPMEM_BYTES_PER_LINE + 2) * 8;
+  t->tx_buffer = line;
+  sharpmem_transmit(t);
+}
+
+void clearDisplay() {
+  memset(sharpmem_buffer, 0xff, SHARPMEM_BUFFER_BYTES);
+  sharpmem_select(6);
+  uint8_t clear_data[2] = {(uint8_t)(SHARPMEM_BIT_CLEAR), 0x00};
+  spi_transaction_t t;
+  memset(&t, 0, sizeof(t));
+  t.length = sizeof(clear_data) * 8;
+  t.tx_buffer = clear_data;
+  esp_err_t ret = spi_device_polling_transmit(spi, &t);
+  sharpmem_deselect(2);
   assert(ret==ESP_OK);
 }
 
 void refreshDisplay(void) {
-  uint16_t i, currentline;
-
-  esp_err_t ret;
   spi_transaction_t t;
-  memset(&t, 0, sizeof(t));       //Zero out the transaction
 
-  gpio_set_level((gpio_num_t)PIN_NUM_CS, 1);
-  esp_rom_delay_us(6);
-  uint8_t write_data[1] = {(uint8_t)SHARPMEM_BIT_WRITECMD};
-  t.length = sizeof(write_data)*8;                  //Each data byte is 8 bits
-  t.tx_buffer = write_data;
-  ret = spi_device_transmit(spi, &t);
-
-  uint8_t bytes_per_line = PXWIDTH / 8;
-  uint16_t totalbytes = (PXWIDTH * PXHEIGHT) / 8;
-
-  for (i = 0; i < totalbytes; i += bytes_per_line) {
-    uint8_t line[bytes_per_line + 2];
-
-    // Send address byte
-    currentline = ((i + 1) / (PXWIDTH / 8)) + 1;
-    line[0] = currentline;
-    // copy over this line
-    memcpy(line + 1, sharpmem_buffer + i, bytes_per_line);
-    // Send end of line
-    line[bytes_per_line + 1] = 0x00;
-
-    t.length = (bytes_per_line+2) *8; // bytes_per_line+2
-    t.tx_buffer = line;
-    ret = spi_device_transmit(spi, &t);
-    assert(ret==ESP_OK);
+  sharpmem_start_write(&t, 6);
+  for (uint16_t physical_line = 0; physical_line < PXHEIGHT; physical_line++) {
+    sharpmem_send_physical_line(&t, physical_line);
   }
-  // Send another trailing 8 bits for the last line
-  int last_line[1] = {0x00};
-  t.length = 8;
-
-  t.tx_buffer = last_line;
-  ret = spi_device_transmit(spi, &t); // spi_device_polling_transmit
-  gpio_set_level((gpio_num_t)PIN_NUM_CS, 0);
-  esp_rom_delay_us(2);
-
-  assert(ret==ESP_OK);
+  sharpmem_finish_write(&t, 2);
   }
 
 void updateRow(uint8_t row) {
-  uint8_t i;
-  uint16_t physical_line;
-
-  esp_err_t ret;
   spi_transaction_t t;
-  memset(&t, 0, sizeof(t));       //Zero out the transaction
+  uint16_t first_line = PSF_GLYPH_SIZE * row;
 
-  gpio_set_level((gpio_num_t)PIN_NUM_CS, 1);
-  esp_rom_delay_us(1);
-  uint8_t write_data[1] = {(uint8_t)SHARPMEM_BIT_WRITECMD};
-  t.length = sizeof(write_data)*8;                  //Each data byte is 8 bits
-  t.tx_buffer = write_data;
-  ret = spi_device_transmit(spi, &t);
-
-  uint8_t bytes_per_line = PXWIDTH / 8;
-  uint8_t line[bytes_per_line + 2];
-  physical_line = PSF_GLYPH_SIZE * row;
-
-  for (i = 0; i < PSF_GLYPH_SIZE; i++) {
-    line[0] = (uint8_t)(physical_line + 1);
-    memcpy(line + 1, sharpmem_buffer + physical_line * bytes_per_line, bytes_per_line);
-    line[bytes_per_line + 1] = 0x00;
-
-    t.length = (bytes_per_line+2) *8; // bytes_per_line+2
-    t.tx_buffer = line;
-    ret = spi_device_transmit(spi, &t);
-    assert(ret==ESP_OK);
-    physical_line++;
+  sharpmem_start_write(&t, 1);
+  for (uint16_t physical_line = first_line;
+      physical_line < first_line + PSF_GLYPH_SIZE; physical_line++) {
+    sharpmem_send_physical_line(&t, physical_line);
   }
-  // Send another trailing 8 bits for the last line
-  int last_line[1] = {0x00};
-  t.length = 8;
-
-  t.tx_buffer = last_line;
-  ret = spi_device_transmit(spi, &t); // spi_device_polling_transmit
-  gpio_set_level((gpio_num_t)PIN_NUM_CS, 0);
-  esp_rom_delay_us(1);
-
-  assert(ret==ESP_OK);
+  sharpmem_finish_write(&t, 1);
   }
 
 void clearDisplayBuffer() {
-  memset(sharpmem_buffer, 0xFF, (PXWIDTH * PXHEIGHT) / 8);
+  memset(sharpmem_buffer, 0xFF, SHARPMEM_BUFFER_BYTES);
 }
 
 static void displayGlyph(uint8_t col, uint8_t row, uint8_t index)
@@ -558,6 +561,9 @@ static void vNextviTask(void *pvParameters)
     char *argv[] = {"vi"};
 
     (void)pvParameters;
+    if (sd_card_mounted) {
+        setenv("PWD", TYPEWRT_SD_MOUNT_POINT, 1);
+    }
     nextvi_main(1, argv);
     vTaskDelete(NULL);
 }
@@ -565,6 +571,98 @@ static void vNextviTask(void *pvParameters)
 
 
 static const char *TAG = "mkbd";
+
+static void sdcard_spi_pins_prepare(void)
+{
+    gpio_config_t cs_conf = {
+        .pin_bit_mask = 1ULL << PIN_NUM_SD_CS,
+        .intr_type = GPIO_INTR_DISABLE,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+    };
+    gpio_config(&cs_conf);
+    gpio_set_level(PIN_NUM_SD_CS, 1);
+
+    gpio_set_pull_mode(PIN_NUM_MISO, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode(PIN_NUM_MOSI, GPIO_PULLUP_ONLY);
+}
+
+static bool sdcard_write_probe(void)
+{
+    const char *path = TYPEWRT_SD_MOUNT_POINT "/.typewrt_probe";
+    const char probe_text[] = "typewrt sd probe\n";
+    char readback[sizeof(probe_text)] = {0};
+
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd < 0) {
+        ESP_LOGE(TAG, "SD card write probe create failed: %s", strerror(errno));
+        return false;
+    }
+    ssize_t written = write(fd, probe_text, sizeof(probe_text) - 1);
+    if (written != sizeof(probe_text) - 1) {
+        ESP_LOGE(TAG, "SD card write probe write failed: %s", strerror(errno));
+        close(fd);
+        return false;
+    }
+    close(fd);
+
+    fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        ESP_LOGE(TAG, "SD card write probe reopen failed: %s", strerror(errno));
+        return false;
+    }
+    ssize_t read_len = read(fd, readback, sizeof(probe_text) - 1);
+    close(fd);
+    unlink(path);
+    if (read_len != sizeof(probe_text) - 1 ||
+            memcmp(readback, probe_text, sizeof(probe_text) - 1) != 0) {
+        ESP_LOGE(TAG, "SD card write probe readback mismatch");
+        return false;
+    }
+
+    ESP_LOGI(TAG, "SD card write probe succeeded");
+    return true;
+}
+
+static bool sdcard_init(void)
+{
+    esp_vfs_fat_mount_config_t mount_config = {
+        .format_if_mount_failed = false,
+        .max_files = 5,
+        .allocation_unit_size = 16 * 1024,
+    };
+    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+    sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
+
+    host.slot = ESP_HOST;
+    host.max_freq_khz = 10000;
+    host.unaligned_multi_block_rw_max_chunk_size = 8;
+
+    slot_config.gpio_cs = PIN_NUM_SD_CS;
+    slot_config.host_id = host.slot;
+
+    ESP_LOGI(TAG, "Mounting SD card at %s on SPI host %d, CS:%d",
+        TYPEWRT_SD_MOUNT_POINT, host.slot, PIN_NUM_SD_CS);
+    esp_err_t ret = esp_vfs_fat_sdspi_mount(TYPEWRT_SD_MOUNT_POINT,
+        &host, &slot_config, &mount_config, &sd_card);
+    if (ret != ESP_OK) {
+        if (ret == ESP_FAIL) {
+            ESP_LOGE(TAG, "Failed to mount FAT filesystem on SD card");
+        } else {
+            ESP_LOGE(TAG, "Failed to initialize SD card: %s", esp_err_to_name(ret));
+        }
+        return false;
+    }
+
+    sd_card_mounted = true;
+    sdmmc_card_print_info(stdout, sd_card);
+    setenv("PWD", TYPEWRT_SD_MOUNT_POINT, 1);
+    sdcard_write_probe();
+    ESP_LOGI(TAG, "SD card mounted; Nextvi file paths are relative to %s",
+        TYPEWRT_SD_MOUNT_POINT);
+    return true;
+}
 
 #define IOSIZE 8
 
@@ -818,8 +916,10 @@ void app_main(void)
     //xTaskCreate(vTaskStandBy, "standby", 2048, NULL, 5, NULL);
     // Keyboard start to work
 
+    sdcard_spi_pins_prepare();
     displayInit();
     clearDisplay();
+    sdcard_init();
 
     // Start the keyboard queue before Nextvi begins reading input.
     keyboard = xQueueCreateStatic( KBD_EVENT_QUEUE_LENGTH, // The number of items the queue can hold.

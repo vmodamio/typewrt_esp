@@ -38,6 +38,9 @@ static int xbufsalloc = 10;	/* initial number of buffers */
 static int xgdep;		/* global command recursion depth */
 static int xexp = '%';		/* ex command internal state expand  */
 static char xuerr[] = "unreported error";
+#ifdef NEXTVI_EMBEDDED
+static char ex_vcwd[4096] = "/sdcard";
+#endif
 static char xserr[] = "syntax error";
 static char xirerr[] = "invalid range";
 static char xrnferr[] = "range not found";
@@ -70,10 +73,31 @@ static void bufs_free(int idx)
 	lbuf_free(bufs[idx].lb);
 }
 
+char *ex_pathresolve(const char *path)
+{
+#ifdef NEXTVI_EMBEDDED
+	if (!path || !path[0] || path[0] == '/')
+		return uc_dup(path ? path : "");
+	int rootlen = strlen(ex_vcwd);
+	int pathlen = strlen(path);
+	char *resolved = emalloc(rootlen + pathlen + 2);
+	strcpy(resolved, ex_vcwd);
+	if (rootlen && resolved[rootlen - 1] != '/')
+		resolved[rootlen++] = '/';
+	strcpy(resolved + rootlen, path);
+	return resolved;
+#else
+	return uc_dup(path ? path : "");
+#endif
+}
+
 static long mtime(char *path)
 {
 	struct stat st;
-	if (!stat(path, &st))
+	char *fspath = ex_pathresolve(path);
+	int ret = stat(fspath, &st);
+	free(fspath);
+	if (!ret)
 		return st.st_mtime;
 	return -1;
 }
@@ -321,7 +345,9 @@ static int ex_read(sbuf *sb, char *msg, ins_state *is, int ps, int flg)
 
 static int ex_readfile(void)
 {
-	int fd = open(xb_path, O_RDONLY);
+	char *fspath = ex_pathresolve(xb_path);
+	int fd = open(fspath, O_RDONLY);
+	free(fspath);
 	if (fd < 0)
 		return -1;
 	int ret = lbuf_rd(xb, fd, 0, lbuf_len(xb));
@@ -596,7 +622,7 @@ static void *ec_read(char *loc, char *cmd, char *arg)
 {
 	sbuf obuf;
 	char msg[512];
-	char *path, *ret = NULL;
+	char *path, *fspath = NULL, *ret = NULL;
 	int beg = 0, end = 0, o1 = 0, o2 = -1;
 	int row = xrow, off = xoff, fd = -1;
 	struct lbuf *lb = lbuf_make(), *pxb = xb;
@@ -605,7 +631,8 @@ static void *ec_read(char *loc, char *cmd, char *arg)
 		ret = "unsupported command";
 		goto err;
 	} else {
-		if ((fd = open(path, O_RDONLY)) < 0) {
+		fspath = ex_pathresolve(path);
+		if ((fd = open(fspath, O_RDONLY)) < 0) {
 			ret = "open failed";
 			goto err;
 		}
@@ -638,12 +665,13 @@ static void *ec_read(char *loc, char *cmd, char *arg)
 	xb = pxb;
 	if (fd >= 0)
 		close(fd);
+	free(fspath);
 	return ret;
 }
 
 static void *ec_write(char *loc, char *cmd, char *arg)
 {
-	char msg[512], *path;
+	char msg[512], *path, *fspath;
 	int fd, beg = 0, end = 0, o1 = -1, o2 = -1;
 	path = arg[0] ? arg : xb_path;
 	if (cmd[0] == 'x' && !xb->modified)
@@ -662,7 +690,9 @@ static void *ec_write(char *loc, char *cmd, char *arg)
 		if (arg[0] && mtime(path) >= 0)
 			return "write failed: file exists";
 	}
-	fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, conf_mode);
+	fspath = ex_pathresolve(path);
+	fd = open(fspath, O_WRONLY | O_CREAT | O_TRUNC, conf_mode);
+	free(fspath);
 	if (fd < 0)
 		return "write failed: cannot create file";
 	if (o1 >= 0) {
@@ -1144,13 +1174,37 @@ static void *ec_setdir(char *loc, char *cmd, char *arg)
 	if (cmd[1] == 'p') {
 		free(exdir);
 		exdir = *arg ? uc_dup(arg) : NULL;
-	} else if (cmd[1] == 'd')
-		dir_calc(*arg ? arg : (exdir ? exdir : "."));
+	} else if (cmd[1] == 'd') {
+		char *path = ex_pathresolve(*arg ? arg : (exdir ? exdir : "."));
+		dir_calc(path);
+		free(path);
+	}
 	return NULL;
 }
 
 static void *ec_chdir(char *loc, char *cmd, char *arg)
 {
+#ifdef NEXTVI_EMBEDDED
+	char *path = ex_pathresolve(*arg ? arg : "/sdcard");
+	struct stat st;
+	if (stat(path, &st) || !S_ISDIR(st.st_mode)) {
+		free(path);
+		return "chdir error";
+	}
+	for (int i = 0; i < xbufcur; i++) {
+		if (!bufs[i].path[0] || bufs[i].path[0] == '/')
+			continue;
+		char *oldpath = ex_pathresolve(bufs[i].path);
+		free(bufs[i].path);
+		bufs[i].path = oldpath;
+		bufs[i].plen = strlen(oldpath);
+	}
+	strncpy(ex_vcwd, path, sizeof(ex_vcwd) - 1);
+	ex_vcwd[sizeof(ex_vcwd) - 1] = '\0';
+	setenv("PWD", ex_vcwd, 1);
+	free(path);
+	return NULL;
+#else
 	char oldpath[4096];
 	char newpath[4096];
 	char *opath;
@@ -1191,6 +1245,7 @@ static void *ec_chdir(char *loc, char *cmd, char *arg)
 		bufs[i].plen = strlen(opath);
 	}
 	return NULL;
+#endif
 }
 
 static void *ec_setincl(char *loc, char *cmd, char *arg)

@@ -452,6 +452,7 @@ void ex_krsset(char *kwd, int dir);
 void ex_regesc(sbuf *sb, char *beg, char *end, int ex);
 int ex_edit(const char *path, int len);
 void ex_regput(unsigned char c, const char *s, int append);
+char *ex_pathresolve(const char *path);
 
 /* conf.c: configuration variables */
 extern const int conf_mode;
