@@ -53,6 +53,10 @@ static int vi_nlmode;			/* new line mode for vi regions */
 static int vi_visual;			/* visual mode */
 static int vi_vrow;			/* visual selection anchor row */
 static int vi_voff;			/* visual selection anchor offset */
+#ifdef NEXTVI_NOTERM
+static int vi_insert_saved_xrows;	/* editor rows before hiding status */
+static int vi_insert_status_dirty;	/* status row needs repaint after insert */
+#endif
 
 void *emalloc(size_t size)
 {
@@ -200,6 +204,30 @@ static void vi_drawrow(int row)
 	led_select(NULL, 0, -1);
 	rstate = rstates;
 }
+
+#ifdef NEXTVI_NOTERM
+static void vi_insert_screen_enter(void)
+{
+	if (vi_insert_saved_xrows)
+		return;
+	vi_insert_saved_xrows = xrows;
+	xrows = MIN(xrows + 1, NEXTVI_DISPLAY_ROWS + 1);
+	xmpt = 0;
+	vi_drawrow(xtop + xrows - 1);
+}
+
+static void vi_insert_screen_leave(void)
+{
+	if (!vi_insert_saved_xrows)
+		return;
+	xrows = vi_insert_saved_xrows;
+	vi_insert_saved_xrows = 0;
+	vi_insert_status_dirty = 1;
+}
+#else
+static void vi_insert_screen_enter(void) {}
+static void vi_insert_screen_leave(void) {}
+#endif
 
 /* redraw the screen */
 static void vi_drawagain(int i)
@@ -1014,6 +1042,7 @@ static int vi_change(int r1, int o1, int r2, int o2, int lnmode)
 	}
 	vi_regput(vi_ybuf, rsb.s, lnmode);
 	free(rsb.s);
+	vi_insert_screen_enter();
 	term_pos(r1 - xtop < 0 ? 0 : r1 - xtop, 0);
 	term_room(r1 < xtop ? xtop - xrow : r1 - r2 -
 			(*vi_word && ln && *ln != '\n' && r1 != r2));
@@ -1025,6 +1054,7 @@ static int vi_change(int r1, int o1, int r2, int o2, int lnmode)
 	if (postn + l2 != tlen || memcmp(ln + l1, sb->s + l1, tlen - l2 - l1))
 		lbuf_edit(xb, sb->s, r1, r2 + 1, o1, xoff);
 	free(sb->s);
+	vi_insert_screen_leave();
 	vi_mod |= 1;
 	return key;
 }
@@ -1171,6 +1201,7 @@ static int vc_insert(int cmd)
 	char *post, *ln = lbuf_get(xb, xrow);
 	int row, cmdo, l1, off, key, postn = 1;
 	sbuf_smake(sb, xcols)
+	vi_insert_screen_enter();
 	if (cmd == 'I')
 		xoff = lbuf_indents(xb, xrow);
 	else if (cmd == 'A')
@@ -1211,6 +1242,7 @@ static int vc_insert(int cmd)
 		vi_hardwrap_range(row, lines);
 	}
 	free(sb->s);
+	vi_insert_screen_leave();
 	return key;
 }
 
@@ -1935,6 +1967,12 @@ void vi(int init)
 			if (xmpt > 0)
 				xmpt = 0;
 		}
+#ifdef NEXTVI_NOTERM
+		if (vi_insert_status_dirty) {
+			vi_insert_status_dirty = 0;
+			vc_status(vi_tsm);
+		}
+#endif
 		term_cursor(1);
 		term_pos(xrow - xtop, n);
 		term_commit();
