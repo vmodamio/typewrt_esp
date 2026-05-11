@@ -44,6 +44,7 @@ static char xuerr[] = "unreported error";
 static char ex_vcwd[4096] = "/sdcard";
 bool typewrt_rtc_get_datetime(char *out, size_t out_len);
 const char *typewrt_rtc_set_datetime(const char *datetime, char *out, size_t out_len);
+bool typewrt_battery_get_status(char *out, size_t out_len);
 #endif
 static char xserr[] = "syntax error";
 static char xirerr[] = "invalid range";
@@ -1450,6 +1451,21 @@ static void *ec_off(char *loc, char *cmd, char *arg)
 #endif
 }
 
+static void *ec_battery(char *loc, char *cmd, char *arg)
+{
+#ifdef NEXTVI_EMBEDDED
+	char buf[96];
+	(void)loc;
+	(void)cmd;
+	(void)arg;
+	typewrt_battery_get_status(buf, sizeof(buf));
+	ex_print(buf)
+	return NULL;
+#else
+	return "unsupported command";
+#endif
+}
+
 static int eo_val(char *arg)
 {
 	int val = atoi(arg);
@@ -1496,6 +1512,8 @@ static struct excmd {
 	{"bp", ec_setpath},
 	{"bs", ec_bufsave},
 	{"bx", ec_setbufsmax},
+	{"battery", ec_battery},
+	{"bat", ec_battery},
 	{"b", ec_buffer},
 	EO(pac),
 	EO(pr),

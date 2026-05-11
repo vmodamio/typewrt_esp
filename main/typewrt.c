@@ -110,6 +110,12 @@
 #define PCF8523_CONTROL_1_STOP BIT(5)
 #define PCF8523_TIME_REG 0x03
 #define PCF8523_SECONDS_OS BIT(7)
+#define MAX17048_I2C_ADDRESS 0x36
+#define MAX17048_VCELL_REG 0x02
+#define MAX17048_SOC_REG 0x04
+#define MAX17048_CRATE_REG 0x16
+#define MAX17048_ABSENT_SOC_TENTHS 1050
+#define MAX17048_ABSENT_VOLTAGE_UV 4350000
 
 #define SPI_TAG "spi_protocol"
 void displayInit(void);
@@ -128,6 +134,8 @@ static sdmmc_card_t *sd_card;
 static bool sd_card_mounted;
 static i2c_master_bus_handle_t rtc_i2c_bus;
 static i2c_master_dev_handle_t rtc_i2c_dev;
+static i2c_master_dev_handle_t battery_i2c_dev;
+static bool battery_gauge_available;
 DMA_ATTR uint8_t *sharpmem_buffer = NULL;
 static char display_shadow[NEXTVI_DISPLAY_ROWS + 1][NEXTVI_DISPLAY_COLS + 1];
 static bool splash_active = true;
@@ -142,6 +150,7 @@ static volatile uint32_t typewrt_sleep_locks;
 static StaticSemaphore_t display_lock_storage;
 static SemaphoreHandle_t display_lock;
 bool typewrt_rtc_get_datetime(char *out, size_t out_len);
+bool typewrt_battery_get_status(char *out, size_t out_len);
 static void typewrt_light_sleep_if_idle(void);
 static void typewrt_power_led_update(void);
 static void typewrt_usb_wakeup_prepare(void);
@@ -1013,6 +1022,122 @@ static bool rtc_init(void)
     return true;
 }
 
+static esp_err_t battery_max17048_read_word(uint8_t reg, uint16_t *value)
+{
+    uint8_t data[2];
+    esp_err_t ret;
+
+    if (!battery_i2c_dev || !value) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    ret = i2c_master_transmit_receive(battery_i2c_dev, &reg, sizeof(reg),
+        data, sizeof(data), 1000);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    *value = ((uint16_t)data[0] << 8) | data[1];
+    return ESP_OK;
+}
+
+bool typewrt_battery_get_status(char *out, size_t out_len)
+{
+    uint16_t vcell_raw;
+    uint16_t soc_raw;
+    uint16_t crate_raw;
+    uint32_t voltage_uv;
+    uint32_t soc_tenths;
+    int32_t rate_tenths;
+    uint32_t rate_abs_tenths;
+    const char *state;
+    const char *rate_sign;
+
+    if (!out || out_len == 0) {
+        return false;
+    }
+    typewrt_sleep_lock();
+    if (!battery_gauge_available || !battery_i2c_dev) {
+        snprintf(out, out_len, "battery unavailable");
+        typewrt_sleep_unlock();
+        return false;
+    }
+    if (battery_max17048_read_word(MAX17048_VCELL_REG, &vcell_raw) != ESP_OK ||
+            battery_max17048_read_word(MAX17048_SOC_REG, &soc_raw) != ESP_OK ||
+            battery_max17048_read_word(MAX17048_CRATE_REG, &crate_raw) != ESP_OK) {
+        snprintf(out, out_len, "battery read failed");
+        typewrt_sleep_unlock();
+        return false;
+    }
+
+    voltage_uv = (uint32_t)(((uint64_t)vcell_raw * 78125U) / 1000U);
+    soc_tenths = ((uint32_t)soc_raw * 10U + 128U) / 256U;
+    if (soc_tenths > MAX17048_ABSENT_SOC_TENTHS ||
+            voltage_uv > MAX17048_ABSENT_VOLTAGE_UV) {
+        snprintf(out, out_len,
+            "bat absent %" PRIu32 ".%03" PRIu32 "V soc %" PRIu32 ".%" PRIu32 "%%",
+            voltage_uv / 1000000U, (voltage_uv % 1000000U) / 1000U,
+            soc_tenths / 10U, soc_tenths % 10U);
+        typewrt_sleep_unlock();
+        return true;
+    }
+
+    rate_tenths = ((int32_t)(int16_t)crate_raw * 208 +
+        ((int16_t)crate_raw >= 0 ? 50 : -50)) / 100;
+    rate_abs_tenths = rate_tenths < 0 ?
+        (uint32_t)-rate_tenths : (uint32_t)rate_tenths;
+    if ((int16_t)crate_raw > 0) {
+        state = "chg";
+    } else if ((int16_t)crate_raw < 0) {
+        state = "dis";
+    } else {
+        state = "idle";
+    }
+    rate_sign = rate_tenths < 0 ? "-" : rate_tenths > 0 ? "+" : "";
+
+    snprintf(out, out_len,
+        "bat %" PRIu32 ".%" PRIu32 "%% %" PRIu32 ".%03" PRIu32
+        "V %s %s%" PRIu32 ".%" PRIu32 "%%/h",
+        soc_tenths / 10U, soc_tenths % 10U,
+        voltage_uv / 1000000U, (voltage_uv % 1000000U) / 1000U,
+        state, rate_sign, rate_abs_tenths / 10U, rate_abs_tenths % 10U);
+    typewrt_sleep_unlock();
+    return true;
+}
+
+static bool battery_init(void)
+{
+    i2c_device_config_t dev_config = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = MAX17048_I2C_ADDRESS,
+        .scl_speed_hz = TYPEWRT_RTC_I2C_FREQ_HZ,
+    };
+    esp_err_t ret;
+    char status[96];
+
+    if (!rtc_i2c_bus) {
+        ESP_LOGW(TAG, "MAX17048 skipped; I2C bus is unavailable");
+        return false;
+    }
+    ret = i2c_master_bus_add_device(rtc_i2c_bus, &dev_config, &battery_i2c_dev);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "MAX17048 add-device failed: %s", esp_err_to_name(ret));
+        return false;
+    }
+    ret = i2c_master_probe(rtc_i2c_bus, MAX17048_I2C_ADDRESS, 1000);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "MAX17048 not found at I2C address 0x%02x: %s",
+            MAX17048_I2C_ADDRESS, esp_err_to_name(ret));
+        (void)i2c_master_bus_rm_device(battery_i2c_dev);
+        battery_i2c_dev = NULL;
+        return false;
+    }
+
+    battery_gauge_available = true;
+    if (typewrt_battery_get_status(status, sizeof(status))) {
+        ESP_LOGI(TAG, "MAX17048 %s", status);
+    }
+    return true;
+}
+
 static void sdcard_spi_pins_prepare(void)
 {
     gpio_config_t cs_conf = {
@@ -1524,6 +1649,7 @@ void app_main(void)
     // Keyboard start to work
 
     rtc_init();
+    battery_init();
     sdcard_spi_pins_prepare();
     displayInit();
     clearDisplay();
