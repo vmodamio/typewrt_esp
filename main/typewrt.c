@@ -145,7 +145,6 @@ bool typewrt_rtc_get_datetime(char *out, size_t out_len);
 static void typewrt_light_sleep_if_idle(void);
 static void typewrt_power_led_update(void);
 static void typewrt_usb_wakeup_prepare(void);
-static void typewrt_reset_button_enable(bool enabled);
 
 typedef struct {
     enum Mode {
@@ -523,7 +522,6 @@ static void disableSplash(void)
     for (int row = 0; row <= NEXTVI_DISPLAY_ROWS; row++) {
         renderTextRow(row, display_shadow[row]);
     }
-    typewrt_reset_button_enable(false);
 }
 
 void nextvi_display_refresh_line(int row, const char *text, int cols)
@@ -1172,6 +1170,8 @@ static bool typewrt_light_sleep_allowed(void)
 
 static void kbd_prepare_wakeup_rows(void)
 {
+    gpio_sleep_sel_dis(KBD_OE);
+    gpio_sleep_sel_dis(KBD_LE);
     GPIO.out_w1ts = (1UL << KBD_OE);
     cycle(16);
     GPIO.enable_w1ts = KBD_IO_MASK;
@@ -1339,6 +1339,8 @@ void kbd_start()
     };
 
     gpio_config(&ol_config);
+    gpio_sleep_sel_dis(KBD_OE);
+    gpio_sleep_sel_dis(KBD_LE);
 
     //uart_config_t uart_conf = {
     //        .baud_rate = 115200,
@@ -1399,13 +1401,6 @@ static void typewrt_power_led_update(void)
     gpio_hold_en(PIN_LEDN);
 }
 
-static void typewrt_reset_button_enable(bool enabled)
-{
-    (void)gpio_hold_dis(PIN_RST_EN);
-    gpio_set_level(PIN_RST_EN, enabled ? 0 : 1);
-    gpio_hold_en(PIN_RST_EN);
-}
-
 static void typewrt_usb_wakeup_prepare(void)
 {
     (void)gpio_wakeup_disable(PIN_5V_EN);
@@ -1413,64 +1408,8 @@ static void typewrt_usb_wakeup_prepare(void)
         typewrt_usb_power_present() ? GPIO_INTR_LOW_LEVEL : GPIO_INTR_HIGH_LEVEL);
 }
 
-static void typewrt_power_domain_pins_high_z(void)
-{
-    uint64_t pin_mask = (uint64_t)KBD_IO_MASK |
-        (1ULL << KBD_OE) |
-        (1ULL << KBD_LE) |
-        (1ULL << PIN_NUM_CS) |
-        (1ULL << PIN_NUM_MOSI) |
-        (1ULL << PIN_NUM_MISO) |
-        (1ULL << PIN_NUM_CLK);
-    gpio_config_t io_conf = {
-        .pin_bit_mask = pin_mask,
-        .intr_type = GPIO_INTR_DISABLE,
-        .mode = GPIO_MODE_DISABLE,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-    };
-
-    gpio_config(&io_conf);
-}
-
-void typewrt_power_off(void)
-{
-    typewrt_sleep_lock();
-    if (splash_clock_timer) {
-        (void)esp_timer_stop(splash_clock_timer);
-    }
-    if (KBD_SCAN_TIMER) {
-        (void)esp_timer_stop(KBD_SCAN_TIMER);
-    }
-
-    (void)esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-    (void)gpio_wakeup_disable(PIN_5V_EN);
-    for (int i = 0; i < IOSIZE; i++) {
-        (void)gpio_wakeup_disable(KBD_IO[i]);
-    }
-
-    (void)gpio_hold_dis(PIN_LEDN);
-    gpio_set_level(PIN_LEDN, 1);
-    gpio_hold_en(PIN_LEDN);
-
-    typewrt_reset_button_enable(true);
-    typewrt_power_domain_pins_high_z();
-
-    (void)gpio_hold_dis(PIN_LDO2_EN);
-    gpio_set_level(PIN_LDO2_EN, 0);
-    gpio_hold_en(PIN_LDO2_EN);
-    gpio_deep_sleep_hold_en();
-
-    esp_deep_sleep_start();
-}
-
 static void power_mng_init(void)
 {
-    gpio_deep_sleep_hold_dis();
-    (void)gpio_hold_dis(PIN_LDO2_EN);
-    (void)gpio_hold_dis(PIN_LEDN);
-    (void)gpio_hold_dis(PIN_RST_EN);
-
     gpio_config_t power_conf = {
         .pin_bit_mask = (1ULL << PIN_LDO2_EN),
         .intr_type = GPIO_INTR_DISABLE,
@@ -1500,7 +1439,8 @@ static void power_mng_init(void)
     gpio_config(&led_conf);
     gpio_set_level(PIN_LEDN, 1);
     typewrt_power_led_update();
-    typewrt_reset_button_enable(true);
+    gpio_set_level(PIN_RST_EN, 0);
+    gpio_hold_en(PIN_RST_EN);
 }
 
 
