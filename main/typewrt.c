@@ -34,6 +34,7 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "freertos/timers.h"
+#include "freertos/semphr.h"
 #include "esp_system.h"
 #include "esp_log.h"
 #include "esp_check.h"
@@ -56,6 +57,7 @@
 #include "zap-vga16-raw-neg.h"
 #include "keyboard_input.h"
 #include "typewrt_splash.h"
+#include "typewrt_power.h"
 #undef MIN
 #undef MAX
 #include "vi.h"
@@ -85,6 +87,7 @@
 #define PIN_LDO2_EN 39
 #define PIN_LEDN 17
 #define PIN_RST_EN 18
+#define PIN_5V_EN 34
 
 
 
@@ -96,7 +99,8 @@
 
 #define KBD_EVENT_QUEUE_LENGTH 32
 #define KBD_EVENT_SIZE sizeof( uint8_t )
-#define TYPEWRT_ENABLE_LIGHT_SLEEP 0
+#define TYPEWRT_ENABLE_LIGHT_SLEEP 1
+#define TYPEWRT_LIGHT_SLEEP_IDLE_MS 1000
 #define TYPEWRT_REFRESH_FULL_DISPLAY 0
 #define TYPEWRT_SD_MOUNT_POINT "/sdcard"
 #define TYPEWRT_RTC_I2C_PORT I2C_NUM_0
@@ -134,7 +138,13 @@ static int display_cursor_row = -1;
 static int display_cursor_col = -1;
 static esp_timer_handle_t splash_clock_timer;
 static char splash_clock_last[24];
+static volatile uint32_t typewrt_sleep_locks;
+static StaticSemaphore_t display_lock_storage;
+static SemaphoreHandle_t display_lock;
 bool typewrt_rtc_get_datetime(char *out, size_t out_len);
+static void typewrt_light_sleep_if_idle(void);
+static void typewrt_power_led_update(void);
+static void typewrt_usb_wakeup_prepare(void);
 
 typedef struct {
     enum Mode {
@@ -159,6 +169,7 @@ void displayInit(void)
       printf("Error: sharpmem_buffer was NOT allocated\n\n");
       return;
     }
+    display_lock = xSemaphoreCreateMutexStatic(&display_lock_storage);
 
     gpio_set_direction(PIN_NUM_CS, GPIO_MODE_OUTPUT);                   // Setting the CS' pin to work in OUTPUT mode
 
@@ -308,6 +319,25 @@ void clearDisplayBuffer() {
   memset(sharpmem_buffer, 0xFF, SHARPMEM_BUFFER_BYTES);
 }
 
+static void displayLock(void)
+{
+    if (display_lock) {
+        xSemaphoreTake(display_lock, portMAX_DELAY);
+    }
+}
+
+static bool displayTryLock(void)
+{
+    return !display_lock || xSemaphoreTake(display_lock, 0) == pdTRUE;
+}
+
+static void displayUnlock(void)
+{
+    if (display_lock) {
+        xSemaphoreGive(display_lock);
+    }
+}
+
 static void displayGlyph(uint8_t col, uint8_t row, uint8_t index)
 {
     if (col >= NEXTVI_DISPLAY_COLS || row > NEXTVI_DISPLAY_ROWS) {
@@ -398,19 +428,27 @@ static void refreshSplashStatusClock(void)
     char timestamp[sizeof(splash_clock_last)];
     char status_line[NEXTVI_DISPLAY_COLS + 1];
 
+    typewrt_sleep_lock();
+    if (!displayTryLock()) {
+        goto done_sleep;
+    }
     if (!splash_active || !splash_drawn) {
-        return;
+        goto done;
     }
     if (!typewrt_rtc_get_datetime(timestamp, sizeof(timestamp))) {
-        return;
+        goto done;
     }
     if (!strcmp(timestamp, splash_clock_last)) {
-        return;
+        goto done;
     }
     strncpy(splash_clock_last, timestamp, sizeof(splash_clock_last) - 1);
     splash_clock_last[sizeof(splash_clock_last) - 1] = '\0';
     splashStatusLine(status_line);
     renderTextRow(NEXTVI_DISPLAY_ROWS, status_line);
+done:
+    displayUnlock();
+done_sleep:
+    typewrt_sleep_unlock();
 }
 
 static void splashClockTimerCallback(void *arg)
@@ -492,11 +530,12 @@ void nextvi_display_refresh_line(int row, const char *text, int cols)
         return;
     }
 
+    displayLock();
     copyDisplayShadow(row, text, cols);
     if (splash_active && splash_disable_pending && row == 0 &&
             displayShadowRowHasVisibleText(row)) {
         disableSplash();
-        return;
+        goto done;
     }
     if (splash_active) {
         drawSplashLayout();
@@ -507,10 +546,12 @@ void nextvi_display_refresh_line(int row, const char *text, int cols)
             splashStatusLine(status_line);
             renderTextRow(row, status_line);
         }
-        return;
+        goto done;
     }
 
     renderTextRow(row, display_shadow[row]);
+done:
+    displayUnlock();
 }
 
 static int cursorCellValid(int row, int col)
@@ -528,39 +569,64 @@ static void invertCursorCell(int row, int col)
 
 void nextvi_display_refresh_cursor(int row, int col, int on)
 {
+    bool old_valid;
+    int old_row;
+
+    displayLock();
     if (!on) {
         if (display_cursor_drawn) {
             invertCursorCell(display_cursor_row, display_cursor_col);
             updateRow((uint8_t)display_cursor_row);
             display_cursor_drawn = false;
         }
-        return;
+        goto done;
     }
 
     row = mapSplashRow(row);
     if (!cursorCellValid(row, col)) {
-        return;
+        goto done;
+    }
+    old_valid = display_cursor_drawn &&
+        cursorCellValid(display_cursor_row, display_cursor_col);
+    old_row = display_cursor_row;
+    if (old_valid && display_cursor_row == row && display_cursor_col == col) {
+        goto done;
+    }
+    if (old_valid) {
+        invertCursorCell(display_cursor_row, display_cursor_col);
     }
     invertCursorCell(row, col);
-    updateRow((uint8_t)row);
+    if (old_valid) {
+        updateRow((uint8_t)old_row);
+    }
+    if (!old_valid || old_row != row) {
+        updateRow((uint8_t)row);
+    }
     display_cursor_row = row;
     display_cursor_col = col;
     display_cursor_drawn = true;
+done:
+    displayUnlock();
 }
 
 void nextvi_display_move_cursor(int old_row, int old_col, int new_row, int new_col, int on)
 {
-    bool old_valid = display_cursor_drawn &&
+    bool old_valid;
+    int new_physical_row;
+    bool new_valid;
+
+    displayLock();
+    old_valid = display_cursor_drawn &&
         cursorCellValid(display_cursor_row, display_cursor_col);
-    int new_physical_row = mapSplashRow(new_row);
-    bool new_valid = on && cursorCellValid(new_physical_row, new_col);
+    new_physical_row = mapSplashRow(new_row);
+    new_valid = on && cursorCellValid(new_physical_row, new_col);
 
     if (!old_valid && !new_valid) {
-        return;
+        goto done;
     }
     if (old_valid && new_valid && display_cursor_row == new_physical_row &&
             display_cursor_col == new_col) {
-        return;
+        goto done;
     }
     if (old_valid) {
         invertCursorCell(display_cursor_row, display_cursor_col);
@@ -577,17 +643,21 @@ void nextvi_display_move_cursor(int old_row, int old_col, int new_row, int new_c
     display_cursor_drawn = new_valid;
     display_cursor_row = new_valid ? new_physical_row : -1;
     display_cursor_col = new_valid ? new_col : -1;
+done:
+    displayUnlock();
     (void)old_row;
     (void)old_col;
 }
 
 void nextvi_display_note_insert(void)
 {
+    displayLock();
     if (displayShadowRowHasVisibleText(0)) {
         disableSplash();
     } else {
         splash_disable_pending = true;
     }
+    displayUnlock();
 }
 
 static unsigned char nextvi_keyboard_translate_event(unsigned char event)
@@ -620,8 +690,9 @@ int nextvi_keyboard_read(unsigned char *event)
     if (!keyboard) {
         return 0;
     }
-    if (xQueueReceive(keyboard, event, portMAX_DELAY) != pdTRUE) {
-        return 0;
+    while (xQueueReceive(keyboard, event,
+            pdMS_TO_TICKS(TYPEWRT_LIGHT_SLEEP_IDLE_MS)) != pdTRUE) {
+        typewrt_light_sleep_if_idle();
     }
     *event = nextvi_keyboard_translate_event(*event);
     return 1;
@@ -1067,6 +1138,90 @@ static inline IRAM_ATTR void cycle(uint32_t cycles) {
      for (int i=0; i < cycles; i++) __asm__ __volatile__("nop");
 }
 
+void typewrt_sleep_lock(void)
+{
+    __atomic_add_fetch(&typewrt_sleep_locks, 1, __ATOMIC_RELAXED);
+}
+
+void typewrt_sleep_unlock(void)
+{
+    uint32_t locks = __atomic_load_n(&typewrt_sleep_locks, __ATOMIC_RELAXED);
+
+    while (locks) {
+        if (__atomic_compare_exchange_n(&typewrt_sleep_locks, &locks,
+                locks - 1, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+            return;
+        }
+    }
+}
+
+static bool typewrt_sleep_is_locked(void)
+{
+    return __atomic_load_n(&typewrt_sleep_locks, __ATOMIC_RELAXED) != 0;
+}
+
+static bool typewrt_light_sleep_allowed(void)
+{
+    return !typewrt_sleep_is_locked() &&
+        keyboard &&
+        uxQueueMessagesWaiting(keyboard) == 0 &&
+        KBD_NOKEY;
+}
+
+static void kbd_prepare_wakeup_rows(void)
+{
+    GPIO.out_w1ts = (1UL << KBD_OE);
+    cycle(16);
+    GPIO.enable_w1ts = KBD_IO_MASK;
+    cycle(32);
+    GPIO.out_w1tc = KBD_IO_MASK;
+    GPIO.out_w1ts = (1UL << KBD_LE);
+    cycle(4);
+    GPIO.out_w1tc = (1UL << KBD_LE);
+    cycle(32);
+    cycle(4);
+    GPIO.enable_w1tc = KBD_IO_MASK;
+    cycle(32);
+    GPIO.out_w1tc = (1UL << KBD_OE);
+    cycle(16);
+}
+
+static void typewrt_light_sleep_if_idle(void)
+{
+#if TYPEWRT_ENABLE_LIGHT_SLEEP
+    esp_err_t ret;
+
+    if (!typewrt_light_sleep_allowed()) {
+        return;
+    }
+
+    ret = esp_timer_stop(KBD_SCAN_TIMER);
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "Failed to stop keyboard scan timer before sleep: %s",
+            esp_err_to_name(ret));
+        return;
+    }
+
+    if (!typewrt_light_sleep_allowed()) {
+        KBD_SCANCOUNT = SCANTIMEOUT;
+        ESP_ERROR_CHECK(esp_timer_start_periodic(KBD_SCAN_TIMER, SCANPERIOD));
+        return;
+    }
+
+    typewrt_power_led_update();
+    typewrt_usb_wakeup_prepare();
+    kbd_prepare_wakeup_rows();
+    ret = esp_light_sleep_start();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "light sleep failed: %s", esp_err_to_name(ret));
+    }
+    typewrt_power_led_update();
+
+    KBD_SCANCOUNT = SCANTIMEOUT;
+    ESP_ERROR_CHECK(esp_timer_start_periodic(KBD_SCAN_TIMER, SCANPERIOD));
+#endif
+}
+
 
 static IRAM_ATTR void kbd_scan(void* arg)
 {
@@ -1139,35 +1294,9 @@ static IRAM_ATTR void kbd_scan(void* arg)
       }
       if (KBD_NOKEY) KBD_SCANCOUNT--;
     }
-    else {  // GO TO STANDBY MODE
-#if TYPEWRT_ENABLE_LIGHT_SLEEP
-      ESP_ERROR_CHECK(esp_timer_stop(KBD_SCAN_TIMER)); // no more scanning
-      //ESP_LOGI(TAG, "timer stopped, trying to enter light sleep...");
-      GPIO.out_w1ts = (1UL << KBD_OE); // set OE high (active low)
-      cycle(16);
-      GPIO.enable_w1ts = KBD_IO_MASK;  // set gpios to output
-      cycle(32);
-      GPIO.out_w1tc = KBD_IO_MASK;  // set all pins to low (for ROWS)
-      GPIO.out_w1ts = (1UL << KBD_LE); // set LE high to transfer to OUTPUT (D->Q)
-      cycle(4);
-      GPIO.out_w1tc = (1UL << KBD_LE); // set LE low to latch
-      cycle(32);
-      //GPIO.out_w1ts = mkbd->io_mask;  // set all pins to high (for cols)
-      cycle(4);
-      GPIO.enable_w1tc = KBD_IO_MASK;  // set gpios to input (they are pulled up anyhow)
-      cycle(32);
-      GPIO.out_w1tc = (1UL << KBD_OE); // set OE low to enable output
-      cycle(16);
-
-      ESP_ERROR_CHECK(esp_light_sleep_start());
-
+    else {
+      // Sleep is managed from the keyboard read task, where queue idleness is visible.
       KBD_SCANCOUNT = SCANTIMEOUT;
-      ESP_ERROR_CHECK(esp_timer_start_periodic(KBD_SCAN_TIMER, SCANPERIOD));
-
-      //ESP_LOGI(TAG, "woken up...");
-#else
-      KBD_SCANCOUNT = SCANTIMEOUT;
-#endif
     }
 }
 
@@ -1256,6 +1385,25 @@ static void splash_clock_start(void)
     ESP_ERROR_CHECK(esp_timer_start_periodic(splash_clock_timer, 1000000));
 }
 
+static bool typewrt_usb_power_present(void)
+{
+    return gpio_get_level(PIN_5V_EN) == 1;
+}
+
+static void typewrt_power_led_update(void)
+{
+    (void)gpio_hold_dis(PIN_LEDN);
+    gpio_set_level(PIN_LEDN, typewrt_usb_power_present() ? 0 : 1);
+    gpio_hold_en(PIN_LEDN);
+}
+
+static void typewrt_usb_wakeup_prepare(void)
+{
+    (void)gpio_wakeup_disable(PIN_5V_EN);
+    gpio_wakeup_enable(PIN_5V_EN,
+        typewrt_usb_power_present() ? GPIO_INTR_LOW_LEVEL : GPIO_INTR_HIGH_LEVEL);
+}
+
 static void power_mng_init(void)
 {
     gpio_config_t power_conf = {
@@ -1268,6 +1416,15 @@ static void power_mng_init(void)
     gpio_set_level(PIN_LDO2_EN, 1);
     gpio_hold_en(PIN_LDO2_EN);
 
+    gpio_config_t usb_conf = {
+        .pin_bit_mask = (1ULL << PIN_5V_EN),
+        .intr_type = GPIO_INTR_DISABLE,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+    };
+    gpio_config(&usb_conf);
+
     gpio_config_t led_conf = {
         .pin_bit_mask = (1ULL << PIN_LEDN ) | (1ULL << PIN_RST_EN),
         .intr_type = GPIO_INTR_DISABLE,
@@ -1276,8 +1433,8 @@ static void power_mng_init(void)
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
     };
     gpio_config(&led_conf);
-    gpio_set_level(PIN_LEDN, 0);
-    gpio_hold_en(PIN_LEDN);
+    gpio_set_level(PIN_LEDN, 1);
+    typewrt_power_led_update();
     gpio_set_level(PIN_RST_EN, 0);
     gpio_hold_en(PIN_RST_EN);
 }

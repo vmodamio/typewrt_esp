@@ -40,6 +40,7 @@ static int xexp = '%';		/* ex command internal state expand  */
 static char xuerr[] = "unreported error";
 #ifdef NEXTVI_EMBEDDED
 #include <stdbool.h>
+#include "typewrt_power.h"
 static char ex_vcwd[4096] = "/sdcard";
 bool typewrt_rtc_get_datetime(char *out, size_t out_len);
 const char *typewrt_rtc_set_datetime(const char *datetime, char *out, size_t out_len);
@@ -676,6 +677,7 @@ static void *ec_write(char *loc, char *cmd, char *arg)
 {
 	char msg[512], *path, *fspath;
 	int fd, beg = 0, end = 0, o1 = -1, o2 = -1;
+	void *ret = NULL;
 	path = arg[0] ? arg : xb_path;
 	if (cmd[0] == 'x' && !xb->modified)
 		return ec_quit("", cmd, "");
@@ -694,10 +696,15 @@ static void *ec_write(char *loc, char *cmd, char *arg)
 			return "write failed: file exists";
 	}
 	fspath = ex_pathresolve(path);
+#ifdef NEXTVI_EMBEDDED
+	typewrt_sleep_lock();
+#endif
 	fd = open(fspath, O_WRONLY | O_CREAT | O_TRUNC, conf_mode);
 	free(fspath);
-	if (fd < 0)
-		return "write failed: cannot create file";
+	if (fd < 0) {
+		ret = "write failed: cannot create file";
+		goto done;
+	}
 	if (o1 >= 0) {
 		sbuf ibuf;
 		lbuf_region(xb, &ibuf, beg, o1, end-1, o2);
@@ -706,8 +713,10 @@ static void *ec_write(char *loc, char *cmd, char *arg)
 	} else
 		o1 = lbuf_wr(xb, fd, beg, end);
 	close(fd);
-	if (o1 < 0)
-		return "write failed";
+	if (o1 < 0) {
+		ret = "write failed";
+		goto done;
+	}
 	snprintf(msg, sizeof(msg), "\"%s\" %dL [w]",
 			path, end - beg);
 	ex_print(msg)
@@ -717,7 +726,11 @@ static void *ec_write(char *loc, char *cmd, char *arg)
 	ex_buf->mtime = mtime(path);
 	if (cmd[0] == 'x' || (cmd[0] == 'w' && cmd[1] == 'q'))
 		ec_quit("", cmd, "");
-	return NULL;
+	done:
+#ifdef NEXTVI_EMBEDDED
+	typewrt_sleep_unlock();
+#endif
+	return ret;
 }
 
 static void *ec_termexec(char *loc, char *cmd, char *arg)
