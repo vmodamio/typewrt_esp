@@ -1437,6 +1437,19 @@ static void *ec_rtc(char *loc, char *cmd, char *arg)
 #endif
 }
 
+static void *ec_off(char *loc, char *cmd, char *arg)
+{
+#ifdef NEXTVI_EMBEDDED
+	(void)loc;
+	(void)cmd;
+	(void)arg;
+	typewrt_power_off();
+	return NULL;
+#else
+	return "unsupported command";
+#endif
+}
+
 static int eo_val(char *arg)
 {
 	int val = atoi(arg);
@@ -1514,6 +1527,7 @@ static struct excmd {
 	{"g", ec_glob},
 	EO(mpt),
 	{"m", ec_mark},
+	{"off", ec_off},
 	{"q!", ec_quit},
 	{"q", ec_quit},
 	{"reg+", ec_regprint},
