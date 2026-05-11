@@ -699,6 +699,21 @@ int led_prompt(sbuf *sb, char *insert, int *kmap, ins_state *is, int ps, int flg
 	return key;
 }
 
+static void led_open_next_row(int *crow, int *ctop)
+{
+	if (*crow - *ctop >= xrows - 1) {
+		(*ctop)++;
+		term_pos(0, 0);
+		term_room(-1);
+		term_pos(*crow - *ctop + 1, 0);
+		term_kill();
+	} else {
+		term_chr('\n');
+		term_room(1);
+	}
+	(*crow)++;
+}
+
 int led_input(sbuf *sb, char *post, int postn, int row, int flg, int *pren)
 {
 	int ai_max = 128 * xai;
@@ -723,9 +738,7 @@ int led_input(sbuf *sb, char *post, int postn, int row, int flg, int *pren)
 			sbuf_mem(tmp, sb->s, nllen)
 			led_printparts(tmp, -1, ps, "", 0, &xoff);
 			free(tmp->s);
-			term_chr('\n');
-			term_room(1);
-			crow++;
+			led_open_next_row(&crow, &ctop);
 			ps = nl + 1 + HWBRK_LEN - sb->s;
 			pre = ps;
 			term_cursor_suspend(0);
@@ -767,17 +780,7 @@ int led_input(sbuf *sb, char *post, int postn, int row, int flg, int *pren)
 		}
 		sbuf_chr(sb, key)
 		led_printparts(sb, -1, ps, "", 0, &xoff);
-		if (crow - ctop >= xrows - 1) {
-			ctop++;
-			term_pos(0, 0);
-			term_room(-1);
-			term_pos(crow - ctop + 1, 0);
-			term_kill();
-		} else {
-			term_chr('\n');
-			term_room(1);
-		}
-		crow++;
+		led_open_next_row(&crow, &ctop);
 		n = ps;
 		ps = sb->s_n;
 		pre = sb->s_n;
