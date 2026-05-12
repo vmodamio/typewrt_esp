@@ -104,6 +104,18 @@
 #define TYPEWRT_LED_BOOT_BLINKS 2
 #define TYPEWRT_LED_BOOT_PULSE_US 250000
 #define TYPEWRT_LED_SD_BLINK_PERIOD_US 75000
+#define TYPEWRT_BATTERY_CHECK_HIGH_US (5ULL * 60ULL * 1000000ULL)
+#define TYPEWRT_BATTERY_CHECK_MED_US (2ULL * 60ULL * 1000000ULL)
+#define TYPEWRT_BATTERY_CHECK_LOW_US (60ULL * 1000000ULL)
+#define TYPEWRT_BATTERY_WARN_LOW_REPEAT_US (5ULL * 60ULL * 1000000ULL)
+#define TYPEWRT_BATTERY_WARN_CRIT_REPEAT_US (2ULL * 60ULL * 1000000ULL)
+#define TYPEWRT_BATTERY_WARN_LOW_SOC_TENTHS 250
+#define TYPEWRT_BATTERY_WARN_CRIT_SOC_TENTHS 100
+#define TYPEWRT_BATTERY_WARN_PULSE_ON_US 150000
+#define TYPEWRT_BATTERY_WARN_PULSE_GAP_US 850000
+#define TYPEWRT_BATTERY_WARN_LOW_PULSES 3
+#define TYPEWRT_BATTERY_WARN_CRIT_TOGGLE_US 100000
+#define TYPEWRT_BATTERY_WARN_CRIT_DURATION_US 2000000
 #define TYPEWRT_REFRESH_FULL_DISPLAY 0
 #define TYPEWRT_SD_MOUNT_POINT "/sdcard"
 #define TYPEWRT_RTC_I2C_PORT I2C_NUM_0
@@ -149,11 +161,21 @@ static int display_cursor_row = -1;
 static int display_cursor_col = -1;
 static esp_timer_handle_t splash_clock_timer;
 static esp_timer_handle_t boot_led_timer;
+static esp_timer_handle_t battery_led_timer;
 static esp_timer_handle_t sd_write_led_timer;
 static char splash_clock_last[24];
 static volatile uint32_t typewrt_sleep_locks;
 static volatile uint32_t boot_led_steps;
 static volatile bool boot_led_on;
+static volatile bool battery_led_active;
+static volatile bool battery_led_locked;
+static volatile bool battery_led_on;
+static volatile uint32_t battery_led_steps;
+static uint32_t battery_led_on_us;
+static uint32_t battery_led_off_us;
+static int64_t battery_next_check_us;
+static int64_t battery_next_warning_us;
+static uint8_t battery_warning_level;
 static volatile uint32_t typewrt_sd_write_locks;
 static volatile bool sd_write_led_on;
 static StaticSemaphore_t display_lock_storage;
@@ -163,8 +185,18 @@ bool typewrt_battery_get_status(char *out, size_t out_len);
 static void typewrt_light_sleep_if_idle(void);
 static void typewrt_power_led_update(void);
 static void typewrt_led_boot_blink_start(void);
+static void typewrt_battery_monitor_check(bool force);
+static void typewrt_battery_monitor_sleep_prepare(void);
+static void typewrt_battery_monitor_start(void);
 static void typewrt_usb_wakeup_prepare(void);
 static void typewrt_reset_button_enable(bool enabled);
+
+typedef struct {
+    uint32_t voltage_uv;
+    uint32_t soc_tenths;
+    int32_t rate_tenths;
+    bool absent;
+} typewrt_battery_sample_t;
 
 typedef struct {
     enum Mode {
@@ -1049,14 +1081,39 @@ static esp_err_t battery_max17048_read_word(uint8_t reg, uint16_t *value)
     return ESP_OK;
 }
 
-bool typewrt_battery_get_status(char *out, size_t out_len)
+static esp_err_t typewrt_battery_read_sample(typewrt_battery_sample_t *sample)
 {
     uint16_t vcell_raw;
     uint16_t soc_raw;
     uint16_t crate_raw;
-    uint32_t voltage_uv;
-    uint32_t soc_tenths;
-    int32_t rate_tenths;
+    int16_t crate;
+
+    if (!sample) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!battery_gauge_available || !battery_i2c_dev) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (battery_max17048_read_word(MAX17048_VCELL_REG, &vcell_raw) != ESP_OK ||
+            battery_max17048_read_word(MAX17048_SOC_REG, &soc_raw) != ESP_OK ||
+            battery_max17048_read_word(MAX17048_CRATE_REG, &crate_raw) != ESP_OK) {
+        return ESP_FAIL;
+    }
+
+    sample->voltage_uv = (uint32_t)(((uint64_t)vcell_raw * 78125U) / 1000U);
+    sample->soc_tenths = ((uint32_t)soc_raw * 10U + 128U) / 256U;
+    sample->absent = sample->soc_tenths > MAX17048_ABSENT_SOC_TENTHS ||
+        sample->voltage_uv > MAX17048_ABSENT_VOLTAGE_UV;
+    crate = (int16_t)crate_raw;
+    sample->rate_tenths = ((int32_t)crate * 208 + (crate >= 0 ? 50 : -50)) / 100;
+    return ESP_OK;
+}
+
+bool typewrt_battery_get_status(char *out, size_t out_len)
+{
+    typewrt_battery_sample_t sample;
+    esp_err_t ret;
     uint32_t rate_abs_tenths;
     const char *state;
     const char *rate_sign;
@@ -1065,49 +1122,43 @@ bool typewrt_battery_get_status(char *out, size_t out_len)
         return false;
     }
     typewrt_sleep_lock();
-    if (!battery_gauge_available || !battery_i2c_dev) {
+    ret = typewrt_battery_read_sample(&sample);
+    if (ret == ESP_ERR_INVALID_STATE) {
         snprintf(out, out_len, "battery unavailable");
         typewrt_sleep_unlock();
         return false;
     }
-    if (battery_max17048_read_word(MAX17048_VCELL_REG, &vcell_raw) != ESP_OK ||
-            battery_max17048_read_word(MAX17048_SOC_REG, &soc_raw) != ESP_OK ||
-            battery_max17048_read_word(MAX17048_CRATE_REG, &crate_raw) != ESP_OK) {
+    if (ret != ESP_OK) {
         snprintf(out, out_len, "battery read failed");
         typewrt_sleep_unlock();
         return false;
     }
 
-    voltage_uv = (uint32_t)(((uint64_t)vcell_raw * 78125U) / 1000U);
-    soc_tenths = ((uint32_t)soc_raw * 10U + 128U) / 256U;
-    if (soc_tenths > MAX17048_ABSENT_SOC_TENTHS ||
-            voltage_uv > MAX17048_ABSENT_VOLTAGE_UV) {
+    if (sample.absent) {
         snprintf(out, out_len,
             "bat absent %" PRIu32 ".%03" PRIu32 "V soc %" PRIu32 ".%" PRIu32 "%%",
-            voltage_uv / 1000000U, (voltage_uv % 1000000U) / 1000U,
-            soc_tenths / 10U, soc_tenths % 10U);
+            sample.voltage_uv / 1000000U, (sample.voltage_uv % 1000000U) / 1000U,
+            sample.soc_tenths / 10U, sample.soc_tenths % 10U);
         typewrt_sleep_unlock();
         return true;
     }
 
-    rate_tenths = ((int32_t)(int16_t)crate_raw * 208 +
-        ((int16_t)crate_raw >= 0 ? 50 : -50)) / 100;
-    rate_abs_tenths = rate_tenths < 0 ?
-        (uint32_t)-rate_tenths : (uint32_t)rate_tenths;
-    if ((int16_t)crate_raw > 0) {
+    rate_abs_tenths = sample.rate_tenths < 0 ?
+        (uint32_t)-sample.rate_tenths : (uint32_t)sample.rate_tenths;
+    if (sample.rate_tenths > 0) {
         state = "chg";
-    } else if ((int16_t)crate_raw < 0) {
+    } else if (sample.rate_tenths < 0) {
         state = "dis";
     } else {
         state = "idle";
     }
-    rate_sign = rate_tenths < 0 ? "-" : rate_tenths > 0 ? "+" : "";
+    rate_sign = sample.rate_tenths < 0 ? "-" : sample.rate_tenths > 0 ? "+" : "";
 
     snprintf(out, out_len,
         "bat %" PRIu32 ".%" PRIu32 "%% %" PRIu32 ".%03" PRIu32
         "V %s %s%" PRIu32 ".%" PRIu32 "%%/h",
-        soc_tenths / 10U, soc_tenths % 10U,
-        voltage_uv / 1000000U, (voltage_uv % 1000000U) / 1000U,
+        sample.soc_tenths / 10U, sample.soc_tenths % 10U,
+        sample.voltage_uv / 1000000U, (sample.voltage_uv % 1000000U) / 1000U,
         state, rate_sign, rate_abs_tenths / 10U, rate_abs_tenths % 10U);
     typewrt_sleep_unlock();
     return true;
@@ -1145,6 +1196,7 @@ static bool battery_init(void)
     if (typewrt_battery_get_status(status, sizeof(status))) {
         ESP_LOGI(TAG, "MAX17048 %s", status);
     }
+    typewrt_battery_monitor_start();
     return true;
 }
 
@@ -1333,6 +1385,10 @@ static void typewrt_light_sleep_if_idle(void)
     if (!typewrt_light_sleep_allowed()) {
         return;
     }
+    typewrt_battery_monitor_check(false);
+    if (!typewrt_light_sleep_allowed()) {
+        return;
+    }
 
     ret = esp_timer_stop(KBD_SCAN_TIMER);
     if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
@@ -1349,12 +1405,14 @@ static void typewrt_light_sleep_if_idle(void)
 
     typewrt_power_led_update();
     typewrt_usb_wakeup_prepare();
+    typewrt_battery_monitor_sleep_prepare();
     kbd_prepare_wakeup_rows();
     ret = esp_light_sleep_start();
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "light sleep failed: %s", esp_err_to_name(ret));
     }
     typewrt_power_led_update();
+    typewrt_battery_monitor_check(false);
 
     KBD_SCANCOUNT = SCANTIMEOUT;
     ESP_ERROR_CHECK(esp_timer_start_periodic(KBD_SCAN_TIMER, SCANPERIOD));
@@ -1540,6 +1598,7 @@ static void typewrt_led_set(bool on)
 static void typewrt_power_led_update(void)
 {
     if (__atomic_load_n(&typewrt_sd_write_locks, __ATOMIC_RELAXED) != 0 ||
+            __atomic_load_n(&battery_led_active, __ATOMIC_RELAXED) ||
             __atomic_load_n(&boot_led_steps, __ATOMIC_RELAXED) != 0) {
         return;
     }
@@ -1636,6 +1695,131 @@ static void typewrt_led_boot_blink_start(void)
     }
 }
 
+static void typewrt_battery_led_finish(void)
+{
+    bool locked = __atomic_exchange_n(&battery_led_locked, false,
+        __ATOMIC_RELAXED);
+
+    __atomic_store_n(&battery_led_active, false, __ATOMIC_RELAXED);
+    __atomic_store_n(&battery_led_steps, 0, __ATOMIC_RELAXED);
+    typewrt_power_led_update();
+    if (locked) {
+        typewrt_sleep_unlock();
+    }
+}
+
+static void typewrt_battery_led_cancel(void)
+{
+    if (battery_led_timer) {
+        esp_err_t ret = esp_timer_stop(battery_led_timer);
+        if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "Failed to stop battery LED timer: %s",
+                esp_err_to_name(ret));
+        }
+    }
+    typewrt_battery_led_finish();
+}
+
+static void typewrt_battery_led_timer_callback(void *arg)
+{
+    uint32_t steps;
+
+    (void)arg;
+    if (__atomic_load_n(&typewrt_sd_write_locks, __ATOMIC_RELAXED) != 0) {
+        typewrt_battery_led_finish();
+        return;
+    }
+    steps = __atomic_load_n(&battery_led_steps, __ATOMIC_RELAXED);
+    if (!__atomic_load_n(&battery_led_active, __ATOMIC_RELAXED) || !steps) {
+        typewrt_battery_led_finish();
+        return;
+    }
+
+    if (battery_led_off_us) {
+        if (battery_led_on) {
+            battery_led_on = false;
+            typewrt_led_set(false);
+            if (__atomic_sub_fetch(&battery_led_steps, 1, __ATOMIC_RELAXED) == 0) {
+                typewrt_battery_led_finish();
+                return;
+            }
+            esp_timer_start_once(battery_led_timer, battery_led_off_us);
+            return;
+        }
+        battery_led_on = true;
+        typewrt_led_set(true);
+        esp_timer_start_once(battery_led_timer, battery_led_on_us);
+        return;
+    }
+
+    if (__atomic_sub_fetch(&battery_led_steps, 1, __ATOMIC_RELAXED) == 0) {
+        typewrt_battery_led_finish();
+        return;
+    }
+    battery_led_on = !battery_led_on;
+    typewrt_led_set(battery_led_on);
+    esp_timer_start_once(battery_led_timer, battery_led_on_us);
+}
+
+static bool typewrt_battery_led_timer_prepare(void)
+{
+    const esp_timer_create_args_t timer_args = {
+        .callback = typewrt_battery_led_timer_callback,
+        .name = "bat_led",
+    };
+    esp_err_t ret;
+
+    if (battery_led_timer) {
+        return true;
+    }
+    ret = esp_timer_create(&timer_args, &battery_led_timer);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to create battery LED timer: %s",
+            esp_err_to_name(ret));
+        return false;
+    }
+    return true;
+}
+
+static void typewrt_battery_led_start_low(void)
+{
+    if (!typewrt_battery_led_timer_prepare()) {
+        return;
+    }
+    typewrt_battery_led_cancel();
+    typewrt_boot_led_cancel();
+    typewrt_sleep_lock();
+    __atomic_store_n(&battery_led_locked, true, __ATOMIC_RELAXED);
+    __atomic_store_n(&battery_led_active, true, __ATOMIC_RELAXED);
+    __atomic_store_n(&battery_led_steps, TYPEWRT_BATTERY_WARN_LOW_PULSES,
+        __ATOMIC_RELAXED);
+    battery_led_on_us = TYPEWRT_BATTERY_WARN_PULSE_ON_US;
+    battery_led_off_us = TYPEWRT_BATTERY_WARN_PULSE_GAP_US;
+    battery_led_on = true;
+    typewrt_led_set(true);
+    esp_timer_start_once(battery_led_timer, battery_led_on_us);
+}
+
+static void typewrt_battery_led_start_critical(void)
+{
+    if (!typewrt_battery_led_timer_prepare()) {
+        return;
+    }
+    typewrt_battery_led_cancel();
+    typewrt_boot_led_cancel();
+    typewrt_sleep_lock();
+    __atomic_store_n(&battery_led_locked, true, __ATOMIC_RELAXED);
+    __atomic_store_n(&battery_led_active, true, __ATOMIC_RELAXED);
+    __atomic_store_n(&battery_led_steps,
+        TYPEWRT_BATTERY_WARN_CRIT_DURATION_US / TYPEWRT_BATTERY_WARN_CRIT_TOGGLE_US,
+        __ATOMIC_RELAXED);
+    battery_led_on_us = TYPEWRT_BATTERY_WARN_CRIT_TOGGLE_US;
+    battery_led_off_us = 0;
+    battery_led_on = true;
+    typewrt_led_set(true);
+    esp_timer_start_once(battery_led_timer, battery_led_on_us);
+}
+
 static void typewrt_sd_write_led_timer_callback(void *arg)
 {
     (void)arg;
@@ -1674,6 +1858,7 @@ void typewrt_sd_write_begin(void)
 
     typewrt_sleep_lock();
     typewrt_boot_led_cancel();
+    typewrt_battery_led_cancel();
     locks = __atomic_add_fetch(&typewrt_sd_write_locks, 1, __ATOMIC_RELAXED);
     if (locks != 1) {
         return;
@@ -1719,6 +1904,100 @@ void typewrt_sd_write_end(void)
             return;
         }
     }
+}
+
+static uint64_t typewrt_battery_check_interval_us(uint32_t soc_tenths)
+{
+    if (soc_tenths >= 500) {
+        return TYPEWRT_BATTERY_CHECK_HIGH_US;
+    }
+    if (soc_tenths >= TYPEWRT_BATTERY_WARN_LOW_SOC_TENTHS) {
+        return TYPEWRT_BATTERY_CHECK_MED_US;
+    }
+    return TYPEWRT_BATTERY_CHECK_LOW_US;
+}
+
+static void typewrt_battery_schedule_next_check(int64_t now, uint64_t delay_us)
+{
+    battery_next_check_us = now + (int64_t)delay_us;
+}
+
+static void typewrt_battery_monitor_check(bool force)
+{
+    typewrt_battery_sample_t sample;
+    int64_t now = esp_timer_get_time();
+    uint8_t warning_level = 0;
+    uint64_t warning_repeat_us = 0;
+    bool discharging;
+    esp_err_t ret;
+
+    if (!force && battery_next_check_us && now < battery_next_check_us) {
+        return;
+    }
+    typewrt_sleep_lock();
+    ret = typewrt_battery_read_sample(&sample);
+    typewrt_sleep_unlock();
+    if (ret != ESP_OK || sample.absent) {
+        battery_warning_level = 0;
+        battery_next_warning_us = 0;
+        typewrt_battery_schedule_next_check(now, TYPEWRT_BATTERY_CHECK_HIGH_US);
+        return;
+    }
+
+    typewrt_battery_schedule_next_check(now,
+        typewrt_battery_check_interval_us(sample.soc_tenths));
+    discharging = !typewrt_usb_power_present() && sample.rate_tenths <= 0;
+    if (!discharging) {
+        battery_warning_level = 0;
+        battery_next_warning_us = 0;
+        return;
+    }
+
+    if (sample.soc_tenths < TYPEWRT_BATTERY_WARN_CRIT_SOC_TENTHS) {
+        warning_level = 2;
+        warning_repeat_us = TYPEWRT_BATTERY_WARN_CRIT_REPEAT_US;
+    } else if (sample.soc_tenths < TYPEWRT_BATTERY_WARN_LOW_SOC_TENTHS) {
+        warning_level = 1;
+        warning_repeat_us = TYPEWRT_BATTERY_WARN_LOW_REPEAT_US;
+    } else {
+        battery_warning_level = 0;
+        battery_next_warning_us = 0;
+        return;
+    }
+
+    if (warning_level > battery_warning_level || !battery_next_warning_us ||
+            now >= battery_next_warning_us) {
+        if (warning_level == 2) {
+            typewrt_battery_led_start_critical();
+        } else {
+            typewrt_battery_led_start_low();
+        }
+        battery_next_warning_us = now + (int64_t)warning_repeat_us;
+    }
+    battery_warning_level = warning_level;
+}
+
+static void typewrt_battery_monitor_sleep_prepare(void)
+{
+    int64_t now;
+    uint64_t delay_us;
+
+    if (!battery_gauge_available || !battery_i2c_dev || !battery_next_check_us) {
+        (void)esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
+        return;
+    }
+    now = esp_timer_get_time();
+    delay_us = battery_next_check_us > now ?
+        (uint64_t)(battery_next_check_us - now) : 1;
+    esp_sleep_enable_timer_wakeup(delay_us);
+}
+
+static void typewrt_battery_monitor_start(void)
+{
+    battery_next_check_us = 0;
+    battery_next_warning_us = 0;
+    battery_warning_level = 0;
+    typewrt_battery_monitor_check(true);
 }
 
 static void typewrt_reset_button_enable(bool enabled)
