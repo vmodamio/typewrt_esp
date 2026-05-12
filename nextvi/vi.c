@@ -208,6 +208,7 @@ static void vi_drawrow(int row)
 #ifdef NEXTVI_NOTERM
 static void vi_insert_screen_enter(void)
 {
+	vi_insert_status_dirty = 0;
 	if (vi_insert_saved_xrows)
 		return;
 	vi_insert_saved_xrows = xrows;
@@ -1740,6 +1741,7 @@ void vi(int init)
 					} else if (xoff)
 						vi_delete(xrow, xoff - 1, xrow, xoff, 0);
 					term_back(xoff != lbuf_eol(xb, xrow, 1) ? 'i' : 'a');
+					vi_insert_screen_enter();
 					break;
 				}
 				if (c != 'A' && c != 'C' && xoff > 0)

@@ -698,7 +698,7 @@ static void *ec_write(char *loc, char *cmd, char *arg)
 	}
 	fspath = ex_pathresolve(path);
 #ifdef NEXTVI_EMBEDDED
-	typewrt_sleep_lock();
+	typewrt_sd_write_begin();
 #endif
 	fd = open(fspath, O_WRONLY | O_CREAT | O_TRUNC, conf_mode);
 	free(fspath);
@@ -729,7 +729,7 @@ static void *ec_write(char *loc, char *cmd, char *arg)
 		ec_quit("", cmd, "");
 	done:
 #ifdef NEXTVI_EMBEDDED
-	typewrt_sleep_unlock();
+	typewrt_sd_write_end();
 #endif
 	return ret;
 }

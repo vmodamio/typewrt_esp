@@ -101,6 +101,9 @@
 #define KBD_EVENT_SIZE sizeof( uint8_t )
 #define TYPEWRT_ENABLE_LIGHT_SLEEP 1
 #define TYPEWRT_LIGHT_SLEEP_IDLE_MS 1000
+#define TYPEWRT_LED_BOOT_BLINKS 2
+#define TYPEWRT_LED_BOOT_PULSE_US 250000
+#define TYPEWRT_LED_SD_BLINK_PERIOD_US 75000
 #define TYPEWRT_REFRESH_FULL_DISPLAY 0
 #define TYPEWRT_SD_MOUNT_POINT "/sdcard"
 #define TYPEWRT_RTC_I2C_PORT I2C_NUM_0
@@ -145,14 +148,21 @@ static bool display_cursor_drawn;
 static int display_cursor_row = -1;
 static int display_cursor_col = -1;
 static esp_timer_handle_t splash_clock_timer;
+static esp_timer_handle_t boot_led_timer;
+static esp_timer_handle_t sd_write_led_timer;
 static char splash_clock_last[24];
 static volatile uint32_t typewrt_sleep_locks;
+static volatile uint32_t boot_led_steps;
+static volatile bool boot_led_on;
+static volatile uint32_t typewrt_sd_write_locks;
+static volatile bool sd_write_led_on;
 static StaticSemaphore_t display_lock_storage;
 static SemaphoreHandle_t display_lock;
 bool typewrt_rtc_get_datetime(char *out, size_t out_len);
 bool typewrt_battery_get_status(char *out, size_t out_len);
 static void typewrt_light_sleep_if_idle(void);
 static void typewrt_power_led_update(void);
+static void typewrt_led_boot_blink_start(void);
 static void typewrt_usb_wakeup_prepare(void);
 static void typewrt_reset_button_enable(bool enabled);
 
@@ -1521,11 +1531,194 @@ static bool typewrt_usb_power_present(void)
     return gpio_get_level(PIN_5V_EN) == 1;
 }
 
-static void typewrt_power_led_update(void)
+static void typewrt_led_set(bool on)
 {
     (void)gpio_hold_dis(PIN_LEDN);
-    gpio_set_level(PIN_LEDN, typewrt_usb_power_present() ? 0 : 1);
+    gpio_set_level(PIN_LEDN, on ? 0 : 1);
+}
+
+static void typewrt_power_led_update(void)
+{
+    if (__atomic_load_n(&typewrt_sd_write_locks, __ATOMIC_RELAXED) != 0 ||
+            __atomic_load_n(&boot_led_steps, __ATOMIC_RELAXED) != 0) {
+        return;
+    }
+    typewrt_led_set(typewrt_usb_power_present());
     gpio_hold_en(PIN_LEDN);
+}
+
+static void typewrt_boot_led_cancel(void)
+{
+    __atomic_store_n(&boot_led_steps, 0, __ATOMIC_RELAXED);
+    if (boot_led_timer) {
+        esp_err_t ret = esp_timer_stop(boot_led_timer);
+        if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "Failed to stop boot LED timer: %s",
+                esp_err_to_name(ret));
+        }
+    }
+}
+
+static void typewrt_boot_led_timer_callback(void *arg)
+{
+    uint32_t steps;
+
+    (void)arg;
+    if (__atomic_load_n(&typewrt_sd_write_locks, __ATOMIC_RELAXED) != 0) {
+        __atomic_store_n(&boot_led_steps, 0, __ATOMIC_RELAXED);
+        return;
+    }
+    steps = __atomic_load_n(&boot_led_steps, __ATOMIC_RELAXED);
+    if (!steps) {
+        return;
+    }
+
+    boot_led_on = !boot_led_on;
+    typewrt_led_set(boot_led_on);
+    steps = __atomic_sub_fetch(&boot_led_steps, 1, __ATOMIC_RELAXED);
+    if (!steps) {
+        typewrt_power_led_update();
+        return;
+    }
+    esp_err_t ret = esp_timer_start_once(boot_led_timer,
+        TYPEWRT_LED_BOOT_PULSE_US);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to continue boot LED timer: %s",
+            esp_err_to_name(ret));
+        __atomic_store_n(&boot_led_steps, 0, __ATOMIC_RELAXED);
+        typewrt_power_led_update();
+    }
+}
+
+static bool typewrt_boot_led_timer_prepare(void)
+{
+    const esp_timer_create_args_t timer_args = {
+        .callback = typewrt_boot_led_timer_callback,
+        .name = "boot_led",
+    };
+    esp_err_t ret;
+
+    if (boot_led_timer) {
+        return true;
+    }
+    ret = esp_timer_create(&timer_args, &boot_led_timer);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to create boot LED timer: %s",
+            esp_err_to_name(ret));
+        return false;
+    }
+    return true;
+}
+
+static void typewrt_led_boot_blink_start(void)
+{
+    esp_err_t ret;
+
+    if (!typewrt_boot_led_timer_prepare()) {
+        return;
+    }
+    ret = esp_timer_stop(boot_led_timer);
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "Failed to reset boot LED timer: %s",
+            esp_err_to_name(ret));
+    }
+
+    boot_led_on = !typewrt_usb_power_present();
+    __atomic_store_n(&boot_led_steps, TYPEWRT_LED_BOOT_BLINKS * 2 - 1,
+        __ATOMIC_RELAXED);
+    typewrt_led_set(boot_led_on);
+    ret = esp_timer_start_once(boot_led_timer, TYPEWRT_LED_BOOT_PULSE_US);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to start boot LED timer: %s",
+            esp_err_to_name(ret));
+        __atomic_store_n(&boot_led_steps, 0, __ATOMIC_RELAXED);
+        typewrt_power_led_update();
+    }
+}
+
+static void typewrt_sd_write_led_timer_callback(void *arg)
+{
+    (void)arg;
+
+    if (__atomic_load_n(&typewrt_sd_write_locks, __ATOMIC_RELAXED) == 0) {
+        return;
+    }
+    sd_write_led_on = !sd_write_led_on;
+    typewrt_led_set(sd_write_led_on);
+}
+
+static bool typewrt_sd_write_led_timer_prepare(void)
+{
+    const esp_timer_create_args_t timer_args = {
+        .callback = typewrt_sd_write_led_timer_callback,
+        .name = "sd_led",
+    };
+    esp_err_t ret;
+
+    if (sd_write_led_timer) {
+        return true;
+    }
+    ret = esp_timer_create(&timer_args, &sd_write_led_timer);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to create SD write LED timer: %s",
+            esp_err_to_name(ret));
+        return false;
+    }
+    return true;
+}
+
+void typewrt_sd_write_begin(void)
+{
+    uint32_t locks;
+    esp_err_t ret;
+
+    typewrt_sleep_lock();
+    typewrt_boot_led_cancel();
+    locks = __atomic_add_fetch(&typewrt_sd_write_locks, 1, __ATOMIC_RELAXED);
+    if (locks != 1) {
+        return;
+    }
+    if (!typewrt_sd_write_led_timer_prepare()) {
+        return;
+    }
+
+    sd_write_led_on = true;
+    typewrt_led_set(true);
+    ret = esp_timer_stop(sd_write_led_timer);
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "Failed to reset SD write LED timer: %s",
+            esp_err_to_name(ret));
+    }
+    ret = esp_timer_start_periodic(sd_write_led_timer,
+        TYPEWRT_LED_SD_BLINK_PERIOD_US);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to start SD write LED timer: %s",
+            esp_err_to_name(ret));
+    }
+}
+
+void typewrt_sd_write_end(void)
+{
+    uint32_t locks = __atomic_load_n(&typewrt_sd_write_locks,
+        __ATOMIC_RELAXED);
+
+    while (locks) {
+        if (__atomic_compare_exchange_n(&typewrt_sd_write_locks, &locks,
+                locks - 1, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+            if (locks == 1) {
+                if (sd_write_led_timer) {
+                    esp_err_t ret = esp_timer_stop(sd_write_led_timer);
+                    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+                        ESP_LOGW(TAG, "Failed to stop SD write LED timer: %s",
+                            esp_err_to_name(ret));
+                    }
+                }
+                typewrt_power_led_update();
+            }
+            typewrt_sleep_unlock();
+            return;
+        }
+    }
 }
 
 static void typewrt_reset_button_enable(bool enabled)
@@ -1630,6 +1823,7 @@ static void power_mng_init(void)
     gpio_set_level(PIN_LEDN, 1);
     typewrt_power_led_update();
     typewrt_reset_button_enable(true);
+    typewrt_led_boot_blink_start();
 }
 
 
