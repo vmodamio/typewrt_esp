@@ -164,6 +164,7 @@ static esp_timer_handle_t boot_led_timer;
 static esp_timer_handle_t battery_led_timer;
 static esp_timer_handle_t sd_write_led_timer;
 static char splash_clock_last[24];
+static char splash_status_last[NEXTVI_DISPLAY_COLS + 1];
 static volatile uint32_t typewrt_sleep_locks;
 static volatile uint32_t boot_led_steps;
 static volatile bool boot_led_on;
@@ -484,21 +485,79 @@ static void renderBlankTextRow(int physical_row)
     renderTextRow(physical_row, blank);
 }
 
+static void splashBatteryStatus(char *out, size_t out_len)
+{
+    char status[96] = "";
+    char state[16] = "";
+    int whole, frac;
+    char marker = typewrt_usb_power_present() ? 'C' : 'D';
+
+    if (!out || out_len == 0) {
+        return;
+    }
+    out[0] = '\0';
+    if (!typewrt_battery_get_status(status, sizeof(status))) {
+        snprintf(out, out_len, "%c --%%", marker);
+        return;
+    }
+    if (!strncmp(status, "bat absent", 10)) {
+        snprintf(out, out_len, "%c --%%", marker);
+        return;
+    }
+    if (sscanf(status, "bat %d.%d%% %*s %15s", &whole, &frac, state) == 3) {
+        if (!strcmp(state, "chg")) {
+            marker = 'C';
+        } else if (!strcmp(state, "dis")) {
+            marker = 'D';
+        }
+        whole += frac >= 5 ? 1 : 0;
+        if (whole < 0) {
+            whole = 0;
+        }
+        if (whole > 100) {
+            whole = 100;
+        }
+        snprintf(out, out_len, "%c %d%%", marker, whole);
+        return;
+    }
+    snprintf(out, out_len, "%c --%%", marker);
+}
+
 static void splashStatusLine(char line[NEXTVI_DISPLAY_COLS + 1])
 {
     char timestamp[24];
+    char battery[16];
+    char right[64];
     size_t ts_len;
+    size_t right_len;
 
     memcpy(line, display_shadow[NEXTVI_DISPLAY_ROWS], NEXTVI_DISPLAY_COLS);
     line[NEXTVI_DISPLAY_COLS] = '\0';
     if (!typewrt_rtc_get_datetime(timestamp, sizeof(timestamp))) {
         return;
     }
+    splashBatteryStatus(battery, sizeof(battery));
+    snprintf(right, sizeof(right), "%s  %s", battery, timestamp);
+    right_len = strlen(right);
     ts_len = strlen(timestamp);
-    if (ts_len > NEXTVI_DISPLAY_COLS) {
+    if (right_len > NEXTVI_DISPLAY_COLS || ts_len > NEXTVI_DISPLAY_COLS) {
         return;
     }
-    memcpy(line + NEXTVI_DISPLAY_COLS - ts_len, timestamp, ts_len);
+    memcpy(line + NEXTVI_DISPLAY_COLS - right_len, right, right_len);
+}
+
+static void splash_schedule_status_wakeup(void)
+{
+    time_t now = time(NULL);
+    int seconds = 60 - (int)(now % 60);
+
+    if (!splash_active || !splash_drawn) {
+        return;
+    }
+    if (seconds <= 0 || seconds > 60) {
+        seconds = 60;
+    }
+    typewrt_sleep_set_ui_wakeup_us((uint64_t)seconds * 1000000ULL);
 }
 
 static void refreshSplashStatusClock(void)
@@ -513,6 +572,7 @@ static void refreshSplashStatusClock(void)
     if (!splash_active || !splash_drawn) {
         goto done;
     }
+    splash_schedule_status_wakeup();
     if (!typewrt_rtc_get_datetime(timestamp, sizeof(timestamp))) {
         goto done;
     }
@@ -522,6 +582,11 @@ static void refreshSplashStatusClock(void)
     strncpy(splash_clock_last, timestamp, sizeof(splash_clock_last) - 1);
     splash_clock_last[sizeof(splash_clock_last) - 1] = '\0';
     splashStatusLine(status_line);
+    if (!strcmp(status_line, splash_status_last)) {
+        goto done;
+    }
+    strncpy(splash_status_last, status_line, sizeof(splash_status_last) - 1);
+    splash_status_last[sizeof(splash_status_last) - 1] = '\0';
     renderTextRow(NEXTVI_DISPLAY_ROWS, status_line);
 done:
     displayUnlock();
@@ -576,8 +641,11 @@ static void drawSplashLayout(void)
     renderTextRow(NEXTVI_DISPLAY_ROWS - 1, display_shadow[0]);
     splashStatusLine(status_line);
     renderTextRow(NEXTVI_DISPLAY_ROWS, status_line);
+    strncpy(splash_status_last, status_line, sizeof(splash_status_last) - 1);
+    splash_status_last[sizeof(splash_status_last) - 1] = '\0';
     typewrt_rtc_get_datetime(splash_clock_last, sizeof(splash_clock_last));
     splash_drawn = true;
+    splash_schedule_status_wakeup();
 }
 
 static void disableSplash(void)
@@ -588,6 +656,7 @@ static void disableSplash(void)
     if (splash_clock_timer) {
         (void)esp_timer_stop(splash_clock_timer);
     }
+    typewrt_sleep_clear_ui_wakeup();
     if (display_cursor_drawn && cursorCellValid(display_cursor_row, display_cursor_col)) {
         invertCursorCell(display_cursor_row, display_cursor_col);
     }
@@ -1493,6 +1562,7 @@ static void typewrt_light_sleep_if_idle(void)
 
     typewrt_power_led_update();
     typewrt_usb_wakeup_prepare();
+    splash_schedule_status_wakeup();
     typewrt_timer_wakeup_prepare();
     kbd_prepare_wakeup_rows();
     ret = esp_light_sleep_start();
@@ -1500,6 +1570,7 @@ static void typewrt_light_sleep_if_idle(void)
         ESP_LOGW(TAG, "light sleep failed: %s", esp_err_to_name(ret));
     }
     typewrt_power_led_update();
+    refreshSplashStatusClock();
     typewrt_battery_monitor_check(false);
 
     KBD_SCANCOUNT = SCANTIMEOUT;
@@ -1663,6 +1734,7 @@ static void splash_clock_start(void)
     const esp_timer_create_args_t timer_args = {
         .callback = splashClockTimerCallback,
         .name = "splash_clock",
+        .skip_unhandled_events = true,
     };
 
     if (splash_clock_timer) {
