@@ -175,6 +175,7 @@ static uint32_t battery_led_on_us;
 static uint32_t battery_led_off_us;
 static int64_t battery_next_check_us;
 static int64_t battery_next_warning_us;
+static volatile int64_t typewrt_ui_wakeup_deadline_us;
 static uint8_t battery_warning_level;
 static volatile uint32_t typewrt_sd_write_locks;
 static volatile bool sd_write_led_on;
@@ -186,7 +187,7 @@ static void typewrt_light_sleep_if_idle(void);
 static void typewrt_power_led_update(void);
 static void typewrt_led_boot_blink_start(void);
 static void typewrt_battery_monitor_check(bool force);
-static void typewrt_battery_monitor_sleep_prepare(void);
+static void typewrt_timer_wakeup_prepare(void);
 static void typewrt_battery_monitor_start(void);
 static void typewrt_usb_wakeup_prepare(void);
 static void typewrt_reset_button_enable(bool enabled);
@@ -367,6 +368,17 @@ void updateRow(uint8_t row) {
   sharpmem_finish_write(&t, 1);
   }
 
+static void updatePhysicalLine(uint16_t physical_line) {
+  spi_transaction_t t;
+
+  if (physical_line >= PXHEIGHT) {
+    return;
+  }
+  sharpmem_start_write(&t, 1);
+  sharpmem_send_physical_line(&t, physical_line);
+  sharpmem_finish_write(&t, 1);
+}
+
 void clearDisplayBuffer() {
   memset(sharpmem_buffer, 0xFF, SHARPMEM_BUFFER_BYTES);
 }
@@ -433,7 +445,7 @@ static bool displayShadowRowHasVisibleText(int row)
     return false;
 }
 
-static void renderTextRow(int physical_row, const char *text)
+static void renderTextRowMode(int physical_row, const char *text, bool inverted)
 {
     if (!sharpmem_buffer || physical_row < 0 || physical_row > NEXTVI_DISPLAY_ROWS) {
         return;
@@ -443,12 +455,26 @@ static void renderTextRow(int physical_row, const char *text)
         unsigned char ch = (unsigned char)text[col];
         displayGlyph(col, physical_row, ch ? ch : ' ');
     }
+    if (inverted) {
+        for (int m = 0; m < PSF_GLYPH_SIZE; m++) {
+            uint8_t *line = sharpmem_buffer +
+                (physical_row * PSF_GLYPH_SIZE + m) * SHARPMEM_BYTES_PER_LINE;
+            for (int byte = 0; byte < SHARPMEM_BYTES_PER_LINE; byte++) {
+                line[byte] ^= 0xff;
+            }
+        }
+    }
     markPhysicalRowRedrawn(physical_row);
 #if TYPEWRT_REFRESH_FULL_DISPLAY
     refreshDisplay();
 #else
     updateRow((uint8_t)physical_row);
 #endif
+}
+
+static void renderTextRow(int physical_row, const char *text)
+{
+    renderTextRowMode(physical_row, text, false);
 }
 
 static void renderBlankTextRow(int physical_row)
@@ -607,6 +633,38 @@ done:
     displayUnlock();
 }
 
+void nextvi_display_refresh_line_inverted(int row, const char *text, int cols)
+{
+    if (!sharpmem_buffer || row < 0 || row > NEXTVI_DISPLAY_ROWS) {
+        return;
+    }
+
+    displayLock();
+    copyDisplayShadow(row, text, cols);
+    if (splash_active) {
+        disableSplash();
+    }
+    renderTextRowMode(row, display_shadow[row], true);
+    displayUnlock();
+}
+
+void nextvi_display_draw_hline(int y, int color)
+{
+    if (!sharpmem_buffer || y < 0 || y >= PXHEIGHT) {
+        return;
+    }
+
+    displayLock();
+    if (splash_active) {
+        disableSplash();
+    }
+    memset(sharpmem_buffer + y * SHARPMEM_BYTES_PER_LINE,
+        color ? 0xff : 0x00, SHARPMEM_BYTES_PER_LINE);
+    markPhysicalRowRedrawn(y / PSF_GLYPH_SIZE);
+    updatePhysicalLine((uint16_t)y);
+    displayUnlock();
+}
+
 static int cursorCellValid(int row, int col)
 {
     return sharpmem_buffer && row >= 0 && row <= NEXTVI_DISPLAY_ROWS &&
@@ -738,17 +796,34 @@ static unsigned char nextvi_keyboard_translate_event(unsigned char event)
     return event;
 }
 
-int nextvi_keyboard_read(unsigned char *event)
+static int nextvi_keyboard_read_wait(unsigned char *event, TickType_t wait_ticks,
+    bool return_on_idle)
 {
     if (!keyboard) {
         return 0;
     }
-    while (xQueueReceive(keyboard, event,
-            pdMS_TO_TICKS(TYPEWRT_LIGHT_SLEEP_IDLE_MS)) != pdTRUE) {
+    while (xQueueReceive(keyboard, event, wait_ticks) != pdTRUE) {
         typewrt_light_sleep_if_idle();
+        if (return_on_idle) {
+            return 0;
+        }
     }
     *event = nextvi_keyboard_translate_event(*event);
     return 1;
+}
+
+int nextvi_keyboard_read(unsigned char *event)
+{
+    return nextvi_keyboard_read_wait(event,
+        pdMS_TO_TICKS(TYPEWRT_LIGHT_SLEEP_IDLE_MS), false);
+}
+
+int nextvi_keyboard_read_timeout(unsigned char *event, int timeout_ms)
+{
+    if (timeout_ms < 0) {
+        return nextvi_keyboard_read(event);
+    }
+    return nextvi_keyboard_read_wait(event, pdMS_TO_TICKS(timeout_ms), true);
 }
 
 static void vNextviTask(void *pvParameters)
@@ -1344,6 +1419,19 @@ void typewrt_sleep_unlock(void)
     }
 }
 
+void typewrt_sleep_set_ui_wakeup_us(uint64_t delay_us)
+{
+    int64_t deadline = esp_timer_get_time() + (int64_t)delay_us;
+
+    __atomic_store_n(&typewrt_ui_wakeup_deadline_us, deadline,
+        __ATOMIC_RELAXED);
+}
+
+void typewrt_sleep_clear_ui_wakeup(void)
+{
+    __atomic_store_n(&typewrt_ui_wakeup_deadline_us, 0, __ATOMIC_RELAXED);
+}
+
 static bool typewrt_sleep_is_locked(void)
 {
     return __atomic_load_n(&typewrt_sleep_locks, __ATOMIC_RELAXED) != 0;
@@ -1405,7 +1493,7 @@ static void typewrt_light_sleep_if_idle(void)
 
     typewrt_power_led_update();
     typewrt_usb_wakeup_prepare();
-    typewrt_battery_monitor_sleep_prepare();
+    typewrt_timer_wakeup_prepare();
     kbd_prepare_wakeup_rows();
     ret = esp_light_sleep_start();
     if (ret != ESP_OK) {
@@ -1584,7 +1672,7 @@ static void splash_clock_start(void)
     ESP_ERROR_CHECK(esp_timer_start_periodic(splash_clock_timer, 1000000));
 }
 
-static bool typewrt_usb_power_present(void)
+bool typewrt_usb_power_present(void)
 {
     return gpio_get_level(PIN_5V_EN) == 1;
 }
@@ -1977,18 +2065,33 @@ static void typewrt_battery_monitor_check(bool force)
     battery_warning_level = warning_level;
 }
 
-static void typewrt_battery_monitor_sleep_prepare(void)
+static void typewrt_timer_wakeup_prepare(void)
 {
     int64_t now;
-    uint64_t delay_us;
+    uint64_t delay_us = 0;
+    int64_t ui_deadline;
+    bool have_timer = false;
 
-    if (!battery_gauge_available || !battery_i2c_dev || !battery_next_check_us) {
+    now = esp_timer_get_time();
+    if (battery_gauge_available && battery_i2c_dev && battery_next_check_us) {
+        delay_us = battery_next_check_us > now ?
+            (uint64_t)(battery_next_check_us - now) : 1;
+        have_timer = true;
+    }
+    ui_deadline = __atomic_load_n(&typewrt_ui_wakeup_deadline_us,
+        __ATOMIC_RELAXED);
+    if (ui_deadline > 0) {
+        uint64_t ui_delay_us = ui_deadline > now ?
+            (uint64_t)(ui_deadline - now) : 1;
+        if (!have_timer || ui_delay_us < delay_us) {
+            delay_us = ui_delay_us;
+        }
+        have_timer = true;
+    }
+    if (!have_timer) {
         (void)esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
         return;
     }
-    now = esp_timer_get_time();
-    delay_us = battery_next_check_us > now ?
-        (uint64_t)(battery_next_check_us - now) : 1;
     esp_sleep_enable_timer_wakeup(delay_us);
 }
 

@@ -291,7 +291,10 @@ extern unsigned int texec, tn;
 int nextvi_keyboard_queue_push(unsigned char event);
 int nextvi_keyboard_queue_pop(unsigned char *event);
 int nextvi_keyboard_read(unsigned char *event);
+int nextvi_keyboard_read_timeout(unsigned char *event, int timeout_ms);
 void nextvi_display_refresh_line(int row, const char *text, int cols);
+void nextvi_display_refresh_line_inverted(int row, const char *text, int cols);
+void nextvi_display_draw_hline(int y, int color);
 void nextvi_display_refresh_cursor(int row, int col, int on);
 void nextvi_display_move_cursor(int old_row, int old_col,
 	int new_row, int new_col, int on);
@@ -312,6 +315,7 @@ void term_cursor_suspend(int on);
 void term_kill(void);
 void term_room(int n);
 int term_read(int winch);
+int term_read_timeout(int winch, int timeout_ms);
 void term_commit(void);
 void term_push(char *s, unsigned int n);
 void term_back(int c);
@@ -453,6 +457,10 @@ void ex_regesc(sbuf *sb, char *beg, char *end, int ex);
 int ex_edit(const char *path, int len);
 void ex_regput(unsigned char c, const char *s, int append);
 char *ex_pathresolve(const char *path);
+#ifdef NEXTVI_EMBEDDED
+int nextvi_menu_run(void);
+void nextvi_menu_mark_synced(const char *path);
+#endif
 
 /* conf.c: configuration variables */
 extern const int conf_mode;

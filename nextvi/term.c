@@ -250,10 +250,12 @@ static void noterm_modifier(unsigned char ev)
 	*state = !!(ev & NEXTVI_KEY_PRESS);
 }
 
-static int noterm_key_event(void)
+static int noterm_key_event_timeout(int timeout_ms)
 {
 	unsigned char ev, code, ch;
-	while (nextvi_keyboard_read(&ev) > 0) {
+	while ((timeout_ms >= 0 ?
+			nextvi_keyboard_read_timeout(&ev, timeout_ms) :
+			nextvi_keyboard_read(&ev)) > 0) {
 		if (ev & NEXTVI_KEY_MODIFIER) {
 			noterm_modifier(ev);
 			continue;
@@ -275,11 +277,27 @@ static int noterm_key_event(void)
 	return 0;
 }
 
+static int noterm_key_event(void)
+{
+	return noterm_key_event_timeout(-1);
+}
+
 __attribute__((weak)) void nextvi_display_refresh_line(int row, const char *text, int cols)
 {
 	(void)row;
 	(void)text;
 	(void)cols;
+}
+
+__attribute__((weak)) void nextvi_display_refresh_line_inverted(int row, const char *text, int cols)
+{
+	nextvi_display_refresh_line(row, text, cols);
+}
+
+__attribute__((weak)) void nextvi_display_draw_hline(int y, int color)
+{
+	(void)y;
+	(void)color;
 }
 
 __attribute__((weak)) void nextvi_display_refresh_cursor(int row, int col, int on)
@@ -600,4 +618,34 @@ int term_read(int winch)
 	if (icmd_pos < sizeof(icmd))
 		icmd[icmd_pos++] = ibuf[ibuf_pos];
 	return ibuf[ibuf_pos++];
+}
+
+int term_read_timeout(int winch, int timeout_ms)
+{
+#ifndef NEXTVI_NOTERM
+	(void)timeout_ms;
+	return term_read(winch);
+#else
+	if (ibuf_pos >= ibuf_cnt) {
+		if (texec) {
+			xquit = !xquit ? 1 : xquit;
+			if (texec == '&')
+				goto err;
+		}
+		if (term_winch && winch) {
+			*ibuf = winch;
+			goto ret;
+		}
+		if (!(*ibuf = noterm_key_event_timeout(timeout_ms))) {
+			err:
+			*ibuf = 0;
+		}
+		ret:
+		ibuf_cnt = 1;
+		ibuf_pos = 0;
+	}
+	if (icmd_pos < sizeof(icmd))
+		icmd[icmd_pos++] = ibuf[ibuf_pos];
+	return ibuf[ibuf_pos++];
+#endif
 }

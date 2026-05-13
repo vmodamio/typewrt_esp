@@ -29,6 +29,7 @@ void led_prompt_width(int width);
 #include "regex.c"
 #include "ren.c"
 #include "term.c"
+#include "menu.c"
 #include "uc.c"
 
 int vi_hidch;			/* show hidden chars */
@@ -2020,7 +2021,18 @@ void nextvi_main(int argc, char *argv[])
 	ibuf = emalloc(ibuf_sz);
 	term_init();
 	ex_init(argv + 1, argc - 1);
+#ifdef NEXTVI_EMBEDDED
+	for (;;) {
+		vi(1);
+		if (!xquit)
+			break;
+		xquit = 0;
+		if (!nextvi_menu_run())
+			break;
+	}
+#else
 	vi(1);
+#endif
 	term_done();
 }
 

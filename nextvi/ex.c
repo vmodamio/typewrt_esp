@@ -365,7 +365,7 @@ static int ex_readfile(void)
 
 int ex_edit(const char *path, int len)
 {
-	int fd;
+	int fd, ret;
 	if (path[0] == '.' && path[1] == '/') {
 		path += 2;
 		len -= 2;
@@ -375,7 +375,9 @@ int ex_edit(const char *path, int len)
 		return 1;
 	}
 	bufs_switch(bufs_open(path, len));
-	ex_readfile();
+	ret = ex_readfile();
+	if (ret <= 0)
+		ex_bufpostfix(ex_buf, 0);
 	return 0;
 }
 
@@ -1452,6 +1454,19 @@ static void *ec_off(char *loc, char *cmd, char *arg)
 #endif
 }
 
+static void *ec_menu(char *loc, char *cmd, char *arg)
+{
+#ifdef NEXTVI_EMBEDDED
+	(void)loc;
+	(void)cmd;
+	(void)arg;
+	xquit = !xquit ? 1 : xquit;
+	return NULL;
+#else
+	return "unsupported command";
+#endif
+}
+
 static void *ec_battery(char *loc, char *cmd, char *arg)
 {
 #ifdef NEXTVI_EMBEDDED
@@ -1513,6 +1528,12 @@ static void *ec_ble(char *loc, char *cmd, char *arg)
 	}
 	if (err)
 		return (void*)err;
+#ifdef NEXTVI_EMBEDDED
+	if (*a)
+		nextvi_menu_mark_synced(a);
+	else if (*xb_path && !xb->modified)
+		nextvi_menu_mark_synced(xb_path);
+#endif
 	typewrt_ble_get_status(msg, sizeof(msg));
 	ex_print(msg)
 	return NULL;
@@ -1600,6 +1621,7 @@ static struct excmd {
 	{"g!", ec_glob},
 	{"g", ec_glob},
 	EO(mpt),
+	{"menu", ec_menu},
 	{"m", ec_mark},
 	{"off", ec_off},
 	{"q!", ec_quit},

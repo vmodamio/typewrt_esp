@@ -42,6 +42,53 @@ the repository contents REST API. `https://pandoc.org/app/` itself is browser-si
 Pandoc WASM, so the native app expects a real `pandoc-server` URL such as
 `http://192.168.1.20:3030/`.
 
+## Menu file browser
+
+On embedded Typewrt, quitting the editor with commands such as `:q` enters `menu`
+instead of ending the Nextvi task. The top status row shows RTC time/date and battery
+state with `C` for charging or `D` for discharging, the bottom status row shows the
+current filesystem path, and the middle rows show one file or directory per line. The
+top row is separated from the file list by a lowered 2 px rule and one spacer row. The
+SD card mount point `/sdcard` is presented as the menu root `/`.
+
+Entry prefixes:
+
+| Prefix | Meaning |
+| --- | --- |
+| `[/]` | Directory |
+| `[s]` | File queued for BLE sync and unchanged since then |
+| `[-]` | File not synced, or changed since the last BLE send |
+
+Normal menu keys:
+
+| Key | Action |
+| --- | --- |
+| `j` / `k` | Move down/up |
+| `h` | Go up one directory, like `cd ..` |
+| `l` | Open the selected entry, entering directories |
+| `Ctrl-D` / `Ctrl-U` | Page down/up |
+| `g` / `G` | First/last entry |
+| `Enter` or `o` | Open file, or enter directory |
+| `b` | Send selected file by BLE |
+| `d` | Delete selected file/directory after confirmation |
+| `r` | Rename selected entry |
+| `c` | Copy selected file |
+| `R` | Refresh listing |
+| `P` | Power off |
+| `:` | Open menu command prompt |
+| `q` | Return to the current editor buffer |
+
+Each listing row reserves right-hand columns for word count and last modification time.
+Word counts use compact units such as `846 w` or `1.5 kw`. Modification time is shown
+as `HH:mm` for files changed today, `dd Mon` for this year, and `Mon YYYY` for
+older years.
+
+Menu commands include `cd PATH`, `cd ..`, `cd -`, `ls`, `ls -s`, `ls -rt`,
+`ls *pattern*`, `mkdir PATH`, `open PATH`, `ble [PATH|status|off]`, `rtc [datetime]`,
+`battery`, `off`, `rename`, `copy`, and `delete`. The command prompt temporarily
+replaces the bottom status row. Directory listing state is remembered per directory,
+including cursor position, scroll position, sort mode, and filter.
+
 ## LED notifications
 
 The external LED is active-low on `PIN_LEDN`.
