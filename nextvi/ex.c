@@ -40,6 +40,7 @@ static int xexp = '%';		/* ex command internal state expand  */
 static char xuerr[] = "unreported error";
 #ifdef NEXTVI_EMBEDDED
 #include <stdbool.h>
+#include "typewrt_ble.h"
 #include "typewrt_power.h"
 static char ex_vcwd[4096] = "/sdcard";
 bool typewrt_rtc_get_datetime(char *out, size_t out_len);
@@ -1466,6 +1467,60 @@ static void *ec_battery(char *loc, char *cmd, char *arg)
 #endif
 }
 
+static void *ec_ble(char *loc, char *cmd, char *arg)
+{
+#ifdef NEXTVI_EMBEDDED
+	char msg[128], *fspath;
+	char *a, *end;
+	const char *err;
+	sbuf payload;
+	(void)loc;
+	(void)cmd;
+
+	a = arg;
+	while (*a == ' ' || *a == '\t')
+		a++;
+	end = a + strlen(a);
+	while (end > a && (end[-1] == ' ' || end[-1] == '\t'))
+		*--end = '\0';
+
+	if (!strcmp(a, "off")) {
+		typewrt_ble_stop();
+		typewrt_ble_get_status(msg, sizeof(msg));
+		ex_print(msg)
+		return NULL;
+	}
+	if (!strcmp(a, "status")) {
+		typewrt_ble_get_status(msg, sizeof(msg));
+		ex_print(msg)
+		return NULL;
+	}
+
+	if (*a) {
+		fspath = ex_pathresolve(a);
+		err = typewrt_ble_send_file(a, fspath);
+		free(fspath);
+	} else {
+		if (lbuf_len(xb))
+			lbuf_region(xb, &payload, 0, 0, lbuf_len(xb) - 1, -1);
+		else {
+			_sbuf_make((&payload), 1,)
+			sbuf_null((&payload))
+		}
+		err = typewrt_ble_send_buffer(*xb_path ? xb_path : "unnamed.txt",
+			payload.s, payload.s_n);
+		free(payload.s);
+	}
+	if (err)
+		return (void*)err;
+	typewrt_ble_get_status(msg, sizeof(msg));
+	ex_print(msg)
+	return NULL;
+#else
+	return "unsupported command";
+#endif
+}
+
 static int eo_val(char *arg)
 {
 	int val = atoi(arg);
@@ -1514,6 +1569,7 @@ static struct excmd {
 	{"bx", ec_setbufsmax},
 	{"battery", ec_battery},
 	{"bat", ec_battery},
+	{"ble", ec_ble},
 	{"b", ec_buffer},
 	EO(pac),
 	EO(pr),

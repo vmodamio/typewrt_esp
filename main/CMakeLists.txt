@@ -1,6 +1,6 @@
-idf_component_register(SRCS "typewrt.c" "../nextvi/vi.c"
+idf_component_register(SRCS "typewrt.c" "typewrt_ble.c" "../nextvi/vi.c"
 	               REQUIRES "esp_driver_gpio" 
-		       PRIV_REQUIRES "esp_timer esp_driver_spi esp_driver_uart esp_driver_i2c fatfs sdmmc esp_driver_sdspi" 
+		       PRIV_REQUIRES "esp_timer esp_driver_spi esp_driver_uart esp_driver_i2c fatfs sdmmc esp_driver_sdspi bt nvs_flash" 
                        INCLUDE_DIRS "../include" "../nextvi")
 
 target_compile_definitions(${COMPONENT_LIB} PRIVATE

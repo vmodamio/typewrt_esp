@@ -732,6 +732,16 @@ EX COMMANDS
              than the number of buffers currently in use.
              No argument will reset to the default value of 10.
 
+     ble[path | status | off]
+             Embedded BLE file transfer command for the Typewrt ESP-IDF backend
+
+             No argument queues the current buffer for transfer. A path argument
+             queues that SD card file. Use :ble status to inspect the current
+             state and :ble off to cancel a pending transfer.
+
+             Connect to the Typewrt BLE peripheral and subscribe to
+             characteristic 0xffe1 under service 0xffe0 to receive the file.
+
      cd[path]
              Set a working directory
 
