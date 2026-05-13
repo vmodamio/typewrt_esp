@@ -1914,7 +1914,12 @@ void vi(int init)
 					vi_mod |= 1;
 					break;
 				}
-				continue;
+				/*
+				On the embedded display, clearing a temporary prompt/status
+				message can redraw the row that contains the cursor.  Let ESC
+				take the normal tail path so the cursor is restored there.
+				*/
+				break;
 			default:
 				continue;
 			}
