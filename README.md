@@ -29,7 +29,8 @@ is written to the file.
 ## BLE file transfer
 
 The Typewrt backend exposes an on-demand BLE GATT service named `Typewrt` for sending
-text files to a phone. Bluetooth stays off until a transfer command is used.
+text files to a phone and receiving files from a phone while the menu is open.
+Bluetooth stays off until a transfer command is used.
 
 | Command | Action |
 | --- | --- |
@@ -37,6 +38,7 @@ text files to a phone. Bluetooth stays off until a transfer command is used.
 | `:ble path` | Queue and advertise a file from the SD card |
 | `:ble status` | Show the current BLE state |
 | `:ble off` | Cancel the pending transfer and turn BLE back off |
+| Menu `ble recv` | Receive files into the current menu directory |
 
 Connect from a BLE client such as nRF Connect or LightBlue, open service `0xffe0`,
 and subscribe to characteristic `0xffe1`. The transfer is sent as notifications with
@@ -44,16 +46,23 @@ a `TYPEWRT-FILE` header, the raw file bytes, and a `TYPEWRT-END` footer. While a
 transfer is pending or active, the firmware keeps light sleep locked; after a transfer
 finishes, BLE disconnects and light sleep is allowed again.
 
+For receive mode, open the menu, run `ble recv`, connect from the phone, and write
+one or more `TYPEWRT-FILE <bytes> <name>\n` streams to characteristic `0xffe2`.
+The firmware writes each file directly into the menu's current directory; an optional
+`TYPEWRT-END <bytes> <name>\n` line after the raw bytes is accepted and ignored.
+
 ### Android companion app
 
-A tiny Android receiver lives in `companion/typewrt-android`. Open that folder in
-Android Studio, install the app on a phone, run `:ble` or `:ble path` on Typewrt,
-then tap **Connect Typewrt** in the app. Received files are saved under
-`Downloads/Typewrt`.
+A tiny Android companion lives in `companion/typewrt-android`. Open that folder in
+Android Studio and install the app on a phone. To receive from Typewrt, run `:ble`
+or `:ble path` on Typewrt, then tap **Receive from Typewrt** in the app. Received
+files are saved under `Downloads/Typewrt`.
 
-The app uses the same service/characteristic pair as the raw BLE workflow:
-service `0xffe0`, TX notifications on `0xffe1`, and the `TYPEWRT-FILE` stream
-format described above.
+To send a phone-side text file into the embedded editor's SD card, open the Typewrt
+menu in the target directory, run `ble recv`, choose a text document in the app,
+then tap **Send to Typewrt**. The app uses service `0xffe0`, TX notifications on
+`0xffe1` for phone receive, RX writes on `0xffe2` for Typewrt receive, and the
+`TYPEWRT-FILE` stream format described above.
 
 The companion can also export the latest received file through a reachable
 `pandoc-server`, then upload the latest received or exported file to GitHub using
@@ -104,7 +113,7 @@ as `HH:mm` for files changed today, `dd Mon` for this year, and `Mon YYYY` for
 older years.
 
 Menu commands include `cd PATH`, `cd ..`, `cd -`, `ls`, `ls -s`, `ls -rt`,
-`ls *pattern*`, `mkdir PATH`, `open PATH`, `ble [PATH|status|off]`, `rtc [datetime]`,
+`ls *pattern*`, `mkdir PATH`, `open PATH`, `ble [PATH|recv|status|off]`, `rtc [datetime]`,
 `battery`, `off`, `rename`, `copy`, and `delete`. The command prompt temporarily
 replaces the bottom status row. Directory listing state is remembered per directory,
 including cursor position, scroll position, sort mode, and filter.

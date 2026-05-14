@@ -1,16 +1,28 @@
 # Typewrt Android Companion
 
-Tiny Android receiver for Typewrt BLE file transfers.
+Tiny Android companion for Typewrt BLE file transfers.
 
 ## Use
 
+### Receive from Typewrt
+
 1. On Typewrt, run `:ble` to send the current buffer, or `:ble path` to send a file from the SD card.
 2. Open this app on the phone.
-3. Tap **Connect Typewrt** and accept the Bluetooth permission prompt.
+3. Tap **Receive from Typewrt** and accept the Bluetooth permission prompt.
 4. The received file is saved to `Downloads/Typewrt`.
 
 The app connects to the Typewrt BLE service `0xffe0`, subscribes to the TX characteristic
 `0xffe1`, receives the `TYPEWRT-FILE` stream, and stores the raw file bytes locally.
+
+### Send to Typewrt
+
+1. From the Typewrt menu, enter `ble recv` to advertise receive mode in the current directory.
+2. In the Android app, tap **Choose text file** and pick a local text document.
+3. Tap **Send to Typewrt**.
+
+The app writes the same `TYPEWRT-FILE <bytes> <name>\n` stream to the RX characteristic
+`0xffe2`. Typewrt saves the file in the directory that was open in the menu when `ble recv`
+was started.
 
 ## Pandoc export
 

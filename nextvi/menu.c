@@ -63,6 +63,7 @@ typedef struct {
 	int top_valid;
 	time_t top_minute;
 	int top_power_state;
+	unsigned ble_status_generation;
 	char top_line[NEXTVI_DISPLAY_COLS + 1];
 } menu_state;
 
@@ -601,6 +602,20 @@ static int menu_read_key(menu_state *m)
 	return c;
 }
 
+static int menu_ble_poll(menu_state *m)
+{
+	unsigned gen = typewrt_ble_status_generation();
+	char status[128];
+
+	if (gen == m->ble_status_generation)
+		return 0;
+	m->ble_status_generation = gen;
+	typewrt_ble_get_status(status, sizeof(status));
+	menu_set_message(m, status);
+	menu_load(m);
+	return 1;
+}
+
 static void menu_format_words(char *out, int out_len, long words)
 {
 	if (out_len <= 0)
@@ -981,6 +996,19 @@ static void menu_ble_path(menu_state *m, const char *display, const char *path)
 	menu_load(m);
 }
 
+static void menu_ble_receive(menu_state *m)
+{
+	const char *err = typewrt_ble_receive_dir(ex_vcwd);
+	char status[128];
+	if (err) {
+		menu_set_message(m, err);
+		return;
+	}
+	m->ble_status_generation = typewrt_ble_status_generation();
+	typewrt_ble_get_status(status, sizeof(status));
+	menu_set_message(m, status);
+}
+
 static void menu_ble_selected(menu_state *m)
 {
 	menu_entry *e = menu_selected(m);
@@ -1143,13 +1171,15 @@ static int menu_command(menu_state *m, char *cmdline)
 		free(dpath);
 		return 0;
 	}
-	if (!strcmp(cmd, "ble")) {
-		p = menu_trim(p);
-		if (!*p)
-			menu_ble_selected(m);
-		else if (!strcmp(p, "off")) {
-			typewrt_ble_stop();
-			menu_set_message(m, "ble off");
+		if (!strcmp(cmd, "ble")) {
+			p = menu_trim(p);
+			if (!*p)
+				menu_ble_selected(m);
+			else if (!strcmp(p, "recv") || !strcmp(p, "receive"))
+				menu_ble_receive(m);
+			else if (!strcmp(p, "off")) {
+				typewrt_ble_stop();
+				menu_set_message(m, "ble off");
 		} else if (!strcmp(p, "status")) {
 			char status[128];
 			typewrt_ble_get_status(status, sizeof(status));
@@ -1217,6 +1247,7 @@ int nextvi_menu_run(void)
 	menu_state m;
 	memset(&m, 0, sizeof(m));
 	menu_dir_state_restore(&m, ex_vcwd);
+	m.ble_status_generation = typewrt_ble_status_generation();
 	menu_load(&m);
 	while (1) {
 		char cmd[256];
@@ -1224,6 +1255,8 @@ int nextvi_menu_run(void)
 		menu_draw(&m);
 		c = menu_read_key(&m);
 		if (!c) {
+			if (menu_ble_poll(&m))
+				continue;
 			if (m.bottom_message_active)
 				menu_draw_bottom_path(&m);
 			continue;

@@ -20,8 +20,15 @@ import android.bluetooth.le.ScanResult;
 import android.bluetooth.le.ScanSettings;
 import android.content.ContentResolver;
 import android.content.ContentValues;
+import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
+import android.database.Cursor;
 import android.graphics.Typeface;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
+import android.graphics.drawable.StateListDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -30,6 +37,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.ParcelUuid;
 import android.provider.MediaStore;
+import android.provider.OpenableColumns;
 import android.text.InputType;
 import android.text.method.ScrollingMovementMethod;
 import android.view.Gravity;
@@ -37,6 +45,7 @@ import android.view.View;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Spinner;
@@ -62,15 +71,32 @@ import org.json.JSONObject;
 
 public class MainActivity extends Activity {
     private static final int REQUEST_BLE_PERMISSIONS = 7;
+    private static final int REQUEST_PICK_TEXT_FILE = 8;
     private static final long SCAN_TIMEOUT_MS = 15000;
     private static final long MAX_FILE_BYTES = 20L * 1024L * 1024L;
     private static final int HTTP_TIMEOUT_MS = 30000;
+    private static final int DEFAULT_BLE_WRITE_CHUNK = 20;
+    private static final int MAX_BLE_WRITE_CHUNK = 180;
+    private static final long SPLASH_DURATION_MS = 950;
+    private static final int COLOR_BACKGROUND = 0xFF212121;
+    private static final int COLOR_SURFACE = 0xFF2B2B2B;
+    private static final int COLOR_SURFACE_HIGH = 0xFF33383D;
+    private static final int COLOR_FIELD = 0xFF262A2E;
+    private static final int COLOR_STROKE = 0xFF454A50;
+    private static final int COLOR_TEXT_PRIMARY = 0xFFFFFFFF;
+    private static final int COLOR_TEXT_SECONDARY = 0xFFC8D0D6;
+    private static final int COLOR_TEXT_MUTED = 0xFF8E989F;
+    private static final int COLOR_BLUE = 0xFF64B5F6;
+    private static final int COLOR_BLUE_DARK = 0xFF1976D2;
+    private static final int COLOR_RIPPLE = 0x3342A5F5;
     private static final String GITHUB_API_VERSION = "2026-03-10";
 
     private static final UUID SERVICE_UUID =
         UUID.fromString("0000ffe0-0000-1000-8000-00805f9b34fb");
     private static final UUID TX_UUID =
         UUID.fromString("0000ffe1-0000-1000-8000-00805f9b34fb");
+    private static final UUID RX_UUID =
+        UUID.fromString("0000ffe2-0000-1000-8000-00805f9b34fb");
     private static final UUID CCCD_UUID =
         UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
     private static final ParcelUuid SERVICE_PARCEL_UUID = new ParcelUuid(SERVICE_UUID);
@@ -82,9 +108,12 @@ public class MainActivity extends Activity {
     private TextView statusView;
     private TextView detailsView;
     private TextView activeFileView;
+    private TextView preparedFileView;
     private TextView logView;
     private Button connectButton;
     private Button disconnectButton;
+    private Button chooseTextButton;
+    private Button sendTypewrtButton;
     private Button pandocExportButton;
     private Button githubUploadButton;
     private EditText pandocServerField;
@@ -99,8 +128,13 @@ public class MainActivity extends Activity {
     private BluetoothLeScanner scanner;
     private BluetoothGatt activeGatt;
     private BluetoothGattCharacteristic txCharacteristic;
+    private BluetoothGattCharacteristic rxCharacteristic;
+    private TransferMode transferMode = TransferMode.RECEIVE_FROM_TYPEWRT;
     private boolean scanning;
     private boolean receiverComplete;
+    private boolean senderComplete = true;
+    private int bleWriteChunkSize = DEFAULT_BLE_WRITE_CHUNK;
+    private int scanGeneration;
 
     private ByteArrayOutputStream headerBuffer = new ByteArrayOutputStream();
     private ByteArrayOutputStream fileBuffer = new ByteArrayOutputStream();
@@ -110,12 +144,26 @@ public class MainActivity extends Activity {
     private byte[] latestFileData;
     private String latestFileName;
     private Uri latestFileUri;
+    private FileSnapshot pendingSendFile;
+    private byte[][] outgoingParts;
+    private int outgoingPartIndex;
+    private int outgoingPartOffset;
+    private int outgoingPendingLength;
+    private int outgoingBytesSent;
+
+    private enum TransferMode {
+        RECEIVE_FROM_TYPEWRT,
+        SEND_TO_TYPEWRT
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        buildUi();
-        initializeBluetooth();
+        showSplashScreen();
+        mainHandler.postDelayed(() -> {
+            buildUi();
+            initializeBluetooth();
+        }, SPLASH_DURATION_MS);
     }
 
     @Override
@@ -124,27 +172,56 @@ public class MainActivity extends Activity {
         super.onDestroy();
     }
 
+    private void showSplashScreen() {
+        LinearLayout splash = new LinearLayout(this);
+        splash.setOrientation(LinearLayout.VERTICAL);
+        splash.setGravity(Gravity.CENTER);
+        splash.setBackgroundColor(COLOR_BACKGROUND);
+        splash.setPadding(dp(24), dp(24), dp(24), dp(24));
+
+        TextView mark = new TextView(this);
+        mark.setText("wrt");
+        mark.setGravity(Gravity.CENTER);
+        mark.setTextColor(COLOR_TEXT_PRIMARY);
+        mark.setTextSize(86);
+        mark.setIncludeFontPadding(false);
+        mark.setTypeface(getResources().getFont(R.font.momo_trust_display_regular));
+        splash.addView(mark, new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        ImageView subtitle = new ImageView(this);
+        subtitle.setImageResource(R.drawable.splash_companion_mark_ii);
+        subtitle.setAdjustViewBounds(true);
+        subtitle.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        LinearLayout.LayoutParams subtitleParams = new LinearLayout.LayoutParams(dp(220), dp(26));
+        subtitleParams.topMargin = dp(16);
+        splash.addView(subtitle, subtitleParams);
+
+        setContentView(splash);
+    }
+
     private void buildUi() {
         int pad = dp(20);
         int smallPad = dp(12);
 
         ScrollView page = new ScrollView(this);
         page.setFillViewport(true);
-        page.setBackgroundColor(0xFFF7F4ED);
+        page.setBackgroundColor(COLOR_BACKGROUND);
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(pad, pad, pad, pad);
-        root.setBackgroundColor(0xFFF7F4ED);
+        root.setBackgroundColor(COLOR_BACKGROUND);
         page.addView(root, new ScrollView.LayoutParams(
             ScrollView.LayoutParams.MATCH_PARENT,
             ScrollView.LayoutParams.WRAP_CONTENT));
 
         TextView title = new TextView(this);
-        title.setText("Typewrt Receiver");
+        title.setText("Typewrt Companion");
         title.setTextSize(26);
         title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(0xFF1F2528);
+        title.setTextColor(COLOR_TEXT_PRIMARY);
         root.addView(title, new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT));
@@ -152,7 +229,7 @@ public class MainActivity extends Activity {
         statusView = new TextView(this);
         statusView.setText("Ready");
         statusView.setTextSize(18);
-        statusView.setTextColor(0xFF1F2528);
+        statusView.setTextColor(COLOR_TEXT_PRIMARY);
         LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -160,9 +237,9 @@ public class MainActivity extends Activity {
         root.addView(statusView, statusParams);
 
         detailsView = new TextView(this);
-        detailsView.setText("Run :ble on Typewrt, then connect from here.");
+        detailsView.setText("Receive from Typewrt, or choose a text file and send it from the menu.");
         detailsView.setTextSize(15);
-        detailsView.setTextColor(0xFF47545A);
+        detailsView.setTextColor(COLOR_TEXT_SECONDARY);
         LinearLayout.LayoutParams detailsParams = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -179,8 +256,9 @@ public class MainActivity extends Activity {
         root.addView(buttons, buttonsParams);
 
         connectButton = new Button(this);
-        connectButton.setText("Connect Typewrt");
+        connectButton.setText("Receive from Typewrt");
         connectButton.setAllCaps(false);
+        styleButton(connectButton, true);
         connectButton.setOnClickListener(v -> startReceiver());
         buttons.addView(connectButton, new LinearLayout.LayoutParams(
             0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
@@ -188,6 +266,7 @@ public class MainActivity extends Activity {
         disconnectButton = new Button(this);
         disconnectButton.setText("Disconnect");
         disconnectButton.setAllCaps(false);
+        styleButton(disconnectButton, false);
         disconnectButton.setEnabled(false);
         disconnectButton.setOnClickListener(v -> disconnect());
         LinearLayout.LayoutParams disconnectParams = new LinearLayout.LayoutParams(
@@ -198,12 +277,53 @@ public class MainActivity extends Activity {
         activeFileView = new TextView(this);
         activeFileView.setText("No file received yet.");
         activeFileView.setTextSize(15);
-        activeFileView.setTextColor(0xFF47545A);
+        activeFileView.setTextColor(COLOR_TEXT_SECONDARY);
         LinearLayout.LayoutParams activeParams = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT);
         activeParams.topMargin = dp(12);
         root.addView(activeFileView, activeParams);
+
+        TextView sendLabel = sectionLabel("Send to Typewrt");
+        root.addView(sendLabel);
+
+        preparedFileView = new TextView(this);
+        preparedFileView.setText("No text file selected.");
+        preparedFileView.setTextSize(15);
+        preparedFileView.setTextColor(COLOR_TEXT_SECONDARY);
+        LinearLayout.LayoutParams preparedParams = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT);
+        preparedParams.topMargin = dp(6);
+        root.addView(preparedFileView, preparedParams);
+
+        LinearLayout sendButtons = new LinearLayout(this);
+        sendButtons.setOrientation(LinearLayout.HORIZONTAL);
+        sendButtons.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams sendButtonsParams = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT);
+        sendButtonsParams.topMargin = dp(8);
+        root.addView(sendButtons, sendButtonsParams);
+
+        chooseTextButton = new Button(this);
+        chooseTextButton.setText("Choose text file");
+        chooseTextButton.setAllCaps(false);
+        styleButton(chooseTextButton, false);
+        chooseTextButton.setOnClickListener(v -> chooseTextFile());
+        sendButtons.addView(chooseTextButton, new LinearLayout.LayoutParams(
+            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+
+        sendTypewrtButton = new Button(this);
+        sendTypewrtButton.setText("Send to Typewrt");
+        sendTypewrtButton.setAllCaps(false);
+        styleButton(sendTypewrtButton, true);
+        sendTypewrtButton.setEnabled(false);
+        sendTypewrtButton.setOnClickListener(v -> startSender());
+        LinearLayout.LayoutParams sendTypewrtParams = new LinearLayout.LayoutParams(
+            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+        sendTypewrtParams.leftMargin = dp(10);
+        sendButtons.addView(sendTypewrtButton, sendTypewrtParams);
 
         TextView pandocLabel = sectionLabel("Pandoc export");
         root.addView(pandocLabel);
@@ -232,6 +352,7 @@ public class MainActivity extends Activity {
         pandocExportButton = new Button(this);
         pandocExportButton.setText("Export");
         pandocExportButton.setAllCaps(false);
+        styleButton(pandocExportButton, true);
         pandocExportButton.setEnabled(false);
         pandocExportButton.setOnClickListener(v -> exportLatestWithPandoc());
         LinearLayout.LayoutParams exportParams = new LinearLayout.LayoutParams(
@@ -253,6 +374,7 @@ public class MainActivity extends Activity {
         githubUploadButton = new Button(this);
         githubUploadButton.setText("Send to GitHub");
         githubUploadButton.setAllCaps(false);
+        styleButton(githubUploadButton, true);
         githubUploadButton.setEnabled(false);
         githubUploadButton.setOnClickListener(v -> uploadLatestToGithub());
         LinearLayout.LayoutParams uploadParams = new LinearLayout.LayoutParams(
@@ -265,7 +387,7 @@ public class MainActivity extends Activity {
         logLabel.setText("Transfer log");
         logLabel.setTextSize(14);
         logLabel.setTypeface(Typeface.DEFAULT_BOLD);
-        logLabel.setTextColor(0xFF1F2528);
+        logLabel.setTextColor(COLOR_BLUE);
         LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -273,7 +395,7 @@ public class MainActivity extends Activity {
         root.addView(logLabel, labelParams);
 
         logView = new TextView(this);
-        logView.setTextColor(0xFF203135);
+        logView.setTextColor(COLOR_TEXT_PRIMARY);
         logView.setTextSize(14);
         logView.setTypeface(Typeface.MONOSPACE);
         logView.setMovementMethod(new ScrollingMovementMethod());
@@ -281,7 +403,7 @@ public class MainActivity extends Activity {
 
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
-        scroll.setBackgroundColor(0xFFFFFFFF);
+        scroll.setBackground(roundedDrawable(COLOR_SURFACE, dp(10), COLOR_STROKE, 1));
         scroll.setPadding(smallPad, smallPad, smallPad, smallPad);
         scroll.addView(logView);
         LinearLayout.LayoutParams scrollParams = new LinearLayout.LayoutParams(
@@ -290,6 +412,7 @@ public class MainActivity extends Activity {
         root.addView(scroll, scrollParams);
 
         setContentView(page);
+        updateSendFileActions();
     }
 
     private TextView sectionLabel(String text) {
@@ -297,7 +420,7 @@ public class MainActivity extends Activity {
         label.setText(text);
         label.setTextSize(14);
         label.setTypeface(Typeface.DEFAULT_BOLD);
-        label.setTextColor(0xFF1F2528);
+        label.setTextColor(COLOR_BLUE);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -311,25 +434,46 @@ public class MainActivity extends Activity {
         field.setHint(hint);
         field.setSingleLine(true);
         field.setTextSize(14);
-        field.setTextColor(0xFF203135);
-        field.setHintTextColor(0xFF7B8588);
+        field.setTextColor(COLOR_TEXT_PRIMARY);
+        field.setHintTextColor(COLOR_TEXT_MUTED);
         field.setText(initial);
+        field.setPadding(dp(14), 0, dp(14), 0);
+        field.setMinHeight(dp(48));
+        field.setBackground(roundedDrawable(COLOR_FIELD, dp(8), COLOR_STROKE, 1));
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT);
-        params.topMargin = dp(6);
+        params.topMargin = dp(8);
         root.addView(field, params);
         return field;
     }
 
     private Spinner addSpinner(LinearLayout root, String[] values) {
         Spinner spinner = new Spinner(this);
-        ArrayAdapter<String> adapter = new ArrayAdapter<>(
+        ArrayAdapter<String> adapter = new ArrayAdapter<String>(
             this,
             android.R.layout.simple_spinner_item,
-            values);
+            values) {
+            @Override
+            public View getView(int position, View convertView, android.view.ViewGroup parent) {
+                TextView view = (TextView) super.getView(position, convertView, parent);
+                styleSpinnerText(view, false);
+                return view;
+            }
+
+            @Override
+            public View getDropDownView(int position, View convertView, android.view.ViewGroup parent) {
+                TextView view = (TextView) super.getDropDownView(position, convertView, parent);
+                styleSpinnerText(view, true);
+                return view;
+            }
+        };
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         spinner.setAdapter(adapter);
+        spinner.setMinimumHeight(dp(48));
+        spinner.setPadding(dp(10), 0, dp(10), 0);
+        spinner.setBackground(roundedDrawable(COLOR_FIELD, dp(8), COLOR_STROKE, 1));
+        spinner.setPopupBackgroundDrawable(roundedDrawable(COLOR_SURFACE_HIGH, dp(8), COLOR_STROKE, 1));
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
             0,
             LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -343,21 +487,92 @@ public class MainActivity extends Activity {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
     }
 
+    private void styleButton(Button button, boolean primary) {
+        int normalColor = primary ? COLOR_BLUE : COLOR_SURFACE_HIGH;
+        int disabledColor = primary ? 0xFF3A4D5E : 0xFF2A2D30;
+        int textColor = primary ? 0xFF0B1720 : COLOR_TEXT_PRIMARY;
+        button.setMinHeight(dp(48));
+        button.setPadding(dp(14), 0, dp(14), 0);
+        button.setTextColor(new ColorStateList(
+            new int[][] {
+                new int[] {-android.R.attr.state_enabled},
+                new int[] {}
+            },
+            new int[] {COLOR_TEXT_MUTED, textColor}));
+        button.setBackground(rippleBackground(normalColor, disabledColor, dp(8)));
+    }
+
+    private void styleSpinnerText(TextView view, boolean dropdown) {
+        view.setTextColor(COLOR_TEXT_PRIMARY);
+        view.setTextSize(14);
+        view.setPadding(dp(10), dp(10), dp(10), dp(10));
+        if (dropdown) {
+            view.setBackgroundColor(COLOR_SURFACE_HIGH);
+        }
+    }
+
+    private Drawable rippleBackground(int normalColor, int disabledColor, int radius) {
+        StateListDrawable states = new StateListDrawable();
+        states.addState(
+            new int[] {-android.R.attr.state_enabled},
+            roundedDrawable(disabledColor, radius, COLOR_STROKE, 1));
+        states.addState(new int[] {}, roundedDrawable(normalColor, radius, 0, 0));
+        return new RippleDrawable(ColorStateList.valueOf(COLOR_RIPPLE), states, null);
+    }
+
+    private Drawable roundedDrawable(int color, int radius, int strokeColor, int strokeWidthDp) {
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setColor(color);
+        drawable.setCornerRadius(radius);
+        if (strokeWidthDp > 0) {
+            drawable.setStroke(dp(strokeWidthDp), strokeColor);
+        }
+        return drawable;
+    }
+
     private void initializeBluetooth() {
         BluetoothManager manager = getSystemService(BluetoothManager.class);
         bluetoothAdapter = manager == null ? null : manager.getAdapter();
         if (bluetoothAdapter == null) {
             setStatus("Bluetooth is not available", "This phone does not expose a BLE adapter.");
             connectButton.setEnabled(false);
+            updateSendFileActions();
         }
     }
 
     private void startReceiver() {
+        transferMode = TransferMode.RECEIVE_FROM_TYPEWRT;
         if (!hasRequiredPermissions()) {
             requestPermissions(requiredPermissions(), REQUEST_BLE_PERMISSIONS);
             return;
         }
         startScan();
+    }
+
+    private void startSender() {
+        if (pendingSendFile == null) {
+            setStatus("No text file selected", "Choose a text file first.");
+            return;
+        }
+        transferMode = TransferMode.SEND_TO_TYPEWRT;
+        if (!hasRequiredPermissions()) {
+            requestPermissions(requiredPermissions(), REQUEST_BLE_PERMISSIONS);
+            return;
+        }
+        startScan();
+    }
+
+    private void chooseTextFile() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("text/*");
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[] {
+            "text/*",
+            "application/json",
+            "application/xml",
+            "application/x-subrip"
+        });
+        startActivityForResult(intent, REQUEST_PICK_TEXT_FILE);
     }
 
     @Override
@@ -376,6 +591,18 @@ public class MainActivity extends Activity {
             setStatus("Bluetooth permission denied", "The app needs BLE permission to find Typewrt.");
             appendLog("Permission denied.");
         }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQUEST_PICK_TEXT_FILE) {
+            return;
+        }
+        if (resultCode != RESULT_OK || data == null || data.getData() == null) {
+            return;
+        }
+        prepareSelectedTextFile(data.getData());
     }
 
     private String[] requiredPermissions() {
@@ -419,28 +646,50 @@ public class MainActivity extends Activity {
         }
 
         disconnect();
-        resetReceiver();
+        if (transferMode == TransferMode.RECEIVE_FROM_TYPEWRT) {
+            resetReceiver();
+        } else {
+            resetOutgoingTransfer();
+            senderComplete = false;
+        }
         scanning = true;
         connectButton.setEnabled(false);
         disconnectButton.setEnabled(true);
-        setStatus("Scanning for Typewrt", "Run :ble on Typewrt if it is not already advertising.");
-        appendLog("Scanning for service 0xffe0...");
+        updateSendFileActions();
+        if (transferMode == TransferMode.SEND_TO_TYPEWRT) {
+            setStatus(
+                "Scanning for Typewrt",
+                "Run ble recv from the Typewrt menu before sending.");
+            appendLog("Scanning to send a text file to service 0xffe0...");
+        } else {
+            setStatus(
+                "Scanning for Typewrt",
+                "Run :ble on Typewrt if it is not already advertising.");
+            appendLog("Scanning to receive from service 0xffe0...");
+        }
 
         ScanSettings settings = new ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build();
+        int generation = ++scanGeneration;
         scanner.startScan(Collections.emptyList(), settings, scanCallback);
-        mainHandler.postDelayed(this::onScanTimeout, SCAN_TIMEOUT_MS);
+        mainHandler.postDelayed(() -> onScanTimeout(generation), SCAN_TIMEOUT_MS);
     }
 
-    private void onScanTimeout() {
-        if (!scanning) {
+    private void onScanTimeout(int generation) {
+        if (!scanning || generation != scanGeneration) {
             return;
         }
         stopScan();
-        connectButton.setEnabled(true);
-        disconnectButton.setEnabled(false);
-        setStatus("Typewrt not found", "Run :ble on Typewrt, then scan again.");
+        if (transferMode == TransferMode.SEND_TO_TYPEWRT) {
+            senderComplete = true;
+        }
+        setIdleButtons();
+        if (transferMode == TransferMode.SEND_TO_TYPEWRT) {
+            setStatus("Typewrt not found", "Run ble recv from the Typewrt menu, then scan again.");
+        } else {
+            setStatus("Typewrt not found", "Run :ble on Typewrt, then scan again.");
+        }
         appendLog("Scan timed out.");
     }
 
@@ -472,8 +721,10 @@ public class MainActivity extends Activity {
         @Override
         public void onScanFailed(int errorCode) {
             scanning = false;
-            connectButton.setEnabled(true);
-            disconnectButton.setEnabled(false);
+            if (transferMode == TransferMode.SEND_TO_TYPEWRT) {
+                senderComplete = true;
+            }
+            setIdleButtons();
             setStatus("Scan failed", "Android BLE scan error " + errorCode + ".");
             appendLog("Scan failed: " + errorCode);
         }
@@ -504,10 +755,15 @@ public class MainActivity extends Activity {
     @SuppressLint("MissingPermission")
     private void connectToDevice(BluetoothDevice device) {
         String name = safeDeviceName(device);
-        setStatus("Connecting", name);
+        if (transferMode == TransferMode.SEND_TO_TYPEWRT) {
+            setStatus("Connecting to send", name);
+        } else {
+            setStatus("Connecting to receive", name);
+        }
         appendLog("Found " + name + ". Connecting...");
         connectButton.setEnabled(false);
         disconnectButton.setEnabled(true);
+        updateSendFileActions();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             activeGatt = device.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE);
         } else {
@@ -530,7 +786,11 @@ public class MainActivity extends Activity {
         public void onConnectionStateChange(BluetoothGatt gatt, int status, int newState) {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 mainHandler.post(() -> {
-                    setStatus("Connected", "Discovering Typewrt service...");
+                    if (transferMode == TransferMode.SEND_TO_TYPEWRT) {
+                        setStatus("Connected", "Discovering Typewrt receive characteristic...");
+                    } else {
+                        setStatus("Connected", "Discovering Typewrt service...");
+                    }
                     appendLog("Connected.");
                 });
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
@@ -539,19 +799,32 @@ public class MainActivity extends Activity {
                 gatt.discoverServices();
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 mainHandler.post(() -> {
-                    if (!receiverComplete) {
-                        setStatus("Disconnected", "The BLE link closed.");
-                        appendLog("Disconnected.");
+                    if (transferMode == TransferMode.SEND_TO_TYPEWRT) {
+                        if (!senderComplete) {
+                            setStatus("Send interrupted", "The BLE link closed.");
+                            appendLog("Disconnected while sending.");
+                            senderComplete = true;
+                        }
+                    } else {
+                        if (!receiverComplete) {
+                            setStatus("Disconnected", "The BLE link closed.");
+                            appendLog("Disconnected.");
+                        }
                     }
                     closeGatt(gatt);
-                    connectButton.setEnabled(true);
-                    disconnectButton.setEnabled(false);
+                    resetOutgoingTransfer();
+                    setIdleButtons();
                 });
             }
         }
 
         @Override
         public void onMtuChanged(BluetoothGatt gatt, int mtu, int status) {
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                bleWriteChunkSize = Math.max(
+                    DEFAULT_BLE_WRITE_CHUNK,
+                    Math.min(MAX_BLE_WRITE_CHUNK, mtu - 3));
+            }
             mainHandler.post(() -> appendLog("MTU " + mtu + "."));
         }
 
@@ -565,6 +838,18 @@ public class MainActivity extends Activity {
                 return;
             }
             BluetoothGattService service = gatt.getService(SERVICE_UUID);
+            if (transferMode == TransferMode.SEND_TO_TYPEWRT) {
+                rxCharacteristic = service == null ? null : service.getCharacteristic(RX_UUID);
+                if (rxCharacteristic == null) {
+                    failOutgoingTransfer(
+                        gatt,
+                        "Service 0xffe0 or RX characteristic 0xffe2 not found.");
+                    return;
+                }
+                beginPreparedSend(gatt);
+                return;
+            }
+
             txCharacteristic = service == null ? null : service.getCharacteristic(TX_UUID);
             if (txCharacteristic == null) {
                 mainHandler.post(() -> {
@@ -615,6 +900,17 @@ public class MainActivity extends Activity {
                 handleNotification(value);
             }
         }
+
+        @Override
+        public void onCharacteristicWrite(
+            BluetoothGatt gatt,
+            BluetoothGattCharacteristic characteristic,
+            int status
+        ) {
+            if (RX_UUID.equals(characteristic.getUuid())) {
+                handleOutgoingWrite(gatt, status);
+            }
+        }
     };
 
     @SuppressLint("MissingPermission")
@@ -656,6 +952,242 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void prepareSelectedTextFile(Uri uri) {
+        pendingSendFile = null;
+        updateSendFileActions();
+        setStatus("Preparing text file", "Reading selected document...");
+        appendLog("Preparing selected text file.");
+        Thread thread = new Thread(() -> {
+            try {
+                byte[] data = readSelectedBytes(uri);
+                String name = sanitizeFileName(displayNameForUri(uri));
+                FileSnapshot snapshot = new FileSnapshot(name, data, uri);
+                mainHandler.post(() -> {
+                    pendingSendFile = snapshot;
+                    setStatus("Prepared " + snapshot.name, snapshot.data.length + " bytes");
+                    appendLog("Prepared: " + snapshot.name + " (" + snapshot.data.length + " bytes)");
+                    updateSendFileActions();
+                });
+            } catch (IOException | RuntimeException e) {
+                mainHandler.post(() -> {
+                    setStatus("Could not prepare file", usefulMessage(e));
+                    appendLog("Prepare failed: " + e);
+                    updateSendFileActions();
+                });
+            }
+        }, "typewrt-prepare-send");
+        thread.start();
+    }
+
+    private byte[] readSelectedBytes(Uri uri) throws IOException {
+        try (InputStream in = getContentResolver().openInputStream(uri);
+             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            if (in == null) {
+                throw new IOException("Could not open selected file.");
+            }
+            byte[] buffer = new byte[4096];
+            long total = 0;
+            int n;
+            while ((n = in.read(buffer)) != -1) {
+                total += n;
+                if (total > MAX_FILE_BYTES || total > Integer.MAX_VALUE) {
+                    throw new IOException("Selected file is larger than 20 MB.");
+                }
+                out.write(buffer, 0, n);
+            }
+            return out.toByteArray();
+        }
+    }
+
+    private String displayNameForUri(Uri uri) {
+        String name = null;
+        try (Cursor cursor = getContentResolver().query(
+            uri,
+            new String[] {OpenableColumns.DISPLAY_NAME},
+            null,
+            null,
+            null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                if (index >= 0) {
+                    name = cursor.getString(index);
+                }
+            }
+        } catch (RuntimeException ignored) {
+            name = null;
+        }
+        if (name == null || name.trim().isEmpty()) {
+            name = uri.getLastPathSegment();
+        }
+        if (name == null || name.trim().isEmpty()) {
+            name = "typewrt.txt";
+        }
+        return name;
+    }
+
+    private void updateSendFileActions() {
+        FileSnapshot snapshot = pendingSendFile;
+        boolean hasPreparedFile = snapshot != null;
+        if (preparedFileView != null) {
+            if (hasPreparedFile) {
+                preparedFileView.setText(
+                    "Prepared file: " + snapshot.name + " (" + snapshot.data.length + " bytes)");
+            } else {
+                preparedFileView.setText("No text file selected.");
+            }
+        }
+        if (chooseTextButton != null) {
+            chooseTextButton.setEnabled(activeGatt == null && !scanning);
+        }
+        if (sendTypewrtButton != null) {
+            sendTypewrtButton.setEnabled(
+                hasPreparedFile && bluetoothAdapter != null && activeGatt == null && !scanning);
+        }
+    }
+
+    private void setIdleButtons() {
+        if (connectButton != null) {
+            connectButton.setEnabled(bluetoothAdapter != null);
+        }
+        if (disconnectButton != null) {
+            disconnectButton.setEnabled(false);
+        }
+        updateSendFileActions();
+    }
+
+    private void beginPreparedSend(BluetoothGatt gatt) {
+        FileSnapshot snapshot = pendingSendFile;
+        if (snapshot == null) {
+            failOutgoingTransfer(gatt, "No text file selected.");
+            return;
+        }
+
+        String name = sanitizeFileName(snapshot.name);
+        byte[] header = ("TYPEWRT-FILE " + snapshot.data.length + " " + name + "\n")
+            .getBytes(StandardCharsets.UTF_8);
+        byte[] footer = ("\nTYPEWRT-END " + snapshot.data.length + " " + name + "\n")
+            .getBytes(StandardCharsets.UTF_8);
+        outgoingParts = new byte[][] {header, snapshot.data, footer};
+        outgoingPartIndex = 0;
+        outgoingPartOffset = 0;
+        outgoingPendingLength = 0;
+        outgoingBytesSent = 0;
+        senderComplete = false;
+
+        mainHandler.post(() -> {
+            setStatus("Sending " + name, "0 / " + snapshot.data.length + " bytes");
+            appendLog("Sending: " + name + " (" + snapshot.data.length + " bytes)");
+            updateSendFileActions();
+        });
+        writeNextOutgoingChunk(gatt);
+    }
+
+    @SuppressLint("MissingPermission")
+    private void writeNextOutgoingChunk(BluetoothGatt gatt) {
+        if (gatt == null || rxCharacteristic == null || outgoingParts == null) {
+            failOutgoingTransfer(gatt, "BLE sender is not ready.");
+            return;
+        }
+        while (outgoingPartIndex < outgoingParts.length
+            && outgoingPartOffset >= outgoingParts[outgoingPartIndex].length) {
+            outgoingPartIndex++;
+            outgoingPartOffset = 0;
+        }
+        if (outgoingPartIndex >= outgoingParts.length) {
+            finishOutgoingTransfer(gatt);
+            return;
+        }
+
+        byte[] part = outgoingParts[outgoingPartIndex];
+        int length = Math.min(bleWriteChunkSize, part.length - outgoingPartOffset);
+        byte[] chunk = new byte[length];
+        System.arraycopy(part, outgoingPartOffset, chunk, 0, length);
+        outgoingPendingLength = length;
+        rxCharacteristic.setWriteType(BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
+
+        boolean started;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            int rc = gatt.writeCharacteristic(
+                rxCharacteristic,
+                chunk,
+                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
+            started = rc == BluetoothStatusCodes.SUCCESS;
+            if (!started) {
+                failOutgoingTransfer(gatt, "BLE write could not start: " + rc);
+                return;
+            }
+        } else {
+            rxCharacteristic.setValue(chunk);
+            started = gatt.writeCharacteristic(rxCharacteristic);
+            if (!started) {
+                failOutgoingTransfer(gatt, "BLE write could not start.");
+                return;
+            }
+        }
+    }
+
+    private void handleOutgoingWrite(BluetoothGatt gatt, int status) {
+        if (status != BluetoothGatt.GATT_SUCCESS) {
+            failOutgoingTransfer(gatt, "BLE write failed: " + status);
+            return;
+        }
+        int written = outgoingPendingLength;
+        outgoingPartOffset += written;
+        outgoingBytesSent += written;
+        outgoingPendingLength = 0;
+        publishOutgoingProgress();
+        writeNextOutgoingChunk(gatt);
+    }
+
+    private void publishOutgoingProgress() {
+        FileSnapshot snapshot = pendingSendFile;
+        if (snapshot == null || outgoingParts == null) {
+            return;
+        }
+        int headerLength = outgoingParts.length > 0 ? outgoingParts[0].length : 0;
+        int fileBytesSent = Math.max(0, Math.min(snapshot.data.length, outgoingBytesSent - headerLength));
+        String name = snapshot.name;
+        mainHandler.post(() ->
+            setStatus("Sending " + name, fileBytesSent + " / " + snapshot.data.length + " bytes"));
+    }
+
+    @SuppressLint("MissingPermission")
+    private void finishOutgoingTransfer(BluetoothGatt gatt) {
+        FileSnapshot snapshot = pendingSendFile;
+        String name = snapshot == null ? "file" : snapshot.name;
+        senderComplete = true;
+        resetOutgoingTransfer();
+        mainHandler.post(() -> {
+            setStatus("Sent " + name, "Saved in the Typewrt menu directory.");
+            appendLog("Sent: " + name);
+        });
+        if (gatt != null && hasRequiredPermissions()) {
+            gatt.disconnect();
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private void failOutgoingTransfer(BluetoothGatt gatt, String message) {
+        senderComplete = true;
+        resetOutgoingTransfer();
+        mainHandler.post(() -> {
+            setStatus("Send failed", message);
+            appendLog(message);
+            setIdleButtons();
+        });
+        if (gatt != null && hasRequiredPermissions()) {
+            gatt.disconnect();
+        }
+    }
+
+    private void resetOutgoingTransfer() {
+        outgoingParts = null;
+        outgoingPartIndex = 0;
+        outgoingPartOffset = 0;
+        outgoingPendingLength = 0;
+        outgoingBytesSent = 0;
+    }
+
     @SuppressLint("MissingPermission")
     private void disconnect() {
         stopScan();
@@ -665,8 +1197,10 @@ public class MainActivity extends Activity {
         }
         activeGatt = null;
         txCharacteristic = null;
-        connectButton.setEnabled(bluetoothAdapter != null);
-        disconnectButton.setEnabled(false);
+        rxCharacteristic = null;
+        senderComplete = true;
+        resetOutgoingTransfer();
+        setIdleButtons();
     }
 
     @SuppressLint("MissingPermission")
@@ -676,6 +1210,8 @@ public class MainActivity extends Activity {
         }
         if (activeGatt == gatt) {
             activeGatt = null;
+            txCharacteristic = null;
+            rxCharacteristic = null;
         }
         gatt.close();
     }
@@ -1249,8 +1785,7 @@ public class MainActivity extends Activity {
                 setLatestFile(fileName, data, savedUri);
                 setStatus("Saved " + fileName, "Downloads/Typewrt");
                 appendLog("Saved: " + savedUri);
-                connectButton.setEnabled(bluetoothAdapter != null);
-                disconnectButton.setEnabled(false);
+                setIdleButtons();
             });
         } catch (IOException | RuntimeException e) {
             if (uri != null) {
@@ -1259,8 +1794,7 @@ public class MainActivity extends Activity {
             mainHandler.post(() -> {
                 setStatus("Save failed", e.getMessage() == null ? e.toString() : e.getMessage());
                 appendLog("Save failed: " + e);
-                connectButton.setEnabled(bluetoothAdapter != null);
-                disconnectButton.setEnabled(false);
+                setIdleButtons();
                 updateFileActions();
             });
         }

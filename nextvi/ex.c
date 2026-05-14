@@ -1696,6 +1696,8 @@ static void *ec_ble(char *loc, char *cmd, char *arg)
 		ex_print(msg)
 		return NULL;
 	}
+	if (!strcmp(a, "recv") || !strcmp(a, "receive"))
+		return "ble recv is menu-only";
 
 	if (*a) {
 		fspath = ex_pathresolve(a);

@@ -43,6 +43,8 @@
 #define TYPEWRT_BLE_DISCONNECT_DELAY_MS 120
 #define TYPEWRT_BLE_TRANSFER_STACK 4096
 #define TYPEWRT_BLE_TRANSFER_PRIO 4
+#define TYPEWRT_BLE_RX_LINE_MAX 256
+#define TYPEWRT_BLE_RX_NAME_MAX 96
 
 void ble_store_config_init(void);
 
@@ -51,9 +53,16 @@ typedef enum {
     TYPEWRT_BLE_IDLE,
     TYPEWRT_BLE_WAITING,
     TYPEWRT_BLE_SENDING,
+    TYPEWRT_BLE_RECEIVING,
     TYPEWRT_BLE_DONE,
     TYPEWRT_BLE_ERROR,
 } typewrt_ble_state_t;
+
+typedef enum {
+    TYPEWRT_BLE_MODE_NONE = 0,
+    TYPEWRT_BLE_MODE_SEND,
+    TYPEWRT_BLE_MODE_RECEIVE,
+} typewrt_ble_mode_t;
 
 static const char *TAG = "typewrt_ble";
 static StaticSemaphore_t ble_mutex_storage;
@@ -68,7 +77,9 @@ static uint16_t ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t ble_tx_handle;
 static bool ble_notify_enabled;
 static typewrt_ble_state_t ble_state = TYPEWRT_BLE_OFF;
+static typewrt_ble_mode_t ble_mode;
 static char ble_last_msg[128] = "ble off";
+static unsigned ble_status_generation;
 
 static TaskHandle_t ble_transfer_task_handle;
 static bool ble_transfer_cancel;
@@ -77,6 +88,16 @@ static char *ble_pending_path;
 static char *ble_pending_data;
 static size_t ble_pending_len;
 static bool ble_pending_is_buffer;
+
+static char *ble_receive_dir;
+static char *ble_receive_path;
+static int ble_receive_fd = -1;
+static bool ble_receive_write_started;
+static size_t ble_receive_expected;
+static size_t ble_receive_received;
+static char ble_receive_name[TYPEWRT_BLE_RX_NAME_MAX];
+static char ble_receive_line[TYPEWRT_BLE_RX_LINE_MAX];
+static size_t ble_receive_line_len;
 
 static void typewrt_ble_try_start_transfer(void);
 static void typewrt_ble_advertise(void);
@@ -124,6 +145,7 @@ static const char *typewrt_ble_basename(const char *path)
 static void typewrt_ble_set_msg_locked(const char *msg)
 {
     snprintf(ble_last_msg, sizeof(ble_last_msg), "%s", msg);
+    ble_status_generation++;
 }
 
 static void typewrt_ble_hold_awake_locked(void)
@@ -154,6 +176,224 @@ static void typewrt_ble_free_pending_locked(void)
     ble_pending_is_buffer = false;
 }
 
+static void typewrt_ble_receive_close_locked(bool discard)
+{
+    if (ble_receive_fd >= 0) {
+        close(ble_receive_fd);
+        ble_receive_fd = -1;
+    }
+    if (ble_receive_write_started) {
+        ble_receive_write_started = false;
+        typewrt_sd_write_end();
+    }
+    if (discard && ble_receive_path) {
+        unlink(ble_receive_path);
+    }
+    free(ble_receive_path);
+    ble_receive_path = NULL;
+    ble_receive_expected = 0;
+    ble_receive_received = 0;
+    ble_receive_name[0] = '\0';
+}
+
+static void typewrt_ble_receive_reset_locked(bool discard)
+{
+    typewrt_ble_receive_close_locked(discard);
+    ble_receive_line_len = 0;
+}
+
+static bool typewrt_ble_rx_safe_name(const char *name, char *out, size_t out_len)
+{
+    const char *base = name;
+    size_t n = 0;
+
+    if (!name || !*name || out_len < 2) {
+        return false;
+    }
+    for (const char *p = name; *p; p++) {
+        if (*p == '/' || *p == '\\') {
+            base = p + 1;
+        }
+    }
+    while (*base == ' ' || *base == '\t') {
+        base++;
+    }
+    for (const char *p = base; *p && n + 1 < out_len; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c < 0x20 || c == 0x7f || c == '/' || c == '\\' || c == ':') {
+            out[n++] = '_';
+        } else {
+            out[n++] = (char)c;
+        }
+    }
+    while (n && (out[n - 1] == ' ' || out[n - 1] == '\t')) {
+        n--;
+    }
+    out[n] = '\0';
+    return n && strcmp(out, ".") && strcmp(out, "..");
+}
+
+static char *typewrt_ble_rx_join_path(const char *dir, const char *name)
+{
+    size_t dir_len = strlen(dir);
+    size_t name_len = strlen(name);
+    int slash = dir_len && dir[dir_len - 1] != '/';
+    char *path = malloc(dir_len + slash + name_len + 1);
+
+    if (!path) {
+        return NULL;
+    }
+    memcpy(path, dir, dir_len);
+    if (slash) {
+        path[dir_len++] = '/';
+    }
+    memcpy(path + dir_len, name, name_len + 1);
+    return path;
+}
+
+static int typewrt_ble_rx_fail_locked(int err)
+{
+    char msg[128];
+
+    typewrt_ble_receive_reset_locked(true);
+    ble_state = TYPEWRT_BLE_WAITING;
+    snprintf(msg, sizeof(msg), "ble recv failed: %s", strerror(err));
+    typewrt_ble_set_msg_locked(msg);
+    return err;
+}
+
+static int typewrt_ble_rx_finish_file_locked(void)
+{
+    char msg[128];
+    char name[TYPEWRT_BLE_RX_NAME_MAX];
+    size_t received = ble_receive_received;
+
+    snprintf(name, sizeof(name), "%s", ble_receive_name);
+    typewrt_ble_receive_close_locked(false);
+    ble_state = TYPEWRT_BLE_WAITING;
+    snprintf(msg, sizeof(msg), "ble received %u bytes: %s",
+        (unsigned)received, name);
+    typewrt_ble_set_msg_locked(msg);
+    return 0;
+}
+
+static int typewrt_ble_rx_write_locked(const uint8_t *data, size_t len)
+{
+    while (len) {
+        ssize_t n = write(ble_receive_fd, data, len);
+
+        if (n < 0) {
+            return errno ? errno : EIO;
+        }
+        if (n == 0) {
+            return EIO;
+        }
+        data += n;
+        len -= (size_t)n;
+    }
+    return 0;
+}
+
+static int typewrt_ble_rx_start_file_locked(char *line)
+{
+    char *name;
+    char *end;
+    unsigned long size;
+    char safe[TYPEWRT_BLE_RX_NAME_MAX];
+    char msg[128];
+
+    if (!line[0]) {
+        return 0;
+    }
+    if (!strncmp(line, "TYPEWRT-END ", 12)) {
+        return 0;
+    }
+    if (strncmp(line, "TYPEWRT-FILE ", 13)) {
+        return typewrt_ble_rx_fail_locked(EINVAL);
+    }
+    line += 13;
+    errno = 0;
+    size = strtoul(line, &end, 10);
+    if (errno || end == line || *end != ' ') {
+        return typewrt_ble_rx_fail_locked(EINVAL);
+    }
+    name = end + 1;
+    if (!typewrt_ble_rx_safe_name(name, safe, sizeof(safe))) {
+        return typewrt_ble_rx_fail_locked(EINVAL);
+    }
+    if (!ble_receive_dir) {
+        return typewrt_ble_rx_fail_locked(ENOENT);
+    }
+    ble_receive_path = typewrt_ble_rx_join_path(ble_receive_dir, safe);
+    if (!ble_receive_path) {
+        return typewrt_ble_rx_fail_locked(ENOMEM);
+    }
+    snprintf(ble_receive_name, sizeof(ble_receive_name), "%s", safe);
+    ble_receive_expected = (size_t)size;
+    ble_receive_received = 0;
+    typewrt_sd_write_begin();
+    ble_receive_write_started = true;
+    ble_receive_fd = open(ble_receive_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (ble_receive_fd < 0) {
+        return typewrt_ble_rx_fail_locked(errno ? errno : EIO);
+    }
+    ble_state = TYPEWRT_BLE_RECEIVING;
+    snprintf(msg, sizeof(msg), "ble receiving %s", safe);
+    typewrt_ble_set_msg_locked(msg);
+    if (!ble_receive_expected) {
+        return typewrt_ble_rx_finish_file_locked();
+    }
+    return 0;
+}
+
+static int typewrt_ble_receive_data_locked(const uint8_t *data, size_t len)
+{
+    while (len) {
+        if (ble_receive_fd < 0) {
+            const uint8_t *newline = memchr(data, '\n', len);
+            size_t take = newline ? (size_t)(newline - data) : len;
+
+            if (ble_receive_line_len + take >= sizeof(ble_receive_line)) {
+                return typewrt_ble_rx_fail_locked(ENAMETOOLONG);
+            }
+            memcpy(ble_receive_line + ble_receive_line_len, data, take);
+            ble_receive_line_len += take;
+            data += take;
+            len -= take;
+            if (!newline) {
+                return 0;
+            }
+            if (ble_receive_line_len &&
+                    ble_receive_line[ble_receive_line_len - 1] == '\r') {
+                ble_receive_line_len--;
+            }
+            ble_receive_line[ble_receive_line_len] = '\0';
+            ble_receive_line_len = 0;
+            int err = typewrt_ble_rx_start_file_locked(ble_receive_line);
+            if (err) {
+                return err;
+            }
+            data++;
+            len--;
+        } else {
+            size_t remaining = ble_receive_expected - ble_receive_received;
+            size_t take = remaining < len ? remaining : len;
+            int err = typewrt_ble_rx_write_locked(data, take);
+
+            if (err) {
+                return typewrt_ble_rx_fail_locked(err);
+            }
+            ble_receive_received += take;
+            data += take;
+            len -= take;
+            if (ble_receive_received == ble_receive_expected) {
+                typewrt_ble_rx_finish_file_locked();
+            }
+        }
+    }
+    return 0;
+}
+
 static void typewrt_ble_stop_transport(bool terminate_connection)
 {
     uint16_t conn_handle = BLE_HS_CONN_HANDLE_NONE;
@@ -161,10 +401,14 @@ static void typewrt_ble_stop_transport(bool terminate_connection)
 
     typewrt_ble_lock();
     ble_enabled = false;
+    ble_mode = TYPEWRT_BLE_MODE_NONE;
     ble_transfer_cancel = true;
     if (!ble_transfer_task_handle) {
         typewrt_ble_free_pending_locked();
     }
+    typewrt_ble_receive_reset_locked(true);
+    free(ble_receive_dir);
+    ble_receive_dir = NULL;
     if (ble_advertising) {
         ble_advertising = false;
         stop_adv = true;
@@ -311,6 +555,7 @@ static void typewrt_ble_finish_transfer(const char *msg, typewrt_ble_state_t sta
     typewrt_ble_set_msg_locked(msg);
     ble_transfer_task_handle = NULL;
     ble_enabled = false;
+    ble_mode = TYPEWRT_BLE_MODE_NONE;
     ble_transfer_cancel = false;
     if (ble_advertising) {
         ble_advertising = false;
@@ -412,6 +657,7 @@ static void typewrt_ble_try_start_transfer(void)
 {
     typewrt_ble_lock();
     if (ble_enabled &&
+            ble_mode == TYPEWRT_BLE_MODE_SEND &&
             ble_conn_handle != BLE_HS_CONN_HANDLE_NONE &&
             ble_notify_enabled &&
             ble_state == TYPEWRT_BLE_WAITING &&
@@ -432,6 +678,9 @@ static int typewrt_ble_access(uint16_t conn_handle, uint16_t attr_handle,
     struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
     char status[128];
+    uint8_t *data;
+    int len;
+    int err;
 
     (void)conn_handle;
     (void)attr_handle;
@@ -444,16 +693,33 @@ static int typewrt_ble_access(uint16_t conn_handle, uint16_t attr_handle,
             BLE_ATT_ERR_INSUFFICIENT_RES;
 
     case BLE_GATT_ACCESS_OP_WRITE_CHR:
-        if (OS_MBUF_PKTLEN(ctxt->om) >= 3) {
-            char cmd[8] = {0};
-            int len = OS_MBUF_PKTLEN(ctxt->om);
-            if (len > (int)sizeof(cmd) - 1) {
-                len = sizeof(cmd) - 1;
-            }
-            if (ble_hs_mbuf_to_flat(ctxt->om, cmd, len, NULL) == 0 &&
-                    !strncmp(cmd, "off", 3)) {
-                typewrt_ble_stop();
-            }
+        len = OS_MBUF_PKTLEN(ctxt->om);
+        if (len <= 0) {
+            return 0;
+        }
+        data = malloc((size_t)len);
+        if (!data) {
+            return BLE_ATT_ERR_INSUFFICIENT_RES;
+        }
+        if (ble_hs_mbuf_to_flat(ctxt->om, data, len, NULL)) {
+            free(data);
+            return BLE_ATT_ERR_UNLIKELY;
+        }
+        if (len == 3 && !memcmp(data, "off", 3)) {
+            free(data);
+            typewrt_ble_stop();
+            return 0;
+        }
+        typewrt_ble_lock();
+        if (ble_enabled && ble_mode == TYPEWRT_BLE_MODE_RECEIVE) {
+            err = typewrt_ble_receive_data_locked(data, (size_t)len);
+        } else {
+            err = 0;
+        }
+        typewrt_ble_unlock();
+        free(data);
+        if (err) {
+            return BLE_ATT_ERR_UNLIKELY;
         }
         return 0;
 
@@ -495,7 +761,11 @@ static int typewrt_ble_gap_event(struct ble_gap_event *event, void *arg)
         if (event->connect.status == 0) {
             ble_conn_handle = event->connect.conn_handle;
             typewrt_ble_hold_awake_locked();
-            typewrt_ble_set_msg_locked("ble connected; subscribe to ffe1");
+            if (ble_mode == TYPEWRT_BLE_MODE_RECEIVE) {
+                typewrt_ble_set_msg_locked("ble recv connected");
+            } else {
+                typewrt_ble_set_msg_locked("ble connected; subscribe to ffe1");
+            }
         } else if (ble_enabled) {
             typewrt_ble_unlock();
             typewrt_ble_advertise();
@@ -510,8 +780,13 @@ static int typewrt_ble_gap_event(struct ble_gap_event *event, void *arg)
         if (ble_conn_handle == event->disconnect.conn.conn_handle) {
             ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
             ble_notify_enabled = false;
+            if (ble_mode == TYPEWRT_BLE_MODE_RECEIVE && ble_receive_fd >= 0) {
+                typewrt_ble_receive_reset_locked(true);
+                typewrt_ble_set_msg_locked("ble recv cancelled");
+            }
             if (ble_enabled) {
-                typewrt_ble_set_msg_locked("ble waiting for phone");
+                typewrt_ble_set_msg_locked(ble_mode == TYPEWRT_BLE_MODE_RECEIVE ?
+                    "ble recv waiting" : "ble waiting for phone");
             }
         }
         typewrt_ble_unlock();
@@ -529,7 +804,7 @@ static int typewrt_ble_gap_event(struct ble_gap_event *event, void *arg)
         if (event->subscribe.attr_handle == ble_tx_handle) {
             typewrt_ble_lock();
             ble_notify_enabled = event->subscribe.cur_notify;
-            if (ble_notify_enabled) {
+            if (ble_notify_enabled && ble_mode == TYPEWRT_BLE_MODE_SEND) {
                 typewrt_ble_set_msg_locked("ble subscriber ready");
             }
             typewrt_ble_unlock();
@@ -587,7 +862,8 @@ static void typewrt_ble_advertise(void)
 
     typewrt_ble_lock();
     ble_advertising = true;
-    typewrt_ble_set_msg_locked("ble waiting for phone");
+    typewrt_ble_set_msg_locked(ble_mode == TYPEWRT_BLE_MODE_RECEIVE ?
+        "ble recv waiting" : "ble waiting for phone");
     typewrt_ble_unlock();
 }
 
@@ -688,7 +964,8 @@ static const char *typewrt_ble_queue_transfer(char *name, char *path,
     }
 
     typewrt_ble_lock();
-    if (ble_transfer_task_handle) {
+    if (ble_transfer_task_handle ||
+            (ble_enabled && ble_mode == TYPEWRT_BLE_MODE_RECEIVE)) {
         typewrt_ble_unlock();
         err = "ble busy";
         goto fail;
@@ -701,6 +978,7 @@ static const char *typewrt_ble_queue_transfer(char *name, char *path,
     ble_pending_is_buffer = is_buffer;
     ble_transfer_cancel = false;
     ble_enabled = true;
+    ble_mode = TYPEWRT_BLE_MODE_SEND;
     ble_state = TYPEWRT_BLE_WAITING;
     snprintf(ble_last_msg, sizeof(ble_last_msg),
         "ble waiting: %s", name);
@@ -763,6 +1041,49 @@ const char *typewrt_ble_send_buffer(const char *name_arg, const char *data,
     return typewrt_ble_queue_transfer(name, NULL, copy, len, true);
 }
 
+const char *typewrt_ble_receive_dir(const char *dir)
+{
+    struct stat st;
+    char *copy;
+    const char *err = typewrt_ble_init();
+
+    if (err) {
+        return err;
+    }
+    if (!dir || !*dir) {
+        return "ble directory missing";
+    }
+    if (stat(dir, &st) < 0 || !S_ISDIR(st.st_mode)) {
+        return "ble directory not found";
+    }
+    copy = typewrt_ble_strdup(dir);
+    if (!copy) {
+        return "ble memory failed";
+    }
+
+    typewrt_ble_lock();
+    if (ble_transfer_task_handle ||
+            (ble_enabled && ble_mode == TYPEWRT_BLE_MODE_SEND) ||
+            ble_receive_fd >= 0) {
+        typewrt_ble_unlock();
+        free(copy);
+        return "ble busy";
+    }
+    typewrt_ble_receive_reset_locked(false);
+    free(ble_receive_dir);
+    ble_receive_dir = copy;
+    ble_transfer_cancel = false;
+    ble_enabled = true;
+    ble_mode = TYPEWRT_BLE_MODE_RECEIVE;
+    ble_state = TYPEWRT_BLE_WAITING;
+    typewrt_ble_set_msg_locked("ble recv waiting");
+    typewrt_ble_hold_awake_locked();
+    typewrt_ble_unlock();
+
+    typewrt_ble_advertise();
+    return NULL;
+}
+
 void typewrt_ble_get_status(char *out, size_t out_len)
 {
     if (!out_len) {
@@ -771,4 +1092,15 @@ void typewrt_ble_get_status(char *out, size_t out_len)
     typewrt_ble_lock();
     snprintf(out, out_len, "%s", ble_last_msg);
     typewrt_ble_unlock();
+}
+
+unsigned typewrt_ble_status_generation(void)
+{
+    unsigned gen;
+
+    typewrt_ble_lock_prepare();
+    typewrt_ble_lock();
+    gen = ble_status_generation;
+    typewrt_ble_unlock();
+    return gen;
 }
