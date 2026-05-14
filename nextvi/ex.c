@@ -74,6 +74,17 @@ static int bufs_find(const char *path, int len)
 	return -1;
 }
 
+static void bufs_make_blank(int idx)
+{
+	bufs[idx].path = uc_dup("");
+	bufs[idx].lb = lbuf_make();
+	bufs[idx].plen = 0;
+	bufs[idx].row = 0;
+	bufs[idx].off = 0;
+	bufs[idx].top = 0;
+	bufs[idx].mtime = -1;
+}
+
 static void bufs_free(int idx)
 {
 	free(bufs[idx].path);
@@ -696,6 +707,73 @@ static void *ec_buffer(char *loc, char *cmd, char *arg)
 		return NULL;
 	}
 	return "no such buffer";
+}
+
+static struct buf *bufs_after_wipe(struct buf *p, int idx, int fallback,
+	int old_count)
+{
+	if (!p)
+		return p;
+	for (int i = 0; i < LEN(tempbufs); i++)
+		if (p == &tempbufs[i])
+			return p;
+	if (p < bufs || p >= bufs + old_count)
+		return p;
+	int pidx = p - bufs;
+	if (pidx == idx)
+		return &bufs[fallback];
+	if (pidx > idx)
+		return &bufs[pidx - 1];
+	return &bufs[pidx];
+}
+
+static void *ec_bufwipe(char *loc, char *cmd, char *arg)
+{
+	int idx, old_count, fallback = 0, wiping_current;
+	int current_temp = 0;
+	(void)loc;
+	for (int i = 0; i < LEN(tempbufs); i++)
+		current_temp |= ex_buf == &tempbufs[i];
+	if (arg[0])
+		idx = atoi(arg);
+	else if (current_temp)
+		return "cannot wipe temporary buffer";
+	else
+		idx = ex_buf - bufs;
+	if (idx < 0)
+		return "cannot wipe temporary buffer";
+	if (idx >= xbufcur)
+		return "no such buffer";
+	if (bufs[idx].lb->modified && !strchr(cmd, '!'))
+		return "buffer modified";
+	wiping_current = ex_buf == &bufs[idx];
+	if (xbufcur == 1) {
+		bufs_free(0);
+		bufs_make_blank(0);
+		ex_pbuf = &bufs[0];
+		ex_tpbuf = &bufs[0];
+		if (!current_temp) {
+			ex_buf = &bufs[0];
+			exbuf_load(ex_buf)
+		}
+		return NULL;
+	}
+	old_count = xbufcur;
+	if (wiping_current)
+		fallback = idx < xbufcur - 1 ? idx : idx - 1;
+	else if (!current_temp && ex_buf >= bufs && ex_buf < bufs + xbufcur)
+		fallback = ex_buf - bufs - ((ex_buf - bufs) > idx);
+	bufs_free(idx);
+	for (int i = idx; i < xbufcur - 1; i++)
+		bufs[i] = bufs[i + 1];
+	xbufcur--;
+	ex_buf = bufs_after_wipe(ex_buf, idx, fallback, old_count);
+	ex_pbuf = bufs_after_wipe(ex_pbuf, idx, fallback, old_count);
+	ex_tpbuf = bufs_after_wipe(ex_tpbuf, idx, fallback, old_count);
+	if (wiping_current) {
+		exbuf_load(ex_buf)
+	}
+	return NULL;
 }
 
 static void *ec_quit(char *loc, char *cmd, char *arg)
@@ -1695,6 +1773,8 @@ static struct excmd {
 	{"?", ec_while},
 	{"bp", ec_setpath},
 	{"bs", ec_bufsave},
+	{"bw!", ec_bufwipe},
+	{"bw", ec_bufwipe},
 	{"bx", ec_setbufsmax},
 	{"battery", ec_battery},
 	{"bat", ec_battery},

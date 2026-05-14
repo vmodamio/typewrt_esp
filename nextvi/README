@@ -734,6 +734,13 @@ EX COMMANDS
 
              Argument resets undo/redo history
 
+     bw[!][index]
+             Wipe a buffer
+
+             No index wipes the current buffer.  Modified buffers are refused
+             unless ! is used.  Wiping the last buffer creates a clean unnamed
+             buffer.
+
      bx[#]   Set max number of buffers allowed
 
              Buffers will be deallocated if the number specified is lower
