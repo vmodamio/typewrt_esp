@@ -563,16 +563,33 @@ int lbuf_next(struct lbuf *lb, int dir, int *r, int *o)
 	return 0;
 }
 
+static int lbuf_hwbrk(char *s)
+{
+	return s && !memcmp(s, HWBRK, HWBRK_LEN);
+}
+
+static int lbuf_wordnext(struct lbuf *lb, int dir, int *row, int *off)
+{
+	do {
+		if (lbuf_next(lb, dir, row, off))
+			return 1;
+	} while (lbuf_hwbrk(rstate->chrs[*off]));
+	return 0;
+}
+
 /* move to the last character of the word */
 static int lbuf_wordlast(struct lbuf *lb, int kind, int dir, int *row, int *off)
 {
+	while (lbuf_hwbrk(rstate->chrs[*off]))
+		if (lbuf_wordnext(lb, dir, row, off))
+			return 1;
 	if (!kind || !(uc_kind(rstate->chrs[*off]) & kind))
 		return 0;
 	while (uc_kind(rstate->chrs[*off]) & kind)
-		if (lbuf_next(lb, dir, row, off))
+		if (lbuf_wordnext(lb, dir, row, off))
 			return 1;
 	if (!(uc_kind(rstate->chrs[*off]) & kind))
-		lbuf_next(lb, -dir, row, off);
+		lbuf_wordnext(lb, -dir, row, off);
 	return 0;
 }
 
@@ -581,16 +598,19 @@ int lbuf_wordbeg(struct lbuf *lb, int big, int dir, int *row, int *off)
 	int nl;
 	if (!lbuf_get(lb, *row))
 		return 1;
-	ren_state *r = ren_position(lbuf_get(lb, *row));
-	lbuf_wordlast(lb, big ? 3 : uc_kind(r->chrs[*off]), dir, row, off);
+	ren_position(lbuf_get(lb, *row));
+	while (lbuf_hwbrk(rstate->chrs[*off]))
+		if (lbuf_wordnext(lb, dir, row, off))
+			return 1;
+	lbuf_wordlast(lb, big ? 3 : uc_kind(rstate->chrs[*off]), dir, row, off);
 	nl = *rstate->chrs[*off] == '\n';
-	if (lbuf_next(lb, dir, row, off))
+	if (lbuf_wordnext(lb, dir, row, off))
 		return 1;
 	while (uc_isspace(rstate->chrs[*off])) {
 		nl += *rstate->chrs[*off] == '\n';
 		if (nl == 2)
 			return 0;
-		if (lbuf_next(lb, dir, row, off))
+		if (lbuf_wordnext(lb, dir, row, off))
 			return 1;
 	}
 	return 0;
@@ -601,20 +621,23 @@ int lbuf_wordend(struct lbuf *lb, int big, int dir, int *row, int *off)
 	int nl = 0;
 	if (!lbuf_get(lb, *row))
 		return 1;
-	ren_state *r = ren_position(lbuf_get(lb, *row));
-	if (!uc_isspace(r->chrs[*off])) {
-		if (lbuf_next(lb, dir, row, off))
+	ren_position(lbuf_get(lb, *row));
+	while (lbuf_hwbrk(rstate->chrs[*off]))
+		if (lbuf_wordnext(lb, dir, row, off))
+			return 1;
+	if (!uc_isspace(rstate->chrs[*off])) {
+		if (lbuf_wordnext(lb, dir, row, off))
 			return 1;
 		nl = dir < 0 && *rstate->chrs[*off] == '\n';
 	}
 	nl += dir > 0 && *rstate->chrs[*off] == '\n';
 	while (uc_isspace(rstate->chrs[*off])) {
-		if (lbuf_next(lb, dir, row, off))
+		if (lbuf_wordnext(lb, dir, row, off))
 			return 1;
 		nl += *rstate->chrs[*off] == '\n';
 		if (nl == 2) {
 			if (dir < 0)
-				lbuf_next(lb, -dir, row, off);
+				lbuf_wordnext(lb, -dir, row, off);
 			return 0;
 		}
 	}
