@@ -42,7 +42,8 @@ static char xuerr[] = "unreported error";
 #include <stdbool.h>
 #include "typewrt_ble.h"
 #include "typewrt_power.h"
-static char ex_vcwd[4096] = "/sdcard";
+#define NEXTVI_FS_ROOT "/sdcard"
+static char ex_vcwd[4096] = NEXTVI_FS_ROOT;
 bool typewrt_rtc_get_datetime(char *out, size_t out_len);
 const char *typewrt_rtc_set_datetime(const char *datetime, char *out, size_t out_len);
 bool typewrt_battery_get_status(char *out, size_t out_len);
@@ -79,19 +80,108 @@ static void bufs_free(int idx)
 	lbuf_free(bufs[idx].lb);
 }
 
+static char *ex_pathndup(const char *path, int len)
+{
+	char *copy = emalloc(len + 1);
+	memcpy(copy, path, len);
+	copy[len] = '\0';
+	return copy;
+}
+
+#ifdef NEXTVI_EMBEDDED
+static int ex_under_fsroot(const char *path)
+{
+	int rootlen = strlen(NEXTVI_FS_ROOT);
+	return path && !strncmp(path, NEXTVI_FS_ROOT, rootlen) &&
+		(path[rootlen] == '\0' || path[rootlen] == '/');
+}
+
+static char *ex_pathnormalize(const char *path)
+{
+	char *input, *out;
+	const char *p;
+	int rootlen = strlen(NEXTVI_FS_ROOT);
+	int outlen;
+
+	if (!path || !*path)
+		return uc_dup("");
+	if (!strcmp(path, "/"))
+		input = uc_dup(NEXTVI_FS_ROOT);
+	else if (path[0] == '/') {
+		if (ex_under_fsroot(path))
+			input = uc_dup(path);
+		else {
+			int len = strlen(path);
+			input = emalloc(rootlen + len + 1);
+			strcpy(input, NEXTVI_FS_ROOT);
+			strcpy(input + rootlen, path);
+		}
+	} else {
+		int cwdlen = strlen(ex_vcwd);
+		int pathlen = strlen(path);
+		input = emalloc(cwdlen + pathlen + 2);
+		strcpy(input, ex_vcwd);
+		if (cwdlen && input[cwdlen - 1] != '/')
+			input[cwdlen++] = '/';
+		strcpy(input + cwdlen, path);
+	}
+
+	out = emalloc(strlen(input) + rootlen + 2);
+	strcpy(out, NEXTVI_FS_ROOT);
+	outlen = rootlen;
+	p = ex_under_fsroot(input) ? input + rootlen : input;
+	while (*p) {
+		const char *seg;
+		int len;
+		while (*p == '/')
+			p++;
+		seg = p;
+		while (*p && *p != '/')
+			p++;
+		len = p - seg;
+		if (!len || (len == 1 && seg[0] == '.'))
+			continue;
+		if (len == 2 && seg[0] == '.' && seg[1] == '.') {
+			if (outlen > rootlen) {
+				while (outlen > rootlen && out[outlen - 1] != '/')
+					outlen--;
+				if (outlen > rootlen)
+					outlen--;
+				out[outlen] = '\0';
+			}
+			continue;
+		}
+		out[outlen++] = '/';
+		memcpy(out + outlen, seg, len);
+		outlen += len;
+		out[outlen] = '\0';
+	}
+	free(input);
+	return out;
+}
+
+static char *ex_pathstore(const char *path, int len)
+{
+	char *copy, *normalized;
+
+	if (!path || len <= 0)
+		return uc_dup("");
+	copy = ex_pathndup(path, len);
+	normalized = ex_pathnormalize(copy);
+	free(copy);
+	return normalized;
+}
+#else
+static char *ex_pathstore(const char *path, int len)
+{
+	return ex_pathndup(path, len);
+}
+#endif
+
 char *ex_pathresolve(const char *path)
 {
 #ifdef NEXTVI_EMBEDDED
-	if (!path || !path[0] || path[0] == '/')
-		return uc_dup(path ? path : "");
-	int rootlen = strlen(ex_vcwd);
-	int pathlen = strlen(path);
-	char *resolved = emalloc(rootlen + pathlen + 2);
-	strcpy(resolved, ex_vcwd);
-	if (rootlen && resolved[rootlen - 1] != '/')
-		resolved[rootlen++] = '/';
-	strcpy(resolved + rootlen, path);
-	return resolved;
+	return ex_pathnormalize(path);
 #else
 	return uc_dup(path ? path : "");
 #endif
@@ -365,16 +455,21 @@ static int ex_readfile(void)
 
 int ex_edit(const char *path, int len)
 {
+	char *stored;
 	int fd, ret;
 	if (path[0] == '.' && path[1] == '/') {
 		path += 2;
 		len -= 2;
 	}
-	if (path[0] && ((fd = bufs_find(path, len)) >= 0)) {
+	stored = ex_pathstore(path, len);
+	len = strlen(stored);
+	if (stored[0] && ((fd = bufs_find(stored, len)) >= 0)) {
 		bufs_switch(fd);
+		free(stored);
 		return 1;
 	}
-	bufs_switch(bufs_open(path, len));
+	bufs_switch(bufs_open(stored, len));
+	free(stored);
 	ret = ex_readfile();
 	if (ret <= 0)
 		ex_bufpostfix(ex_buf, 0);
@@ -384,20 +479,26 @@ int ex_edit(const char *path, int len)
 static void *ec_edit(char *loc, char *cmd, char *arg)
 {
 	char msg[512];
+	char *stored;
 	int fd, len, rd = 0, cd = 0;
 	if (arg[0] == '.' && arg[1] == '/')
 		cd = 2;
 	len = strlen(arg+cd);
-	if (len && ((fd = bufs_find(arg+cd, len)) >= 0)) {
+	stored = ex_pathstore(arg + cd, len);
+	len = strlen(stored);
+	if (len && ((fd = bufs_find(stored, len)) >= 0)) {
 		bufs_switchwft(fd)
+		free(stored);
 		return NULL;
 	} else if (xbufcur == xbufsmax && !strchr(cmd, '!') &&
-			bufs[xbufsmax - 1].lb->modified) {
+				bufs[xbufsmax - 1].lb->modified) {
+		free(stored);
 		return "last buffer modified";
 	} else if (len || !xbufcur || !strchr(cmd, '!')) {
-		bufs_switch(bufs_open(arg+cd, len));
+		bufs_switch(bufs_open(stored, len));
 		cd = 3; /* XXX: quick hack to indicate new lbuf */
 	}
+	free(stored);
 	rd = ex_readfile();
 	if (cd == 3 || !rd)
 		ex_bufpostfix(ex_buf, arg[0]);
@@ -620,9 +721,10 @@ void ex_bufpostfix(struct buf *p, int clear)
 
 static void *ec_setpath(char *loc, char *cmd, char *arg)
 {
+	char *stored = ex_pathstore(arg, strlen(arg));
 	free(xb_path);
-	xb_path = uc_dup(arg);
-	ex_buf->plen = strlen(arg);
+	xb_path = stored;
+	ex_buf->plen = strlen(stored);
 	return NULL;
 }
 
@@ -634,11 +736,11 @@ static void *ec_read(char *loc, char *cmd, char *arg)
 	int beg = 0, end = 0, o1 = 0, o2 = -1;
 	int row = xrow, off = xoff, fd = -1;
 	struct lbuf *lb = lbuf_make(), *pxb = xb;
-	path = arg[0] ? arg : xb_path;
 	if (arg[0] == '!') {
 		ret = "unsupported command";
 		goto err;
 	} else {
+		path = arg[0] ? arg : xb_path;
 		fspath = ex_pathresolve(path);
 		if ((fd = open(fspath, O_RDONLY)) < 0) {
 			ret = "open failed";
@@ -664,7 +766,7 @@ static void *ec_read(char *loc, char *cmd, char *arg)
 	lbuf_edit(pxb, obuf.s, row, row, 0, 0);
 	free(obuf.s);
 	snprintf(msg, sizeof(msg), "\"%s\" %dL [r]",
-			path, lbuf_len(pxb) - lbuf_len(lb));
+			fspath, lbuf_len(pxb) - lbuf_len(lb));
 	ex_print(msg)
 	err:
 	lbuf_free(lb);
@@ -679,10 +781,12 @@ static void *ec_read(char *loc, char *cmd, char *arg)
 
 static void *ec_write(char *loc, char *cmd, char *arg)
 {
-	char msg[512], *path, *fspath;
+	char msg[512], *path = NULL;
 	int fd, beg = 0, end = 0, o1 = -1, o2 = -1;
+#ifdef NEXTVI_EMBEDDED
+	int write_started = 0;
+#endif
 	void *ret = NULL;
-	path = arg[0] ? arg : xb_path;
 	if (cmd[0] == 'x' && !xb->modified)
 		return ec_quit("", cmd, "");
 	if (lbuf_len(xb) && ex_region(loc, &beg, &end, &o1, &o2))
@@ -693,18 +797,20 @@ static void *ec_write(char *loc, char *cmd, char *arg)
 	}
 	if (arg[0] == '!')
 		return "unsupported command";
+	path = ex_pathresolve(arg[0] ? arg : xb_path);
 	if (!strchr(cmd, '!')) {
 		if (!strcmp(xb_path, path) && mtime(path) > ex_buf->mtime)
-			return "write failed: file changed";
-		if (arg[0] && mtime(path) >= 0)
-			return "write failed: file exists";
+			ret = "write failed: file changed";
+		else if (arg[0] && mtime(path) >= 0)
+			ret = "write failed: file exists";
+		if (ret)
+			goto done;
 	}
-	fspath = ex_pathresolve(path);
 #ifdef NEXTVI_EMBEDDED
 	typewrt_sd_write_begin();
+	write_started = 1;
 #endif
-	fd = open(fspath, O_WRONLY | O_CREAT | O_TRUNC, conf_mode);
-	free(fspath);
+	fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, conf_mode);
 	if (fd < 0) {
 		ret = "write failed: cannot create file";
 		goto done;
@@ -732,8 +838,10 @@ static void *ec_write(char *loc, char *cmd, char *arg)
 		ec_quit("", cmd, "");
 	done:
 #ifdef NEXTVI_EMBEDDED
-	typewrt_sd_write_end();
+	if (write_started)
+		typewrt_sd_write_end();
 #endif
+	free(path);
 	return ret;
 }
 
@@ -1205,7 +1313,7 @@ static void *ec_setdir(char *loc, char *cmd, char *arg)
 static void *ec_chdir(char *loc, char *cmd, char *arg)
 {
 #ifdef NEXTVI_EMBEDDED
-	char *path = ex_pathresolve(*arg ? arg : "/sdcard");
+	char *path = ex_pathresolve(*arg ? arg : NEXTVI_FS_ROOT);
 	struct stat st;
 	if (stat(path, &st) || !S_ISDIR(st.st_mode)) {
 		free(path);

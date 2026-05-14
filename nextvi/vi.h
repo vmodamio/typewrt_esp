@@ -294,6 +294,8 @@ int nextvi_keyboard_read(unsigned char *event);
 int nextvi_keyboard_read_timeout(unsigned char *event, int timeout_ms);
 void nextvi_display_refresh_line(int row, const char *text, int cols);
 void nextvi_display_refresh_line_inverted(int row, const char *text, int cols);
+void nextvi_display_refresh_line_attrs(int row, const char *text,
+	const unsigned char *attrs, int cols);
 void nextvi_display_draw_hline(int y, int color);
 void nextvi_display_refresh_cursor(int row, int col, int on);
 void nextvi_display_move_cursor(int old_row, int old_col,
@@ -362,6 +364,7 @@ is._sug = NULL; \
 int led_prompt(sbuf *sb, char *insert, int *kmap, ins_state *is, int ps, int flg);
 int led_input(sbuf *sb, char *post, int postn, int row, int flg, int *pren);
 void led_render(char *s0, int cbeg, int cend);
+void led_select(char *s, int beg, int end);
 #define _led_render(msg, row, col, beg, end, kill) \
 { \
 	int record = term_record; \

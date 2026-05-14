@@ -180,7 +180,10 @@ static void vi_drawrow(int row)
 		}
 		if (row >= ar && row <= cr) {
 			int beg, end;
-			if (ar == cr) {
+			if (vi_visual == 'V') {
+				beg = 0;
+				end = lbuf_eol(xb, row, 1);
+			} else if (ar == cr) {
 				beg = ao;
 				end = co;
 			} else if (row == ar) {
@@ -1172,11 +1175,15 @@ static int vc_visual_op(int cmd)
 {
 	int r1 = vi_vrow, o1 = vi_voff;
 	int r2 = xrow, o2 = xoff;
+	int lnmode = vi_visual == 'V';
 	if (r1 > r2 || (r1 == r2 && o1 > o2)) {
 		swap(&r1, &r2);
 		swap(&o1, &o2);
 	}
-	if (o2 < lbuf_eol(xb, r2, 2))
+	if (lnmode) {
+		o1 = 0;
+		o2 = lbuf_eol(xb, r2, 1);
+	} else if (o2 < lbuf_eol(xb, r2, 2))
 		o2++;
 	ren_state *r = (ren_state*)lbuf_get(xb, r1);
 	r = r ? ren_position((char*)r) : NULL;
@@ -1185,13 +1192,13 @@ static int vc_visual_op(int cmd)
 	vi_mod |= 1;
 	int mv = lbuf_len(xb), key = 0;
 	if (cmd == 'y')
-		vi_yank(r1, o1, r2, o2, 0);
+		vi_yank(r1, o1, r2, o2, lnmode);
 	else if (cmd == 'd')
-		vi_delete(r1, o1, r2, o2, 0);
+		vi_delete(r1, o1, r2, o2, lnmode);
 	else if (cmd == 'c')
-		key = vi_change(r1, o1, r2, o2, 0);
+		key = vi_change(r1, o1, r2, o2, lnmode);
 	else if (cmd == '~' || cmd == 'u' || cmd == 'U')
-		vi_case(r1, o1, r2, o2, 0, cmd);
+		vi_case(r1, o1, r2, o2, lnmode, cmd);
 	else if (cmd == '>' || cmd == '<')
 		vi_shift(r1, r2, cmd == '>' ? +1 : -1, 1);
 	vi_mod |= r1 != r2 || mv != lbuf_len(xb) ? 1 : 2;
@@ -1398,9 +1405,9 @@ void vi(int init)
 		int nrow = xrow;
 		int noff = xoff;
 		int ooff = noff;
-		int otop = xtop;
-		int oleft = xleft;
-		int orow = xrow;
+			int otop = xtop;
+			int oleft = xleft;
+			int orow = xrow;
 		icmd_pos = 0;
 		vi_mod = 0;
 		vi_ybuf = vi_yankbuf();
@@ -1532,27 +1539,36 @@ void vi(int init)
 				vi_tsm = 0;
 				status:
 				if (vi_arg) {
+					int old_status = vi_status;
 					vi_status = vi_arg > 1 ? 0 : term_resized;
-					xrows += vi_status ? -1 : 1;
+					if (!old_status && vi_status)
+						xrows--;
+					else if (old_status && !vi_status)
+						xrows++;
 				}
 				vc_status(vi_tsm);
 				break;
-			case TK_CTL('^'):
-				bufs_switchwft(ex_pbuf - bufs)
-				vc_status(0);
-				vi_mod |= 1;
-				break;
-			case TK_CTL('k'):;
-				static struct lbuf *writexb;
-				if ((cs = ex_exec("w")) && writexb && xb == writexb)
-					cs = ex_exec("mpt0:w!");
-				writexb = cs ? xb : NULL;
-				vi_mod |= 1;
-				break;
-			case 'v':
-				vi_mod |= 2;
-				k = term_read(0);
-				switch (k) {
+				case TK_CTL('^'):
+					bufs_switchwft(ex_pbuf - bufs)
+					vc_status(0);
+					vi_mod |= 1;
+					break;
+				case TK_CTL('k'):;
+					static struct lbuf *writexb;
+					if ((cs = ex_exec("w")) && writexb && xb == writexb)
+						cs = ex_exec("mpt0:w!");
+					writexb = cs ? xb : NULL;
+					vi_mod |= 1;
+					break;
+				case 'v':
+					if (vi_visual) {
+						vi_visual = vi_visual == 'v' ? 0 : 'v';
+						vi_mod |= 1;
+						break;
+					}
+					vi_mod |= 2;
+					k = term_read(0);
+					switch (k) {
 				case '.':
 					while (vi_arg) {
 						term_push("j", 1);
@@ -1617,32 +1633,34 @@ void vi(int init)
 					}
 					ln = vi_enprompt(":", buf, &k, &n);
 					goto do_excmd; }
-				case 'r': {
-					cs = vi_curword(xb, xrow, xoff, vi_arg, 1);
-					char buf[cs ? strlen(cs)+30 : 30];
-					strcpy(buf, "%s/");
-					if (cs) {
+					case 'r': {
+						cs = vi_curword(xb, xrow, xoff, vi_arg, 1);
+						char buf[cs ? strlen(cs)+30 : 30];
+						strcpy(buf, "%s/");
+						if (cs) {
 						strcat(buf, cs);
 						strcat(buf, "/");
 						free(cs);
 					}
-					ln = vi_enprompt(":", buf, &k, &n);
-					goto do_excmd; }
-				default:
-					term_dec()
-				}
-				break;
-			case 'V':
-				if (vi_visual) {
-					vi_hidch = !vi_hidch;
+						ln = vi_enprompt(":", buf, &k, &n);
+						goto do_excmd; }
+					default:
+						term_dec()
+					}
+					break;
+				case 'V':
+					if (vi_visual == 'V') {
+						vi_visual = 0;
+						vi_mod |= 1;
+						break;
+					}
+					if (!vi_visual) {
+						vi_vrow = xrow;
+						vi_voff = xoff;
+					}
+					vi_visual = 'V';
 					vi_mod |= 1;
 					break;
-				}
-				vi_visual = 'V';
-				vi_vrow = xrow;
-				vi_voff = xoff;
-				vi_mod |= 1;
-				break;
 			case TK_CTL('v'):
 				vi_arg = (vi_wsel % 5) + !!*vi_word;
 			case TK_CTL('c'):
@@ -1927,8 +1945,8 @@ void vi(int init)
 				memcpy(rep_cmd, icmd, icmd_pos);
 				rep_len = icmd_pos;
 			}
-		}
-		topfix()
+			}
+			topfix()
 		ln = lbuf_get(xb, xrow);
 		xoff = ren_noeol(ln, xoff);
 		if (ln && !rstate->wid[xoff]) {

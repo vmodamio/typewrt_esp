@@ -555,9 +555,16 @@ static void renderGlyphRowMode(int physical_row, const char *glyphs, bool invert
 #endif
 }
 
+static void invertTextCell(int row, int col)
+{
+    for (int m = 0; m < PSF_GLYPH_SIZE; m++) {
+        sharpmem_buffer[((row * PSF_GLYPH_SIZE + m) * PXWIDTH + 8 * col) / 8] ^= 0xff;
+    }
+}
+
 static void renderTextRow(int physical_row, const char *text)
 {
-    renderTextRowMode(physical_row, text, false);
+	renderTextRowMode(physical_row, text, false);
 }
 
 static void renderGlyphRow(int physical_row, const char *glyphs)
@@ -801,6 +808,54 @@ void nextvi_display_refresh_line_inverted(int row, const char *text, int cols)
         disableSplash();
     }
     renderGlyphRowMode(row, display_shadow[row], true);
+	displayUnlock();
+}
+
+void nextvi_display_refresh_line_attrs(int row, const char *text,
+    const unsigned char *attrs, int cols)
+{
+    if (!sharpmem_buffer || row < 0 || row > NEXTVI_DISPLAY_ROWS) {
+        return;
+    }
+
+    displayLock();
+    copyDisplayShadow(row, text, cols);
+    if (splash_active && splash_disable_pending && row == 0 &&
+            displayShadowRowHasVisibleText(row)) {
+        disableSplash();
+        goto done;
+    }
+    if (splash_active) {
+        drawSplashLayout();
+        if (row == 0) {
+            renderGlyphRow(NEXTVI_DISPLAY_ROWS - 1, display_shadow[0]);
+        } else if (row == NEXTVI_DISPLAY_ROWS) {
+            char status_line[NEXTVI_DISPLAY_COLS + 1];
+            splashStatusLine(status_line);
+            renderTextRow(row, status_line);
+        }
+        goto done;
+    }
+
+    for (int col = 0; col < NEXTVI_DISPLAY_COLS; col++) {
+        unsigned char glyph = display_shadow[row][col] ?
+            (unsigned char)display_shadow[row][col] : ' ';
+        displayGlyph(col, row, glyph);
+    }
+    if (attrs) {
+        for (int col = 0; col < NEXTVI_DISPLAY_COLS; col++) {
+            if (attrs[col]) {
+                invertTextCell(row, col);
+            }
+        }
+    }
+    markPhysicalRowRedrawn(row);
+#if TYPEWRT_REFRESH_FULL_DISPLAY
+    refreshDisplay();
+#else
+    updateRow((uint8_t)row);
+#endif
+done:
     displayUnlock();
 }
 
@@ -829,9 +884,7 @@ static int cursorCellValid(int row, int col)
 
 static void invertCursorCell(int row, int col)
 {
-    for (int m = 0; m < PSF_GLYPH_SIZE; m++) {
-        sharpmem_buffer[((row * PSF_GLYPH_SIZE + m) * PXWIDTH + 8 * col) / 8] ^= 0xff;
-    }
+    invertTextCell(row, col);
 }
 
 void nextvi_display_refresh_cursor(int row, int col, int on)

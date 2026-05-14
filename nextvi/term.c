@@ -12,10 +12,12 @@ unsigned int texec, tn;
 
 #ifdef NEXTVI_NOTERM
 static char term_screen[NEXTVI_DISPLAY_ROWS + 1][NEXTVI_DISPLAY_COLS + 1];
+static unsigned char term_attrs[NEXTVI_DISPLAY_ROWS + 1][NEXTVI_DISPLAY_COLS + 1];
 static unsigned char term_dirty[NEXTVI_DISPLAY_ROWS + 1];
 static int term_row, term_col, term_cursor_on = 1;
 static int term_cursor_row = -1, term_cursor_col = -1, term_cursor_drawn;
 static int term_cursor_suspended;
+static int term_reverse;
 static unsigned char kq[128];
 static unsigned int kq_r, kq_w;
 static int key_shift, key_ctrl, key_alt, key_win, key_caps;
@@ -57,7 +59,8 @@ static void noterm_refresh_dirty(void)
 			continue;
 		if (term_cursor_drawn && r == term_cursor_row)
 			cursor_erased = 1;
-		nextvi_display_refresh_line(r, term_screen[r], NEXTVI_DISPLAY_COLS);
+		nextvi_display_refresh_line_attrs(r, term_screen[r],
+			term_attrs[r], NEXTVI_DISPLAY_COLS);
 		term_dirty[r] = 0;
 	}
 	if (cursor_erased)
@@ -109,7 +112,9 @@ static void noterm_clear_line(int row, int col)
 		return;
 	col = MAX(0, MIN(col, NEXTVI_DISPLAY_COLS));
 	memset(term_screen[row] + col, ' ', NEXTVI_DISPLAY_COLS - col);
+	memset(term_attrs[row] + col, 0, NEXTVI_DISPLAY_COLS - col);
 	term_screen[row][NEXTVI_DISPLAY_COLS] = '\0';
+	term_attrs[row][NEXTVI_DISPLAY_COLS] = 0;
 	noterm_dirty(row);
 }
 
@@ -125,6 +130,8 @@ static void noterm_room(int n)
 		for (int r = last; r >= term_row + count; r--) {
 			memcpy(term_screen[r], term_screen[r - count],
 				NEXTVI_DISPLAY_COLS + 1);
+			memcpy(term_attrs[r], term_attrs[r - count],
+				NEXTVI_DISPLAY_COLS + 1);
 			noterm_dirty(r);
 		}
 		for (int r = term_row; r < term_row + count; r++)
@@ -132,6 +139,8 @@ static void noterm_room(int n)
 	} else {
 		for (int r = term_row; r <= last - count; r++) {
 			memcpy(term_screen[r], term_screen[r + count],
+				NEXTVI_DISPLAY_COLS + 1);
+			memcpy(term_attrs[r], term_attrs[r + count],
 				NEXTVI_DISPLAY_COLS + 1);
 			noterm_dirty(r);
 		}
@@ -157,6 +166,7 @@ static void noterm_put(int ch)
 		return;
 	if (term_col >= 0 && term_col < NEXTVI_DISPLAY_COLS) {
 		term_screen[term_row][term_col] = ch ? ch : ' ';
+		term_attrs[term_row][term_col] = term_reverse ? 1 : 0;
 		noterm_dirty(term_row);
 	}
 	term_col++;
@@ -177,6 +187,11 @@ static void noterm_csi(int cmd, int a, int b, int got_b)
 		noterm_room(MAX(1, a));
 	} else if (cmd == 'M') {
 		noterm_room(-MAX(1, a));
+	} else if (cmd == 'm') {
+		if (a == 7)
+			term_reverse = 1;
+		else if (a == 0 || a == 27)
+			term_reverse = 0;
 	}
 }
 
@@ -314,6 +329,13 @@ __attribute__((weak)) void nextvi_display_refresh_line_inverted(int row, const c
 	nextvi_display_refresh_line(row, text, cols);
 }
 
+__attribute__((weak)) void nextvi_display_refresh_line_attrs(int row,
+	const char *text, const unsigned char *attrs, int cols)
+{
+	(void)attrs;
+	nextvi_display_refresh_line(row, text, cols);
+}
+
 __attribute__((weak)) void nextvi_display_draw_hline(int y, int color)
 {
 	(void)y;
@@ -378,9 +400,11 @@ void term_init(void)
 	xcols = NEXTVI_DISPLAY_COLS;
 	xrows = NEXTVI_DISPLAY_ROWS;
 	term_row = term_col = 0;
+	term_reverse = 0;
 	for (int r = 0; r <= NEXTVI_DISPLAY_ROWS; r++) {
 		memset(term_screen[r], ' ', NEXTVI_DISPLAY_COLS);
 		term_screen[r][NEXTVI_DISPLAY_COLS] = '\0';
+		memset(term_attrs[r], 0, NEXTVI_DISPLAY_COLS + 1);
 		term_dirty[r] = 1;
 	}
 	noterm_refresh_dirty();
