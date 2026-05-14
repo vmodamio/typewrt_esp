@@ -367,13 +367,20 @@ static int vi_hardwrap_break(char *ln, int width, int *end, int *next)
 
 static int vi_forced_line(char *ln)
 {
-	return ln && !memcmp(ln, HWBRK, HWBRK_LEN);
+	return HWBRK_IS(ln);
+}
+
+static void vi_hardwrap_skip_marker(int *row, int *off)
+{
+	if (!vi_forced_line(lbuf_get(xb, *row)) || *off > 0)
+		return;
+	*off = MIN(1, lbuf_eol(xb, *row, 1));
 }
 
 static void vi_hardwrap_emit(sbuf *out, char *txt, int cursor,
 	int row, int *nrow, int *noff)
 {
-	int first = 1, chars = 0, seg = 0;
+	int first = 1, chars = 0, marker_sep = 0, seg = 0;
 	while (*txt) {
 		int end, next, len;
 		ren_state *r = ren_position(txt);
@@ -383,7 +390,7 @@ static void vi_hardwrap_emit(sbuf *out, char *txt, int cursor,
 				end = next = end - 1;
 		}
 		if (!first)
-			sbuf_str(out, HWBRK)
+			sbuf_str(out, marker_sep ? HWBRK : HWBRK_NOSPACE)
 		sbuf_mem(out, txt, r->chrs[end] - txt)
 		sbuf_chr(out, '\n')
 		len = end;
@@ -395,6 +402,7 @@ static void vi_hardwrap_emit(sbuf *out, char *txt, int cursor,
 		if (!txt[next])
 			break;
 		chars += next;
+		marker_sep = next > end;
 		txt = r->chrs[next];
 		first = 0;
 		seg++;
@@ -423,15 +431,16 @@ static int vi_hardwrap_reflow(int row)
 		return 0;
 	sbuf_smake(txt, lbuf_s(ln)->len + 1)
 	for (int i = beg; i < end; i++) {
-		int body = vi_forced_line(lbuf_get(xb, i)) ? HWBRK_LEN : 0;
-		int mark = !!body, skip = 0;
 		ln = lbuf_get(xb, i);
+		int body = vi_forced_line(ln) ? HWBRK_LEN : 0;
+		int force_sep = HWBRK_SEP(ln);
+		int mark = !!body, skip = 0;
 		ren_state *r = ren_position(ln + body);
 		int n = r->n && *r->chrs[r->n - 1] == '\n' ? r->n - 1 : r->n;
-		while (body && skip < n && uc_isspace(r->chrs[skip]))
+		while (force_sep && skip < n && uc_isspace(r->chrs[skip]))
 			skip++;
-		int sep = i > beg && txt->s_n && txt->s[txt->s_n - 1] != ' ' &&
-			skip < n;
+		int sep = force_sep && i > beg && txt->s_n &&
+			txt->s[txt->s_n - 1] != ' ' && skip < n;
 		if (i == xrow) {
 			has_cursor = 1;
 			cursor = cur + sep + MAX(0, xoff - mark - skip);
@@ -806,6 +815,8 @@ static int vi_motion(int vc, int *row, int *off)
 			*row += dir;
 			*off = 0;
 		}
+		if (!vi_nlmode)
+			vi_hardwrap_skip_marker(row, off);
 		break;
 	case 'f':
 	case 'F':
@@ -1001,6 +1012,8 @@ static void vi_yank(int r1, int o1, int r2, int o2, int lnmode)
 static void vi_delete(int r1, int o1, int r2, int o2, int lnmode)
 {
 	sbuf rsb;
+	if (!lnmode && r1 == r2 && vi_forced_line(lbuf_get(xb, r1)) && o1 <= 0)
+		o1 = MIN(o2, 1);
 	lbuf_region(xb, &rsb, r1, lnmode ? 0 : o1, r2, lnmode ? -1 : o2);
 	vi_regput(vi_ybuf, rsb.s, lnmode);
 	free(rsb.s);
@@ -1015,6 +1028,30 @@ static void vi_delete(int r1, int o1, int r2, int o2, int lnmode)
 	}
 	xrow = r1;
 	xoff = lnmode ? lbuf_indents(xb, xrow) : o1;
+	/* Let insert-mode backspace consume an emptied hard-wrap marker first. */
+	if (!(r1 == r2 && !lnmode && vi_forced_line(lbuf_get(xb, r1)) &&
+				lbuf_eol(xb, r1, 1) <= 1))
+		vi_hardwrap_range(r1, r2 - r1 + 1);
+}
+
+static int vi_hardwrap_backspace_boundary(void)
+{
+	char *ln = lbuf_get(xb, xrow);
+	int eol = lbuf_eol(xb, xrow, 1);
+	if (!vi_forced_line(ln) || xrow <= 0)
+		return 0;
+	if (eol <= 1) {
+		if (xoff > 2)
+			return 0;
+		lbuf_edit(xb, "\n", xrow, xrow + 1, 0, 0);
+		xoff = 0;
+		return 1;
+	}
+	if (xoff <= 1) {
+		vi_delete(xrow, 1, xrow, 2, 0);
+		return 1;
+	}
+	return 0;
 }
 
 static void vi_indents(char *ln, int *l)
@@ -1208,7 +1245,7 @@ static int vc_visual_op(int cmd)
 static int vc_insert(int cmd)
 {
 	char *post, *ln = lbuf_get(xb, xrow);
-	int row, cmdo, l1, off, key, postn = 1;
+	int row, cmdo, forced, ips = 0, l1, off, key, postn = 1;
 	sbuf_smake(sb, xcols)
 	vi_insert_screen_enter();
 	if (cmd == 'I')
@@ -1221,6 +1258,9 @@ static int vc_insert(int cmd)
 			vi_drawagain(++xtop);
 	}
 	xoff = ren_noeol(ln, xoff);
+	forced = vi_forced_line(ln);
+	if (forced && xoff < 1)
+		xoff = MIN(1, lbuf_eol(xb, xrow, 1));
 	row = xrow;
 	if (cmd == 'a' || cmd == 'A')
 		xoff++;
@@ -1238,14 +1278,16 @@ static int vc_insert(int cmd)
 		l1 = rstate->chrs[off] - ln;
 		postn = rstate->n - off;
 		post = ln + l1;
+		if (forced)
+			ips = MIN(l1, HWBRK_LEN);
 	}
 	term_pos(row - xtop, 0);
 	term_room(cmdo);
 	if (l1)
 		sbuf_mem(sb, ln, l1)
 	nextvi_display_note_insert();
-	key = led_input(sb, post, postn, row, cmdo << 2, &postn);
-	if (postn != l1 || cmdo || !ln) {
+	key = led_input_at(sb, post, postn, row, cmdo << 2, &postn, ips, xrow);
+	if (postn != l1 || cmdo || !ln || key == LED_REFLOW) {
 		int lines = vi_linecount(sb->s);
 		lbuf_edit(xb, sb->s, row, row + !cmdo, off, xoff);
 		vi_hardwrap_range(row, lines);
@@ -1294,9 +1336,12 @@ static int vc_put(int cmd)
 static void vc_join(int spc, int cnt)
 {
 	int o2 = 0;
+	int forced = !spc && vi_forced_line(lbuf_get(xb, xrow));
 	if (lbuf_join(xb, xrow, xrow + cnt, xoff, &o2, spc))
 		return;
 	xoff = o2;
+	if (forced && xoff > 0)
+		xoff--;
 	vi_mod |= 1;
 }
 
@@ -1756,13 +1801,23 @@ void vi(int init)
 				k = vc_insert(c);
 				ins:
 				vi_mod |= !xpac && xrow == orow ? 8 : 1;
+				if (k == LED_REFLOW) {
+					xleft = 0;
+					vi_mod |= 1;
+					term_back(xoff != lbuf_eol(xb, xrow, 1) ? 'i' : 'a');
+					vi_insert_screen_enter();
+					break;
+				}
 				if (k == 127) {
 					xleft = 0;
-					if (xrow && !(xoff > 0 && lbuf_eol(xb, xrow, 1))) {
-						xrow--;
-						vc_join(0, 2);
-					} else if (xoff)
-						vi_delete(xrow, xoff - 1, xrow, xoff, 0);
+					vi_mod |= 1;
+					if (!vi_hardwrap_backspace_boundary()) {
+						if (xrow && !(xoff > 0 && lbuf_eol(xb, xrow, 1))) {
+							xrow--;
+							vc_join(0, 2);
+						} else if (xoff)
+							vi_delete(xrow, xoff - 1, xrow, xoff, 0);
+					}
 					term_back(xoff != lbuf_eol(xb, xrow, 1) ? 'i' : 'a');
 					vi_insert_screen_enter();
 					break;

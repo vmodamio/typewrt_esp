@@ -565,7 +565,7 @@ int lbuf_next(struct lbuf *lb, int dir, int *r, int *o)
 
 static int lbuf_hwbrk(char *s)
 {
-	return s && !memcmp(s, HWBRK, HWBRK_LEN);
+	return HWBRK_IS(s);
 }
 
 static int lbuf_wordnext(struct lbuf *lb, int dir, int *row, int *off)

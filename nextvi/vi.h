@@ -5,7 +5,11 @@
 #define MIN(a, b)	((a) < (b) ? (a) : (b))
 #define MAX(a, b)	((a) < (b) ? (b) : (a))
 #define HWBRK		"\342\200\213"
+#define HWBRK_NOSPACE	"\342\201\240"
 #define HWBRK_LEN	3
+#define HWBRK_IS(s)	((s) && (!memcmp((s), HWBRK, HWBRK_LEN) || \
+				!memcmp((s), HWBRK_NOSPACE, HWBRK_LEN)))
+#define HWBRK_SEP(s)	((s) && !memcmp((s), HWBRK, HWBRK_LEN))
 /* for debug; printf() but to file */
 #define p(s, ...)\
 	{FILE *f = fopen("file", "a");\

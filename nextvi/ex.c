@@ -801,7 +801,7 @@ static void *ec_write(char *loc, char *cmd, char *arg)
 	if (!strchr(cmd, '!')) {
 		if (!strcmp(xb_path, path) && mtime(path) > ex_buf->mtime)
 			ret = "write failed: file changed";
-		else if (arg[0] && mtime(path) >= 0)
+		else if (arg[0] && strcmp(xb_path, path) && mtime(path) >= 0)
 			ret = "write failed: file exists";
 		if (ret)
 			goto done;

@@ -316,9 +316,34 @@ static void led_printparts(sbuf *sb, int pre, int ps,
 
 #define LED_HARDWRAP	-2
 #define LED_HARDUNWRAP	-3
+#define LED_REFLOW	-4
+#define LED_HARDSEP	-5
 
 static int led_wrap_ps;
 static int led_wrap_hidden_sep;
+static int led_wrap_sep_pending;
+static int led_wrap_sep_ps;
+
+static int led_hardwrap_forced(char *ln)
+{
+	return HWBRK_IS(ln);
+}
+
+static int led_hardwrap_existing(int row)
+{
+	return led_hardwrap_forced(lbuf_get(xb, row)) ||
+		led_hardwrap_forced(lbuf_get(xb, row + 1));
+}
+
+static int led_hardwrap_saved_sep(sbuf *sb, int ps, int crow)
+{
+	if (ps != HWBRK_LEN || sb->s_n < HWBRK_LEN)
+		return 0;
+	if (!led_hardwrap_forced(lbuf_get(xb, crow)) || !HWBRK_SEP(sb->s))
+		return 0;
+	memcpy(sb->s, HWBRK_NOSPACE, HWBRK_LEN);
+	return 1;
+}
 
 static int led_hardwrap_insert(sbuf *sb, int ps, char **post, int *postn)
 {
@@ -385,7 +410,7 @@ static int led_hardwrap_insert(sbuf *sb, int ps, char **post, int *postn)
 	tail = next < prebytes ? uc_dup(sb->s + ps + next) : uc_dup("");
 	sbuf_cut(sb, ps + end)
 	sbuf_chr(sb, '\n')
-	sbuf_str(sb, HWBRK)
+	sbuf_str(sb, led_wrap_hidden_sep ? HWBRK : HWBRK_NOSPACE)
 	sbuf_str(sb, tail)
 	free(tail);
 	free(tmp->s);
@@ -401,10 +426,11 @@ static int led_hardwrap_unwrap(sbuf *sb, int ps, char *post)
 	if (conf_hwwidth <= 0 || ps < HWBRK_LEN + 1)
 		return 0;
 	brk = ps - HWBRK_LEN - 1;
-	if (sb->s[brk] != '\n' || memcmp(sb->s + brk + 1, HWBRK, HWBRK_LEN))
+	if (sb->s[brk] != '\n' || !HWBRK_IS(sb->s + brk + 1))
 		return 0;
 	for (prev = brk; prev > 0 && sb->s[prev - 1] != '\n'; prev--);
-	sep = brk > prev && sb->s[brk - 1] != ' ' && (ps < sb->s_n || *post);
+	sep = HWBRK_SEP(sb->s + brk + 1) && brk > prev &&
+		sb->s[brk - 1] != ' ' && (ps < sb->s_n || *post);
 	sbuf_smake(tmp, sb->s_n - prev + strlen(post) + 2)
 	sbuf_mem(tmp, sb->s + prev, brk - prev)
 	if (sep)
@@ -430,6 +456,76 @@ static int led_hardwrap_unwrap(sbuf *sb, int ps, char *post)
 	free(tail);
 	led_wrap_ps = prev;
 	return 1;
+}
+
+static int led_hardwrap_join_at(sbuf *sb, int prev, int ps, char *post,
+	int cut)
+{
+	int width;
+	char *tail;
+	sbuf_smake(tmp, sb->s_n - prev + strlen(post) + 1)
+	sbuf_mem(tmp, sb->s + prev, cut - prev)
+	sbuf_mem(tmp, sb->s + ps, sb->s_n - ps)
+	sbufn_str(tmp, post)
+	rstate += 2;
+	rstate->s = NULL;
+	ren_state *r = ren_position(tmp->s);
+	int n = r->n && *r->chrs[r->n - 1] == '\n' ? r->n - 1 : r->n;
+	width = r->pos[n];
+	free(tmp->s);
+	rstate -= 2;
+	if (width > conf_hwwidth)
+		return 0;
+	tail = uc_dup(sb->s + ps);
+	sbuf_cut(sb, cut)
+	sbuf_str(sb, tail)
+	sbuf_null(sb)
+	free(tail);
+	led_wrap_ps = prev;
+	return 1;
+}
+
+static int led_hardwrap_backspace(sbuf *sb, int ps, char *post)
+{
+	int brk, prev, cut;
+	led_wrap_hidden_sep = 0;
+	if (conf_hwwidth <= 0 || ps < HWBRK_LEN + 1)
+		return 0;
+	brk = ps - HWBRK_LEN - 1;
+	if (sb->s[brk] != '\n' || !HWBRK_IS(sb->s + brk + 1))
+		return 0;
+	for (prev = brk; prev > 0 && sb->s[prev - 1] != '\n'; prev--);
+	if (brk > prev && sb->s[brk - 1] != ' ' &&
+			(ps < sb->s_n || *post) &&
+			led_hardwrap_join_at(sb, prev, ps, post, brk))
+		return 1;
+	if (brk <= prev)
+		return 0;
+	cut = uc_beg(sb->s + prev, sb->s + brk - 1) - sb->s;
+	return led_hardwrap_join_at(sb, prev, ps, post, cut);
+}
+
+static int led_hardwrap_after_delete(sbuf *sb, int ps, int pre, char *post,
+	int postn, int *poff, int ai_max, int crow)
+{
+	if (ai_max < 0)
+		return 0;
+	if (sb->s_n == ps) {
+		sbuf_null(sb)
+		if (led_wrap_sep_pending && ps == led_wrap_sep_ps) {
+			memcpy(sb->s + ps - HWBRK_LEN, HWBRK_NOSPACE, HWBRK_LEN);
+			led_wrap_sep_pending = 0;
+			led_wrap_sep_ps = -1;
+			return LED_HARDSEP;
+		}
+		if (led_hardwrap_backspace(sb, ps, post))
+			return LED_HARDUNWRAP;
+	}
+	if (led_hardwrap_existing(crow)) {
+		led_printparts(sb, pre, ps, post, postn, poff);
+		return LED_REFLOW;
+	}
+	return 0;
 }
 
 /* read a character from the terminal */
@@ -550,7 +646,7 @@ static int led_line(sbuf *sb, int ps, int pre, char **post, int *postn, char **p
 	int ai_max, int *poff, int *kmap, ins_state *is, int orow, int crow, int ctop, int flg)
 {
 	char *cs;
-	int len, c, i;
+	int len, c, i, hkey;
 	do {
 		led_printparts(sb, pre, ps, *post, *postn, poff);
 		len = sb->s_n;
@@ -560,8 +656,32 @@ static int led_line(sbuf *sb, int ps, int pre, char **post, int *postn, char **p
 		case TK_CTL('h'):
 		case 127:
 			c = 127;
-			if (len - pre > 0)
+			if (len - pre > 0) {
 				sbuf_cut(sb, led_lastchar(sb->s + pre) + pre)
+				if ((hkey = led_hardwrap_after_delete(sb, ps, pre,
+						*post, *postn, poff, ai_max, crow)))
+					return hkey;
+			}
+			else if (ai_max >= 0) {
+				sbuf_null(sb)
+				if (pre == ps && led_wrap_sep_pending &&
+						ps == led_wrap_sep_ps) {
+					memcpy(sb->s + ps - HWBRK_LEN, HWBRK_NOSPACE,
+						HWBRK_LEN);
+					led_wrap_sep_pending = 0;
+					led_wrap_sep_ps = -1;
+					return LED_HARDSEP;
+				}
+				if (pre == ps && led_hardwrap_saved_sep(sb, ps, crow))
+					return LED_REFLOW;
+				if (pre == ps && ps == HWBRK_LEN &&
+						led_hardwrap_forced(lbuf_get(xb, crow)))
+					return 127;
+				if (pre == ps && led_hardwrap_backspace(sb, ps, *post))
+					return LED_HARDUNWRAP;
+				term_cursor(0);
+				return c;
+			}
 			else {
 				term_cursor(0);
 				return c;
@@ -569,10 +689,17 @@ static int led_line(sbuf *sb, int ps, int pre, char **post, int *postn, char **p
 			break;
 		case TK_CTL('u'):
 			sbuf_cut(sb, is->sug_pt > pre && len > is->sug_pt ? is->sug_pt : pre)
+			if ((hkey = led_hardwrap_after_delete(sb, ps, pre, *post,
+					*postn, poff, ai_max, crow)))
+				return hkey;
 			break;
 		case TK_CTL('w'):
-			if (len - pre > 0)
+			if (len - pre > 0) {
 				sbuf_cut(sb, led_lastword(sb->s + pre) + pre)
+				if ((hkey = led_hardwrap_after_delete(sb, ps, pre,
+						*post, *postn, poff, ai_max, crow)))
+					return hkey;
+			}
 			else if (ai_max >= 0)
 				term_push("bdwi", 5);
 			break;
@@ -809,13 +936,16 @@ static void led_open_next_row(int *crow, int *ctop)
 	(*crow)++;
 }
 
-int led_input(sbuf *sb, char *post, int postn, int row, int flg, int *pren)
+static int led_input_at(sbuf *sb, char *post, int postn, int row, int flg,
+	int *pren, int ips, int icrow)
 {
 	int ai_max = 128 * xai;
-	int n, key, ps = 0, pre = -1, crow = xrow, ctop = xtop;
+	int n, key, ps = ips, pre = -1, crow = icrow, ctop = xtop;
 	char *postref = NULL;
 	ins_state is;
 	led_pcols = conf_hwwidth > 0 ? conf_hwwidth : 0;
+	led_wrap_sep_pending = 0;
+	led_wrap_sep_ps = -1;
 	while (1) {
 		if (pre < ps)
 			pre = sb->s_n;
@@ -836,13 +966,19 @@ int led_input(sbuf *sb, char *post, int postn, int row, int flg, int *pren)
 			led_open_next_row(&crow, &ctop);
 			ps = nl + 1 + HWBRK_LEN - sb->s;
 			pre = ps;
+			led_wrap_sep_pending = led_wrap_hidden_sep;
+			led_wrap_sep_ps = led_wrap_hidden_sep ? ps : -1;
 			term_cursor_suspend(0);
 			if (!led_wrap_hidden_sep)
 				term_cursor(1);
 			continue;
 		}
+		if (key == LED_HARDSEP)
+			continue;
 		if (key == LED_HARDUNWRAP) {
 			int wraprow = MAX(1, crow - ctop);
+			led_wrap_sep_pending = 0;
+			led_wrap_sep_ps = -1;
 			term_cursor_suspend(1);
 			term_pos(wraprow, 0);
 			term_room(-1);
@@ -863,8 +999,7 @@ int led_input(sbuf *sb, char *post, int postn, int row, int flg, int *pren)
 				sbufn_str(sb, post)
 			} else
 				sb->s[*pren] = *post;
-			if (ps >= HWBRK_LEN &&
-					!memcmp(sb->s + ps - HWBRK_LEN, HWBRK, HWBRK_LEN))
+			if (ps >= HWBRK_LEN && HWBRK_IS(sb->s + ps - HWBRK_LEN))
 				xoff++;
 			free(postref);
 			xrow = crow;
@@ -874,6 +1009,8 @@ int led_input(sbuf *sb, char *post, int postn, int row, int flg, int *pren)
 			return key;
 		}
 		sbuf_chr(sb, key)
+		led_wrap_sep_pending = 0;
+		led_wrap_sep_ps = -1;
 		led_printparts(sb, -1, ps, "", 0, &xoff);
 		led_open_next_row(&crow, &ctop);
 		n = ps;
@@ -889,6 +1026,11 @@ int led_input(sbuf *sb, char *post, int postn, int row, int flg, int *pren)
 			sbuf_mem(sb, sb->s+n, ai_new)
 		}
 	}
+}
+
+int led_input(sbuf *sb, char *post, int postn, int row, int flg, int *pren)
+{
+	return led_input_at(sb, post, postn, row, flg, pren, 0, xrow);
 }
 
 void led_done(void)
