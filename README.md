@@ -7,6 +7,25 @@ a Sharp 4.4" display, a custom 8x8 matrix keyboard (octal latch SN74HC573A), a R
 Adafruit adalogger board (for time and data retention), a power button wired to the 
 board reset pin, an external LED for notifications, and an on-demand BLE file sender.
 
+## Keyboard layouts
+
+Nextvi starts in the English keymap. On the embedded Typewrt keyboard, hold `Alt`
+and press one of the layout letters to switch:
+
+| Shortcut | Layout |
+| --- | --- |
+| `Alt-e` | English |
+| `Alt-s` | Spanish |
+| `Alt-i` | Italian |
+| `Alt-n` | Norwegian |
+| `Alt-g` | German |
+| `Alt-f` | French |
+| `Alt-t` | Turkish |
+
+The old `z1`, `z2`, `ze`, and `zf` keymap commands are no longer used. Layouts
+that place accents on dead keys compose in insert and prompt input before the text
+is written to the file.
+
 ## BLE file transfer
 
 The Typewrt backend exposes an on-demand BLE GATT service named `Typewrt` for sending

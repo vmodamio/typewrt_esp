@@ -414,6 +414,58 @@ static void displayGlyph(uint8_t col, uint8_t row, uint8_t index)
     }
 }
 
+static uint8_t displayGlyphForCodepoint(uint32_t cp)
+{
+    if (cp >= 0x20 && cp <= 0x7e) {
+        return (uint8_t)cp;
+    }
+    for (int i = 0; i < (int)(sizeof(unicodemap) / sizeof(unicodemap[0])); i++) {
+        if ((uint32_t)unicodemap[i] == cp) {
+            return fontmap[i];
+        }
+    }
+    return fontmap[VK_REPLACEMENT - VKCHAROFFSET];
+}
+
+static uint8_t displayNextGlyph(const char **text)
+{
+    const unsigned char *s = (const unsigned char *)*text;
+    uint32_t cp;
+
+    if (!s[0]) {
+        return ' ';
+    }
+    if (s[0] < 0x80) {
+        (*text)++;
+        return displayGlyphForCodepoint(s[0]);
+    }
+    if ((s[0] & 0xe0) == 0xc0 && (s[1] & 0xc0) == 0x80) {
+        cp = ((uint32_t)(s[0] & 0x1f) << 6) |
+            (uint32_t)(s[1] & 0x3f);
+        *text += 2;
+        return displayGlyphForCodepoint(cp);
+    }
+    if ((s[0] & 0xf0) == 0xe0 && (s[1] & 0xc0) == 0x80 &&
+            (s[2] & 0xc0) == 0x80) {
+        cp = ((uint32_t)(s[0] & 0x0f) << 12) |
+            ((uint32_t)(s[1] & 0x3f) << 6) |
+            (uint32_t)(s[2] & 0x3f);
+        *text += 3;
+        return displayGlyphForCodepoint(cp);
+    }
+    if ((s[0] & 0xf8) == 0xf0 && (s[1] & 0xc0) == 0x80 &&
+            (s[2] & 0xc0) == 0x80 && (s[3] & 0xc0) == 0x80) {
+        cp = ((uint32_t)(s[0] & 0x07) << 18) |
+            ((uint32_t)(s[1] & 0x3f) << 12) |
+            ((uint32_t)(s[2] & 0x3f) << 6) |
+            (uint32_t)(s[3] & 0x3f);
+        *text += 4;
+        return displayGlyphForCodepoint(cp);
+    }
+    (*text)++;
+    return fontmap[VK_REPLACEMENT - VKCHAROFFSET];
+}
+
 static void markPhysicalRowRedrawn(int row)
 {
     if (display_cursor_drawn && display_cursor_row == row) {
@@ -423,12 +475,14 @@ static void markPhysicalRowRedrawn(int row)
 
 static void copyDisplayShadow(int row, const char *text, int cols)
 {
+    const char *p = text ? text : "";
+
     if (row < 0 || row > NEXTVI_DISPLAY_ROWS) {
         return;
     }
     cols = cols > NEXTVI_DISPLAY_COLS ? NEXTVI_DISPLAY_COLS : cols;
     for (int col = 0; col < NEXTVI_DISPLAY_COLS; col++) {
-        display_shadow[row][col] = col < cols && text[col] ? text[col] : ' ';
+        display_shadow[row][col] = col < cols ? displayNextGlyph(&p) : ' ';
     }
     display_shadow[row][NEXTVI_DISPLAY_COLS] = '\0';
 }
@@ -448,13 +502,41 @@ static bool displayShadowRowHasVisibleText(int row)
 
 static void renderTextRowMode(int physical_row, const char *text, bool inverted)
 {
+    const char *p = text ? text : "";
+
     if (!sharpmem_buffer || physical_row < 0 || physical_row > NEXTVI_DISPLAY_ROWS) {
         return;
     }
 
     for (int col = 0; col < NEXTVI_DISPLAY_COLS; col++) {
-        unsigned char ch = (unsigned char)text[col];
-        displayGlyph(col, physical_row, ch ? ch : ' ');
+        displayGlyph(col, physical_row, displayNextGlyph(&p));
+    }
+    if (inverted) {
+        for (int m = 0; m < PSF_GLYPH_SIZE; m++) {
+            uint8_t *line = sharpmem_buffer +
+                (physical_row * PSF_GLYPH_SIZE + m) * SHARPMEM_BYTES_PER_LINE;
+            for (int byte = 0; byte < SHARPMEM_BYTES_PER_LINE; byte++) {
+                line[byte] ^= 0xff;
+            }
+        }
+    }
+    markPhysicalRowRedrawn(physical_row);
+#if TYPEWRT_REFRESH_FULL_DISPLAY
+    refreshDisplay();
+#else
+    updateRow((uint8_t)physical_row);
+#endif
+}
+
+static void renderGlyphRowMode(int physical_row, const char *glyphs, bool inverted)
+{
+    if (!sharpmem_buffer || physical_row < 0 || physical_row > NEXTVI_DISPLAY_ROWS) {
+        return;
+    }
+
+    for (int col = 0; col < NEXTVI_DISPLAY_COLS; col++) {
+        unsigned char glyph = glyphs && glyphs[col] ? (unsigned char)glyphs[col] : ' ';
+        displayGlyph(col, physical_row, glyph);
     }
     if (inverted) {
         for (int m = 0; m < PSF_GLYPH_SIZE; m++) {
@@ -476,6 +558,11 @@ static void renderTextRowMode(int physical_row, const char *text, bool inverted)
 static void renderTextRow(int physical_row, const char *text)
 {
     renderTextRowMode(physical_row, text, false);
+}
+
+static void renderGlyphRow(int physical_row, const char *glyphs)
+{
+    renderGlyphRowMode(physical_row, glyphs, false);
 }
 
 static void renderBlankTextRow(int physical_row)
@@ -638,7 +725,7 @@ static void drawSplashLayout(void)
     for (int row = TYPEWRT_SPLASH_HEIGHT / PSF_GLYPH_SIZE; row < NEXTVI_DISPLAY_ROWS - 1; row++) {
         renderBlankTextRow(row);
     }
-    renderTextRow(NEXTVI_DISPLAY_ROWS - 1, display_shadow[0]);
+    renderGlyphRow(NEXTVI_DISPLAY_ROWS - 1, display_shadow[0]);
     splashStatusLine(status_line);
     renderTextRow(NEXTVI_DISPLAY_ROWS, status_line);
     strncpy(splash_status_last, status_line, sizeof(splash_status_last) - 1);
@@ -667,7 +754,7 @@ static void disableSplash(void)
     display_cursor_row = -1;
     display_cursor_col = -1;
     for (int row = 0; row <= NEXTVI_DISPLAY_ROWS; row++) {
-        renderTextRow(row, display_shadow[row]);
+        renderGlyphRow(row, display_shadow[row]);
     }
     typewrt_reset_button_enable(false);
 }
@@ -688,7 +775,7 @@ void nextvi_display_refresh_line(int row, const char *text, int cols)
     if (splash_active) {
         drawSplashLayout();
         if (row == 0) {
-            renderTextRow(NEXTVI_DISPLAY_ROWS - 1, display_shadow[0]);
+            renderGlyphRow(NEXTVI_DISPLAY_ROWS - 1, display_shadow[0]);
         } else if (row == NEXTVI_DISPLAY_ROWS) {
             char status_line[NEXTVI_DISPLAY_COLS + 1];
             splashStatusLine(status_line);
@@ -697,7 +784,7 @@ void nextvi_display_refresh_line(int row, const char *text, int cols)
         goto done;
     }
 
-    renderTextRow(row, display_shadow[row]);
+    renderGlyphRow(row, display_shadow[row]);
 done:
     displayUnlock();
 }
@@ -713,7 +800,7 @@ void nextvi_display_refresh_line_inverted(int row, const char *text, int cols)
     if (splash_active) {
         disableSplash();
     }
-    renderTextRowMode(row, display_shadow[row], true);
+    renderGlyphRowMode(row, display_shadow[row], true);
     displayUnlock();
 }
 

@@ -250,9 +250,24 @@ static void noterm_modifier(unsigned char ev)
 	*state = !!(ev & NEXTVI_KEY_PRESS);
 }
 
+static int noterm_alt_keymap(int ch)
+{
+	switch (tolower((unsigned char)ch)) {
+	case 'e': return conf_kmapfind("en");
+	case 's': return conf_kmapfind("es");
+	case 'i': return conf_kmapfind("it");
+	case 'n': return conf_kmapfind("no");
+	case 'g': return conf_kmapfind("de");
+	case 'f': return conf_kmapfind("fr");
+	case 't': return conf_kmapfind("tr");
+	default: return -1;
+	}
+}
+
 static int noterm_key_event_timeout(int timeout_ms)
 {
 	unsigned char ev, code, ch;
+	int kmap;
 	while ((timeout_ms >= 0 ?
 			nextvi_keyboard_read_timeout(&ev, timeout_ms) :
 			nextvi_keyboard_read(&ev)) > 0) {
@@ -269,7 +284,12 @@ static int noterm_key_event_timeout(int timeout_ms)
 			ch = TK_CTL(ch);
 		else if (key_ctrl && ch >= 'A' && ch <= 'Z')
 			ch = ((ch - 'A') + 'a') & 037;
-		(void)key_alt;
+		if (key_alt && (kmap = noterm_alt_keymap(ch)) >= 0) {
+			xkmap = kmap;
+			if (kmap)
+				xkmap_alt = kmap;
+			continue;
+		}
 		(void)key_win;
 		if (ch)
 			return ch;

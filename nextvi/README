@@ -191,10 +191,13 @@ VI NORMAL
      {#}\          Refresh secondary directory listing in b-2
      vb            Recurse into b-1 history buffer. Insert current line intog
                    ex prompt on exit
-     z1            Set alternative keymap to Farsi keymap
-     z2            Set alternative keymap to Russian keymap
-     ze            Switch to English keymap
-     zf            Switch to alternative keymap
+     <Alt-e>       Switch to English keymap
+     <Alt-s>       Switch to Spanish keymap
+     <Alt-i>       Switch to Italian keymap
+     <Alt-n>       Switch to Norwegian keymap
+     <Alt-g>       Switch to German keymap
+     <Alt-f>       Switch to French keymap
+     <Alt-t>       Switch to Turkish keymap
      [#]/          Regex search prompt, move down 1 or # matches
      [#]?          Regex search prompt, move up 1 or # matches
      [#]n
@@ -267,8 +270,13 @@ VI/EX INSERT
      <^A>          Loop through lines in a history buffer b-1
      <^L>          Redraw screen in vi mode, clean terminal in ex
      <^O>          Switch between vi and ex modes recursively
-     <^E>          Switch to English keymap
-     <^F>          Switch to alternative keymap
+     <Alt-e>       Switch to English keymap
+     <Alt-s>       Switch to Spanish keymap
+     <Alt-i>       Switch to Italian keymap
+     <Alt-n>       Switch to Norwegian keymap
+     <Alt-g>       Switch to German keymap
+     <Alt-f>       Switch to French keymap
+     <Alt-t>       Switch to Turkish keymap
      <^V>{arg}     Read a literal character arg
      <^K>{arg}     Read a digraph sequence arg
      <^C>

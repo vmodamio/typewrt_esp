@@ -86,8 +86,74 @@ static char *kmap_map(int kmap, int c)
 {
 	static char cs[4];
 	char **keymap = conf_kmap(kmap);
+	if (c < 0 || c >= 256)
+		return NULL;
 	cs[0] = c;
 	return keymap[c] ? keymap[c] : cs;
+}
+
+struct deadkey {
+	int dead;
+	char *base;
+	char *composed;
+};
+
+static char *deadkey_spacing(int dead)
+{
+	switch (dead) {
+	case '\'': return "´";
+	case '`': return "`";
+	case '^': return "^";
+	case '"': return "¨";
+	case '~': return "~";
+	case ',': return "¸";
+	}
+	return "";
+}
+
+static int deadkey_code(char *cs)
+{
+	return cs && cs[0] == '\001' ? (unsigned char)cs[1] : 0;
+}
+
+static char *deadkey_compose(int dead, char *cs)
+{
+	static char buf[16];
+	static struct deadkey table[] = {
+		{'\'', "a", "á"}, {'\'', "A", "Á"},
+		{'\'', "e", "é"}, {'\'', "E", "É"},
+		{'\'', "i", "í"}, {'\'', "I", "Í"},
+		{'\'', "o", "ó"}, {'\'', "O", "Ó"},
+		{'\'', "u", "ú"}, {'\'', "U", "Ú"},
+		{'\'', "y", "ý"}, {'\'', "Y", "Ý"},
+		{'`', "a", "à"}, {'`', "A", "À"},
+		{'`', "e", "è"}, {'`', "E", "È"},
+		{'`', "i", "ì"}, {'`', "I", "Ì"},
+		{'`', "o", "ò"}, {'`', "O", "Ò"},
+		{'`', "u", "ù"}, {'`', "U", "Ù"},
+		{'^', "a", "â"}, {'^', "A", "Â"},
+		{'^', "e", "ê"}, {'^', "E", "Ê"},
+		{'^', "i", "î"}, {'^', "I", "Î"},
+		{'^', "o", "ô"}, {'^', "O", "Ô"},
+		{'^', "u", "û"}, {'^', "U", "Û"},
+		{'"', "a", "ä"}, {'"', "A", "Ä"},
+		{'"', "e", "ë"}, {'"', "E", "Ë"},
+		{'"', "i", "ï"}, {'"', "I", "Ï"},
+		{'"', "o", "ö"}, {'"', "O", "Ö"},
+		{'"', "u", "ü"}, {'"', "U", "Ü"},
+		{'"', "y", "ÿ"}, {'"', "Y", "Ÿ"},
+		{'~', "a", "ã"}, {'~', "A", "Ã"},
+		{'~', "n", "ñ"}, {'~', "N", "Ñ"},
+		{'~', "o", "õ"}, {'~', "O", "Õ"},
+		{',', "c", "ç"}, {',', "C", "Ç"},
+	};
+	if (cs && cs[0] == ' ' && !cs[1])
+		return deadkey_spacing(dead);
+	for (int i = 0; i < LEN(table); i++)
+		if (table[i].dead == dead && cs && !strcmp(table[i].base, cs))
+			return table[i].composed;
+	snprintf(buf, sizeof(buf), "%s%s", deadkey_spacing(dead), cs ? cs : "");
+	return buf;
 }
 
 /* map cursor horizontal position to terminal column number */
@@ -254,16 +320,16 @@ static void led_printparts(sbuf *sb, int pre, int ps,
 static int led_wrap_ps;
 static int led_wrap_hidden_sep;
 
-static int led_hardwrap_insert(sbuf *sb, int ps, char *post)
+static int led_hardwrap_insert(sbuf *sb, int ps, char **post, int *postn)
 {
-	int cur, n, cut = 0, br = -1, end, next, prebytes;
+	int cur, n, cut = 0, br = -1, end, next, prebytes, skip;
 	char *tail;
 	led_wrap_hidden_sep = 0;
 	sbuf_null(sb)
 	prebytes = sb->s_n - ps;
-	sbuf_smake(tmp, prebytes + strlen(post) + 1)
+	sbuf_smake(tmp, prebytes + strlen(*post) + 1)
 	sbuf_mem(tmp, sb->s + ps, prebytes)
-	sbufn_str(tmp, post)
+	sbufn_str(tmp, *post)
 	rstate += 2;
 	rstate->s = NULL;
 	ren_state *r = ren_position(tmp->s);
@@ -308,7 +374,15 @@ static int led_hardwrap_insert(sbuf *sb, int ps, char *post)
 	led_wrap_hidden_sep = next > end;
 	end = r->chrs[end] - tmp->s;
 	next = r->chrs[next] - tmp->s;
-	tail = uc_dup(sb->s + ps + next);
+	skip = MAX(0, next - prebytes);
+	if (skip) {
+		*postn -= uc_off(*post, skip);
+		if (*postn < 0)
+			*postn = 0;
+		*post += skip;
+	}
+	end = MIN(end, prebytes);
+	tail = next < prebytes ? uc_dup(sb->s + ps + next) : uc_dup("");
 	sbuf_cut(sb, ps + end)
 	sbuf_chr(sb, '\n')
 	sbuf_str(sb, HWBRK)
@@ -361,19 +435,24 @@ static int led_hardwrap_unwrap(sbuf *sb, int ps, char *post)
 /* read a character from the terminal */
 char *led_read(int *kmap, int c)
 {
-	static char buf[5];
+	static char buf[16];
+	static int dead;
+	char *cs;
 	int c1, c2, i, n;
 	while (!TK_INT(c)) {
 		switch (c) {
 		case TK_CTL('f'):
 			*kmap = xkmap_alt;
+			dead = 0;
 			break;
 		case TK_CTL('e'):
 			*kmap = 0;
+			dead = 0;
 			break;
 		case TK_CTL('v'):	/* literal character */
 			buf[0] = term_read(0);
 			buf[1] = '\0';
+			dead = 0;
 			return buf;
 		case TK_CTL('k'):	/* digraph */
 			c1 = term_read(0);
@@ -382,6 +461,7 @@ char *led_read(int *kmap, int c)
 			c2 = term_read(0);
 			if (TK_INT(c2))
 				return NULL;
+			dead = 0;
 			return conf_digraph(c1, c2);
 		default:
 			if ((c & 0xc0) == 0xc0) {	/* utf-8 character */
@@ -390,22 +470,37 @@ char *led_read(int *kmap, int c)
 				for (i = 1; i < n; i++)
 					buf[i] = term_read(0);
 				buf[n] = '\0';
-				return buf;
+				cs = buf;
+			} else
+				cs = kmap_map(*kmap, c);
+			if ((c1 = deadkey_code(cs))) {
+				if (dead == c1) {
+					dead = 0;
+					return deadkey_spacing(c1);
+				}
+				dead = c1;
+				break;
 			}
-			return kmap_map(*kmap, c);
+			if (dead) {
+				c1 = dead;
+				dead = 0;
+				return deadkey_compose(c1, cs);
+			}
+			return cs;
 		}
 		c = term_read(0);
 	}
+	dead = 0;
 	return NULL;
 }
 
 #define led_info(buf) \
 { \
 	sbuf_str(sb, buf) \
-	led_printparts(sb, pre, ps, *post, postn, poff); \
+	led_printparts(sb, pre, ps, *post, *postn, poff); \
 	sbuf_cut(sb, len) \
 	c = term_read(TK_CTL('l')); \
-	led_printparts(sb, pre, ps, *post, postn, poff); \
+	led_printparts(sb, pre, ps, *post, *postn, poff); \
 	goto noredraw; \
 } \
 
@@ -451,13 +546,13 @@ void led_modeswap(void)
 }
 
 /* read a line from the terminal */
-static int led_line(sbuf *sb, int ps, int pre, char **post, int postn, char **postref,
+static int led_line(sbuf *sb, int ps, int pre, char **post, int *postn, char **postref,
 	int ai_max, int *poff, int *kmap, ins_state *is, int orow, int crow, int ctop, int flg)
 {
 	char *cs;
 	int len, c, i;
 	do {
-		led_printparts(sb, pre, ps, *post, postn, poff);
+		led_printparts(sb, pre, ps, *post, *postn, poff);
 		len = sb->s_n;
 		c = term_read(TK_CTL('l'));
 		noredraw:
@@ -664,7 +759,7 @@ static int led_line(sbuf *sb, int ps, int pre, char **post, int postn, char **po
 				sbuf_str(sb, cs)
 			}
 		}
-		if (ai_max >= 0 && led_hardwrap_insert(sb, ps, *post))
+		if (ai_max >= 0 && led_hardwrap_insert(sb, ps, post, postn))
 			return LED_HARDWRAP;
 		if (ai_max >= 0 && led_hardwrap_unwrap(sb, ps, *post))
 			return LED_HARDUNWRAP;
@@ -678,7 +773,7 @@ static int led_line(sbuf *sb, int ps, int pre, char **post, int postn, char **po
 
 int led_prompt(sbuf *sb, char *insert, int *kmap, ins_state *is, int ps, int flg)
 {
-	int n = !(flg & 2) ? sb->s_n : 0, key, off;
+	int n = !(flg & 2) ? sb->s_n : 0, key, off, postn = 0;
 	char *post = "", *postref = post;
 	ins_state _is;
 	if (insert)
@@ -688,7 +783,7 @@ int led_prompt(sbuf *sb, char *insert, int *kmap, ins_state *is, int ps, int flg
 		is = &_is;
 	}
 	preserve(int, xleft, xleft = 0;)
-	key = led_line(sb, ps, n, &post, 0, &postref, -1,
+	key = led_line(sb, ps, n, &post, &postn, &postref, -1,
 			&off, kmap, is, 0, xrow, xtop, flg);
 	restore(xleft)
 	if (key == '\n' && flg & 1) {
@@ -725,7 +820,7 @@ int led_input(sbuf *sb, char *post, int postn, int row, int flg, int *pren)
 		if (pre < ps)
 			pre = sb->s_n;
 		ins_init(is)
-		key = led_line(sb, ps, pre, &post, postn, &postref,
+		key = led_line(sb, ps, pre, &post, &postn, &postref,
 			ai_max, &xoff, &xkmap, &is, row, crow, ctop, flg);
 		if (key == LED_HARDWRAP) {
 			char *nl = strchr(sb->s + ps, '\n');

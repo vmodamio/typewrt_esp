@@ -32,8 +32,8 @@
  *  the bit in the KBD_MODS is toggled with the key pressed.
  *  
  *  There are two extra special keys: LANG and SYS. Neither is a modifier.
- *  LANG is a deadkey: Pressing LANG + {e, u, i, n} changes the keyboard layout to Spanish, 
- *       Uk, Italian, Norwegian, etc
+ *  Keyboard layouts are switched in Nextvi with Alt + {e, s, i, n, g, f, t}
+ *  for English, Spanish, Italian, Norwegian, German, French, and Turkish.
  *
  *  CAPSLOCK isnt a modifier too. Its a special key that latch.
  *
