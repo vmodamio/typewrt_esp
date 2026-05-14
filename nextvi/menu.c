@@ -193,14 +193,7 @@ static int menu_parent_of(const char *parent, const char *child)
 
 static void menu_visible_path(char out[NEXTVI_DISPLAY_COLS + 1])
 {
-	int root_len = strlen(MENU_FS_ROOT);
-
-	if (!strcmp(ex_vcwd, MENU_FS_ROOT))
-		menu_line(out, "/");
-	else if (menu_under_root(ex_vcwd))
-		menu_line(out, ex_vcwd + root_len);
-	else
-		menu_line(out, ex_vcwd);
+	menu_line(out, ex_vcwd);
 }
 
 static char *menu_path_normalize(const char *path)
@@ -504,6 +497,8 @@ static int menu_update_top_status(menu_state *m, int force)
 {
 	char line[NEXTVI_DISPLAY_COLS + 1];
 	char rtc[24] = "";
+	char date[16] = "";
+	char clock[8] = "";
 	char pct[8] = "--%";
 	time_t now = time(NULL);
 	time_t minute = now / 60;
@@ -511,6 +506,7 @@ static int menu_update_top_status(menu_state *m, int force)
 	char power_state;
 	int power_col;
 	int pct_col;
+	int clock_col;
 	int changed;
 
 	if (!force && m->top_valid && minute == m->top_minute)
@@ -520,6 +516,24 @@ static int menu_update_top_status(menu_state *m, int force)
 	menu_line(line, "");
 	if (!typewrt_rtc_get_datetime(rtc, sizeof(rtc)))
 		strcpy(rtc, "-- --- ----  --:--");
+	if (strlen(rtc) >= 5) {
+		char *time_part = rtc + strlen(rtc) - 5;
+		char *date_end = time_part;
+		int date_len;
+		if (isdigit((unsigned char)time_part[0]) &&
+				isdigit((unsigned char)time_part[1]) &&
+				time_part[2] == ':' &&
+				isdigit((unsigned char)time_part[3]) &&
+				isdigit((unsigned char)time_part[4])) {
+			snprintf(clock, sizeof(clock), "%s", time_part);
+			while (date_end > rtc && date_end[-1] == ' ')
+				date_end--;
+			date_len = MIN((int)sizeof(date) - 1, (int)(date_end - rtc));
+		} else
+			date_len = MIN((int)sizeof(date) - 1, (int)strlen(rtc));
+		memcpy(date, rtc, date_len);
+		date[date_len] = '\0';
+	}
 	if (pct_value >= 0) {
 		if (pct_value > 100)
 			pct_value = 100;
@@ -529,8 +543,12 @@ static int menu_update_top_status(menu_state *m, int force)
 	if (power_col < 0)
 		power_col = 0;
 	pct_col = power_col + 2;
-	for (int i = 0; rtc[i] && i < power_col - 1; i++)
-		line[i] = rtc[i];
+	for (int i = 0; date[i] && i < power_col - 1; i++)
+		line[i] = date[i];
+	clock_col = (NEXTVI_DISPLAY_COLS - (int)strlen(clock)) / 2;
+	for (int i = 0; clock[i] && clock_col + i < power_col - 1; i++)
+		if (clock_col + i >= 0)
+			line[clock_col + i] = clock[i];
 	line[power_col] = power_state;
 	for (int i = 0; pct[i] && pct_col + i < NEXTVI_DISPLAY_COLS; i++)
 		line[pct_col + i] = pct[i];
@@ -551,7 +569,6 @@ static void menu_draw_top(menu_state *m, int force)
 		NEXTVI_DISPLAY_COLS);
 	menu_draw_row(MENU_SPACER_ROW, "", 0);
 	nextvi_display_draw_hline(NEXTVI_FONT_HEIGHT + 3, 0);
-	nextvi_display_draw_hline(NEXTVI_FONT_HEIGHT + 4, 0);
 }
 
 static void menu_draw_top_if_changed(menu_state *m)
@@ -561,7 +578,6 @@ static void menu_draw_top_if_changed(menu_state *m)
 	nextvi_display_refresh_line(MENU_TOP_ROW, m->top_line,
 		NEXTVI_DISPLAY_COLS);
 	nextvi_display_draw_hline(NEXTVI_FONT_HEIGHT + 3, 0);
-	nextvi_display_draw_hline(NEXTVI_FONT_HEIGHT + 4, 0);
 }
 
 static void menu_schedule_status_wakeup(void)
@@ -592,13 +608,13 @@ static void menu_format_words(char *out, int out_len, long words)
 	if (words < 0)
 		out[0] = '\0';
 	else if (words < 1000)
-		snprintf(out, out_len, "%ld w", words);
+		snprintf(out, out_len, "%ld", words);
 	else if (words < 1000000) {
 		long tenths = (words * 10 + 500) / 1000;
-		snprintf(out, out_len, "%ld.%ld kw", tenths / 10, tenths % 10);
+		snprintf(out, out_len, "%ld.%ld k", tenths / 10, tenths % 10);
 	} else {
 		long tenths = (words * 10 + 500000) / 1000000;
-		snprintf(out, out_len, "%ld.%ld Mw", tenths / 10, tenths % 10);
+		snprintf(out, out_len, "%ld.%ld M", tenths / 10, tenths % 10);
 	}
 }
 
@@ -620,11 +636,11 @@ static void menu_format_mtime(char *out, int out_len, long mtime)
 		snprintf(out, out_len, "%02d:%02d", entry_tm.tm_hour,
 			entry_tm.tm_min);
 	else if (entry_tm.tm_year == now_tm.tm_year)
-		snprintf(out, out_len, "%02d %s", entry_tm.tm_mday,
-			months[entry_tm.tm_mon]);
+		snprintf(out, out_len, "%s %02d", months[entry_tm.tm_mon],
+			entry_tm.tm_mday);
 	else
-		snprintf(out, out_len, "%s %04d", months[entry_tm.tm_mon],
-			entry_tm.tm_year + 1900);
+		snprintf(out, out_len, "%s %02d", months[entry_tm.tm_mon],
+			entry_tm.tm_mday);
 }
 
 static void menu_render_entry(char line[NEXTVI_DISPLAY_COLS + 1],
@@ -633,7 +649,7 @@ static void menu_render_entry(char line[NEXTVI_DISPLAY_COLS + 1],
 	char left[128];
 	char words[16];
 	char date[16];
-	const char *tag = e->is_dir ? "[/]" : (e->synced ? "[s]" : "[-]");
+	const char *tag = e->is_dir ? "[+]" : (e->synced ? " s " : " * ");
 	int words_len;
 	int date_len;
 	int left_cols = NEXTVI_DISPLAY_COLS - MENU_SIZE_COL_WIDTH -
@@ -685,7 +701,11 @@ static void menu_draw(menu_state *m)
 		menu_visible_path(line);
 		m->bottom_message_active = 0;
 	}
-	nextvi_display_refresh_line(MENU_BOTTOM_ROW, line, NEXTVI_DISPLAY_COLS);
+	if (m->bottom_message_active)
+		nextvi_display_refresh_line(MENU_BOTTOM_ROW, line, NEXTVI_DISPLAY_COLS);
+	else
+		nextvi_display_refresh_line_inverted(MENU_BOTTOM_ROW, line,
+			NEXTVI_DISPLAY_COLS);
 }
 
 static void menu_draw_bottom_path(menu_state *m)
@@ -693,7 +713,8 @@ static void menu_draw_bottom_path(menu_state *m)
 	char line[NEXTVI_DISPLAY_COLS + 1];
 
 	menu_visible_path(line);
-	nextvi_display_refresh_line(MENU_BOTTOM_ROW, line, NEXTVI_DISPLAY_COLS);
+	nextvi_display_refresh_line_inverted(MENU_BOTTOM_ROW, line,
+		NEXTVI_DISPLAY_COLS);
 	m->bottom_message_active = 0;
 }
 
@@ -821,6 +842,7 @@ static int menu_open_path(const char *path)
 	ex_edit(path, strlen(path));
 	xvis = old_xvis;
 	xquit = 0;
+	xmpt = 0;
 	return 1;
 }
 

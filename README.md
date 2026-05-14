@@ -64,19 +64,20 @@ Pandoc WASM, so the native app expects a real `pandoc-server` URL such as
 ## Menu file browser
 
 On embedded Typewrt, quitting the editor with commands such as `:q` enters `menu`
-instead of ending the Nextvi task. The top status row shows RTC time/date and battery
-state with `C` for charging or `D` for discharging, the bottom status row shows the
-current filesystem path, and the middle rows show one file or directory per line. The
-top row is separated from the file list by a lowered 2 px rule and one spacer row. The
-SD card mount point `/sdcard` is presented as the menu root `/`.
+instead of ending the Nextvi task. The top status row shows the RTC date on the left,
+the time centered, and battery state on the right with `C` for charging or `D` for
+discharging. The bottom status row shows the current filesystem path inverted, prompts
+remain plain, and the middle rows show one file or directory per line. The top row is
+separated from the file list by a lowered 1 px rule and one spacer row. The SD card
+mount point `/sdcard` is shown as the menu root.
 
 Entry prefixes:
 
 | Prefix | Meaning |
 | --- | --- |
-| `[/]` | Directory |
-| `[s]` | File queued for BLE sync and unchanged since then |
-| `[-]` | File not synced, or changed since the last BLE send |
+| `[+]` | Directory |
+| `s` | File queued for BLE sync and unchanged since then |
+| `*` | File not synced, or changed since the last BLE send |
 
 Normal menu keys:
 
