@@ -36,10 +36,13 @@
 #define TYPEWRT_BLE_SERVICE_UUID 0xffe0
 #define TYPEWRT_BLE_TX_UUID 0xffe1
 #define TYPEWRT_BLE_RX_UUID 0xffe2
-#define TYPEWRT_BLE_MAX_NOTIFY 180
+#define TYPEWRT_BLE_ATT_MTU 247
+#define TYPEWRT_BLE_MAX_NOTIFY (TYPEWRT_BLE_ATT_MTU - 3)
+#define TYPEWRT_BLE_DLE_TX_OCTETS 251
+#define TYPEWRT_BLE_DLE_TX_TIME_US 2120
 #define TYPEWRT_BLE_RETRY_DELAY_MS 15
 #define TYPEWRT_BLE_NOTIFY_RETRIES 200
-#define TYPEWRT_BLE_NOTIFY_SETTLE_MS 8
+#define TYPEWRT_BLE_NOTIFY_SETTLE_MS 1
 #define TYPEWRT_BLE_DISCONNECT_DELAY_MS 120
 #define TYPEWRT_BLE_TRANSFER_STACK 4096
 #define TYPEWRT_BLE_TRANSFER_PRIO 4
@@ -430,6 +433,40 @@ static void typewrt_ble_stop_transport(bool terminate_connection)
     }
 }
 
+static void typewrt_ble_tune_connection(uint16_t conn_handle)
+{
+    int rc;
+
+#if CONFIG_BT_NIMBLE_50_FEATURE_SUPPORT
+    rc = ble_gap_set_prefered_le_phy(conn_handle,
+        BLE_GAP_LE_PHY_2M_MASK, BLE_GAP_LE_PHY_2M_MASK,
+        BLE_GAP_LE_PHY_CODED_ANY);
+    if (rc) {
+        ESP_LOGW(TAG, "2M PHY request failed: %d", rc);
+    }
+
+    rc = ble_gap_set_data_len(conn_handle,
+        TYPEWRT_BLE_DLE_TX_OCTETS, TYPEWRT_BLE_DLE_TX_TIME_US);
+    if (rc) {
+        ESP_LOGW(TAG, "DLE request failed: %d", rc);
+    }
+#endif
+
+    const struct ble_gap_upd_params params = {
+        .itvl_min = 6,              /* 7.5 ms */
+        .itvl_max = 12,             /* 15 ms */
+        .latency = 0,
+        .supervision_timeout = 400, /* 4 s */
+        .min_ce_len = 0,
+        .max_ce_len = 0,
+    };
+    rc = ble_gap_update_params(conn_handle, &params);
+
+    if (rc && rc != BLE_HS_EALREADY) {
+        ESP_LOGW(TAG, "Connection parameter update failed: %d", rc);
+    }
+}
+
 void typewrt_ble_stop(void)
 {
     typewrt_ble_stop_transport(true);
@@ -772,6 +809,9 @@ static int typewrt_ble_gap_event(struct ble_gap_event *event, void *arg)
             return 0;
         }
         typewrt_ble_unlock();
+        if (event->connect.status == 0) {
+            typewrt_ble_tune_connection(event->connect.conn_handle);
+        }
         typewrt_ble_try_start_transfer();
         return 0;
 
@@ -810,6 +850,26 @@ static int typewrt_ble_gap_event(struct ble_gap_event *event, void *arg)
             typewrt_ble_unlock();
             typewrt_ble_try_start_transfer();
         }
+        return 0;
+
+    case BLE_GAP_EVENT_MTU:
+        ESP_LOGI(TAG, "MTU updated: conn=%u mtu=%u",
+            event->mtu.conn_handle, event->mtu.value);
+        return 0;
+
+    case BLE_GAP_EVENT_PHY_UPDATE_COMPLETE:
+        ESP_LOGI(TAG, "PHY update: status=%d conn=%u tx=%u rx=%u",
+            event->phy_updated.status, event->phy_updated.conn_handle,
+            event->phy_updated.tx_phy, event->phy_updated.rx_phy);
+        return 0;
+
+    case BLE_GAP_EVENT_DATA_LEN_CHG:
+        ESP_LOGI(TAG, "DLE update: conn=%u tx=%u/%u rx=%u/%u",
+            event->data_len_chg.conn_handle,
+            event->data_len_chg.max_tx_octets,
+            event->data_len_chg.max_tx_time,
+            event->data_len_chg.max_rx_octets,
+            event->data_len_chg.max_rx_time);
         return 0;
 
     default:
@@ -876,11 +936,24 @@ static void typewrt_ble_on_sync(void)
 {
     int rc;
 
+    rc = ble_att_set_preferred_mtu(TYPEWRT_BLE_ATT_MTU);
+    if (rc) {
+        ESP_LOGW(TAG, "Preferred MTU setup failed: %d", rc);
+    }
+
     rc = ble_hs_id_infer_auto(0, &ble_own_addr_type);
     if (rc) {
         ESP_LOGW(TAG, "Failed to infer BLE address: %d", rc);
         return;
     }
+
+#if CONFIG_BT_NIMBLE_50_FEATURE_SUPPORT
+    rc = ble_gap_set_prefered_default_le_phy(
+        BLE_GAP_LE_PHY_2M_MASK, BLE_GAP_LE_PHY_2M_MASK);
+    if (rc) {
+        ESP_LOGW(TAG, "Default 2M PHY preference failed: %d", rc);
+    }
+#endif
 
     typewrt_ble_lock();
     ble_synced = true;

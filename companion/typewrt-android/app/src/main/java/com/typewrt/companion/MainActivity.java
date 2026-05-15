@@ -76,7 +76,8 @@ public class MainActivity extends Activity {
     private static final long MAX_FILE_BYTES = 20L * 1024L * 1024L;
     private static final int HTTP_TIMEOUT_MS = 30000;
     private static final int DEFAULT_BLE_WRITE_CHUNK = 20;
-    private static final int MAX_BLE_WRITE_CHUNK = 180;
+    private static final int REQUESTED_BLE_MTU = 247;
+    private static final int MAX_BLE_WRITE_CHUNK = REQUESTED_BLE_MTU - 3;
     private static final long SPLASH_DURATION_MS = 950;
     private static final int COLOR_BACKGROUND = 0xFF212121;
     private static final int COLOR_SURFACE = 0xFF2B2B2B;
@@ -780,6 +781,19 @@ public class MainActivity extends Activity {
         return name == null || name.isEmpty() ? device.getAddress() : name;
     }
 
+    private String phyName(int phy) {
+        switch (phy) {
+            case BluetoothDevice.PHY_LE_1M:
+                return "1M";
+            case BluetoothDevice.PHY_LE_2M:
+                return "2M";
+            case BluetoothDevice.PHY_LE_CODED:
+                return "coded";
+            default:
+                return String.valueOf(phy);
+        }
+    }
+
     private final BluetoothGattCallback gattCallback = new BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         @Override
@@ -793,8 +807,14 @@ public class MainActivity extends Activity {
                     }
                     appendLog("Connected.");
                 });
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    gatt.setPreferredPhy(
+                        BluetoothDevice.PHY_LE_2M_MASK,
+                        BluetoothDevice.PHY_LE_2M_MASK,
+                        BluetoothDevice.PHY_OPTION_NO_PREFERRED);
+                }
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                    gatt.requestMtu(185);
+                    gatt.requestMtu(REQUESTED_BLE_MTU);
                 }
                 gatt.discoverServices();
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
@@ -826,6 +846,13 @@ public class MainActivity extends Activity {
                     Math.min(MAX_BLE_WRITE_CHUNK, mtu - 3));
             }
             mainHandler.post(() -> appendLog("MTU " + mtu + "."));
+        }
+
+        @Override
+        public void onPhyUpdate(BluetoothGatt gatt, int txPhy, int rxPhy, int status) {
+            mainHandler.post(() ->
+                appendLog("PHY tx=" + phyName(txPhy) + " rx=" + phyName(rxPhy)
+                    + " status=" + status + "."));
         }
 
         @Override
