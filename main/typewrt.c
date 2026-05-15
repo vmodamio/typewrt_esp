@@ -617,9 +617,25 @@ static void splashBatteryStatus(char *out, size_t out_len)
     snprintf(out, out_len, "%c --%%", marker);
 }
 
+static void splashCompactTimestamp(const char *timestamp, char *out, size_t out_len)
+{
+    char day[4], month[4], time_part[8];
+
+    if (!out || out_len == 0) {
+        return;
+    }
+    out[0] = '\0';
+    if (sscanf(timestamp, "%3s %3s %*5s %7s", day, month, time_part) == 3) {
+        snprintf(out, out_len, "%s %s %s", day, month, time_part);
+        return;
+    }
+    snprintf(out, out_len, "%s", timestamp);
+}
+
 static void splashStatusLine(char line[NEXTVI_DISPLAY_COLS + 1])
 {
     char timestamp[24];
+    char timestamp_short[24];
     char battery[16];
     char right[64];
     size_t ts_len;
@@ -630,10 +646,11 @@ static void splashStatusLine(char line[NEXTVI_DISPLAY_COLS + 1])
     if (!typewrt_rtc_get_datetime(timestamp, sizeof(timestamp))) {
         return;
     }
+    splashCompactTimestamp(timestamp, timestamp_short, sizeof(timestamp_short));
     splashBatteryStatus(battery, sizeof(battery));
-    snprintf(right, sizeof(right), "%s  %s", battery, timestamp);
+    snprintf(right, sizeof(right), "%s %s", battery, timestamp_short);
     right_len = strlen(right);
-    ts_len = strlen(timestamp);
+    ts_len = strlen(timestamp_short);
     if (right_len > NEXTVI_DISPLAY_COLS || ts_len > NEXTVI_DISPLAY_COLS) {
         return;
     }
