@@ -213,7 +213,7 @@ typedef struct {
 
 void displayInit(void)
 {
-    // Start the VCOM toggling task
+    // VCOM inversion is handled externally by the display hardware.
     //xTaskCreate(&vcom_toggle_task, "vcom", 2048, NULL, 5, NULL);
 
     esp_err_t ret;
