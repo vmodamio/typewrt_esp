@@ -44,6 +44,9 @@
 #define TYPEWRT_BLE_NOTIFY_RETRIES 200
 #define TYPEWRT_BLE_NOTIFY_SETTLE_MS 1
 #define TYPEWRT_BLE_DISCONNECT_DELAY_MS 120
+#define TYPEWRT_BLE_SHUTDOWN_DELAY_MS 350
+#define TYPEWRT_BLE_SHUTDOWN_STACK 3072
+#define TYPEWRT_BLE_SHUTDOWN_PRIO 3
 #define TYPEWRT_BLE_TRANSFER_STACK 4096
 #define TYPEWRT_BLE_TRANSFER_PRIO 4
 #define TYPEWRT_BLE_RX_LINE_MAX 256
@@ -71,6 +74,7 @@ static const char *TAG = "typewrt_ble";
 static StaticSemaphore_t ble_mutex_storage;
 static SemaphoreHandle_t ble_mutex;
 static bool ble_stack_started;
+static bool ble_stack_stopping;
 static bool ble_enabled;
 static bool ble_synced;
 static bool ble_advertising;
@@ -85,6 +89,7 @@ static char ble_last_msg[128] = "ble off";
 static unsigned ble_status_generation;
 
 static TaskHandle_t ble_transfer_task_handle;
+static TaskHandle_t ble_shutdown_task_handle;
 static bool ble_transfer_cancel;
 static char *ble_pending_name;
 static char *ble_pending_path;
@@ -98,12 +103,14 @@ static int ble_receive_fd = -1;
 static bool ble_receive_write_started;
 static size_t ble_receive_expected;
 static size_t ble_receive_received;
+static unsigned ble_receive_completed_session;
 static char ble_receive_name[TYPEWRT_BLE_RX_NAME_MAX];
 static char ble_receive_line[TYPEWRT_BLE_RX_LINE_MAX];
 static size_t ble_receive_line_len;
 
 static void typewrt_ble_try_start_transfer(void);
 static void typewrt_ble_advertise(void);
+static void typewrt_ble_schedule_stack_shutdown(void);
 
 static void typewrt_ble_lock_prepare(void)
 {
@@ -273,11 +280,82 @@ static int typewrt_ble_rx_finish_file_locked(void)
 
     snprintf(name, sizeof(name), "%s", ble_receive_name);
     typewrt_ble_receive_close_locked(false);
+    ble_receive_completed_session++;
     ble_state = TYPEWRT_BLE_WAITING;
     snprintf(msg, sizeof(msg), "ble received %u bytes: %s",
         (unsigned)received, name);
     typewrt_ble_set_msg_locked(msg);
     return 0;
+}
+
+static void typewrt_ble_shutdown_task(void *arg)
+{
+    esp_err_t ret = ESP_OK;
+    int rc;
+
+    (void)arg;
+
+    vTaskDelay(pdMS_TO_TICKS(TYPEWRT_BLE_SHUTDOWN_DELAY_MS));
+
+    typewrt_ble_lock();
+    if (!ble_stack_started || ble_enabled || ble_stack_stopping) {
+        ble_shutdown_task_handle = NULL;
+        typewrt_ble_unlock();
+        vTaskDelete(NULL);
+        return;
+    }
+    ble_stack_stopping = true;
+    typewrt_ble_unlock();
+
+    rc = nimble_port_stop();
+    if (rc) {
+        ESP_LOGW(TAG, "NimBLE stop failed: %d", rc);
+    } else {
+        ret = nimble_port_deinit();
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "NimBLE deinit failed: %s", esp_err_to_name(ret));
+        } else {
+            ESP_LOGI(TAG, "BLE stack powered down");
+        }
+    }
+
+    typewrt_ble_lock();
+    if (!rc && ret == ESP_OK) {
+        ble_stack_started = false;
+        ble_synced = false;
+        ble_advertising = false;
+        ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+        ble_notify_enabled = false;
+        ble_tx_handle = 0;
+        typewrt_ble_release_awake_locked();
+    }
+    ble_stack_stopping = false;
+    ble_shutdown_task_handle = NULL;
+    typewrt_ble_unlock();
+
+    vTaskDelete(NULL);
+}
+
+static void typewrt_ble_schedule_stack_shutdown(void)
+{
+    BaseType_t ok;
+
+    typewrt_ble_lock();
+    if (!ble_stack_started || ble_enabled || ble_shutdown_task_handle) {
+        typewrt_ble_unlock();
+        return;
+    }
+    ok = xTaskCreate(typewrt_ble_shutdown_task, "ble_off",
+        TYPEWRT_BLE_SHUTDOWN_STACK, NULL, TYPEWRT_BLE_SHUTDOWN_PRIO,
+        &ble_shutdown_task_handle);
+    typewrt_ble_unlock();
+
+    if (ok != pdPASS) {
+        typewrt_ble_lock();
+        ble_shutdown_task_handle = NULL;
+        typewrt_ble_unlock();
+        ESP_LOGW(TAG, "Failed to create BLE shutdown task");
+    }
 }
 
 static int typewrt_ble_rx_write_locked(const uint8_t *data, size_t len)
@@ -412,6 +490,7 @@ static void typewrt_ble_stop_transport(bool terminate_connection)
     typewrt_ble_receive_reset_locked(true);
     free(ble_receive_dir);
     ble_receive_dir = NULL;
+    ble_receive_completed_session = 0;
     if (ble_advertising) {
         ble_advertising = false;
         stop_adv = true;
@@ -431,6 +510,7 @@ static void typewrt_ble_stop_transport(bool terminate_connection)
     if (conn_handle != BLE_HS_CONN_HANDLE_NONE) {
         (void)ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
     }
+    typewrt_ble_schedule_stack_shutdown();
 }
 
 static void typewrt_ble_tune_connection(uint16_t conn_handle)
@@ -611,6 +691,7 @@ static void typewrt_ble_finish_transfer(const char *msg, typewrt_ble_state_t sta
     if (conn_handle != BLE_HS_CONN_HANDLE_NONE) {
         (void)ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
     }
+    typewrt_ble_schedule_stack_shutdown();
 }
 
 static void typewrt_ble_transfer_task(void *arg)
@@ -816,22 +897,47 @@ static int typewrt_ble_gap_event(struct ble_gap_event *event, void *arg)
         return 0;
 
     case BLE_GAP_EVENT_DISCONNECT:
+    {
+        bool shutdown_after_disconnect = false;
+
         typewrt_ble_lock();
         if (ble_conn_handle == event->disconnect.conn.conn_handle) {
             ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
             ble_notify_enabled = false;
-            if (ble_mode == TYPEWRT_BLE_MODE_RECEIVE && ble_receive_fd >= 0) {
-                typewrt_ble_receive_reset_locked(true);
-                typewrt_ble_set_msg_locked("ble recv cancelled");
-            }
-            if (ble_enabled) {
+            if (ble_enabled && ble_mode == TYPEWRT_BLE_MODE_RECEIVE) {
+                unsigned count = ble_receive_completed_session;
+                bool discard = ble_receive_fd >= 0;
+
+                typewrt_ble_receive_reset_locked(discard);
+                free(ble_receive_dir);
+                ble_receive_dir = NULL;
+                ble_enabled = false;
+                ble_mode = TYPEWRT_BLE_MODE_NONE;
+                ble_state = count ? TYPEWRT_BLE_DONE : TYPEWRT_BLE_ERROR;
+                if (count == 1) {
+                    typewrt_ble_set_msg_locked("ble received 1 file");
+                } else if (count > 1) {
+                    char msg[64];
+                    snprintf(msg, sizeof(msg), "ble received %u files", count);
+                    typewrt_ble_set_msg_locked(msg);
+                } else {
+                    typewrt_ble_set_msg_locked("ble recv cancelled");
+                }
+                typewrt_ble_release_awake_locked();
+                shutdown_after_disconnect = true;
+            } else if (ble_enabled) {
                 typewrt_ble_set_msg_locked(ble_mode == TYPEWRT_BLE_MODE_RECEIVE ?
                     "ble recv waiting" : "ble waiting for phone");
             }
         }
         typewrt_ble_unlock();
+        if (shutdown_after_disconnect) {
+            typewrt_ble_schedule_stack_shutdown();
+            return 0;
+        }
         typewrt_ble_advertise();
         return 0;
+    }
 
     case BLE_GAP_EVENT_ADV_COMPLETE:
         typewrt_ble_lock();
@@ -975,6 +1081,10 @@ static const char *typewrt_ble_init(void)
 
     typewrt_ble_lock_prepare();
     typewrt_ble_lock();
+    if (ble_stack_stopping) {
+        typewrt_ble_unlock();
+        return "ble stopping";
+    }
     if (ble_stack_started) {
         typewrt_ble_unlock();
         return NULL;
@@ -1145,6 +1255,7 @@ const char *typewrt_ble_receive_dir(const char *dir)
     typewrt_ble_receive_reset_locked(false);
     free(ble_receive_dir);
     ble_receive_dir = copy;
+    ble_receive_completed_session = 0;
     ble_transfer_cancel = false;
     ble_enabled = true;
     ble_mode = TYPEWRT_BLE_MODE_RECEIVE;

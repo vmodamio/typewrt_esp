@@ -3,6 +3,7 @@ package com.typewrt.companion;
 import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothGatt;
@@ -20,6 +21,8 @@ import android.bluetooth.le.ScanResult;
 import android.bluetooth.le.ScanSettings;
 import android.content.ContentResolver;
 import android.content.ContentValues;
+import android.content.ClipData;
+import android.content.ContentUris;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
@@ -91,6 +94,7 @@ public class MainActivity extends Activity {
     private static final int COLOR_BLUE_DARK = 0xFF1976D2;
     private static final int COLOR_RIPPLE = 0x3342A5F5;
     private static final String GITHUB_API_VERSION = "2026-03-10";
+    private static final String TYPEWRT_DOWNLOAD_DIR = Environment.DIRECTORY_DOWNLOADS + "/Typewrt";
 
     private static final UUID SERVICE_UUID =
         UUID.fromString("0000ffe0-0000-1000-8000-00805f9b34fb");
@@ -124,6 +128,12 @@ public class MainActivity extends Activity {
     private EditText githubTokenField;
     private Spinner pandocFromSpinner;
     private Spinner pandocToSpinner;
+    private Button transferTabButton;
+    private Button pandocTabButton;
+    private Button githubTabButton;
+    private LinearLayout transferTabContent;
+    private LinearLayout pandocTabContent;
+    private LinearLayout githubTabContent;
 
     private BluetoothAdapter bluetoothAdapter;
     private BluetoothLeScanner scanner;
@@ -145,8 +155,10 @@ public class MainActivity extends Activity {
     private byte[] latestFileData;
     private String latestFileName;
     private Uri latestFileUri;
-    private FileSnapshot pendingSendFile;
+    private final ArrayList<FileSnapshot> pendingSendFiles = new ArrayList<>();
+    private FileSnapshot activeSendFile;
     private byte[][] outgoingParts;
+    private int outgoingFileIndex;
     private int outgoingPartIndex;
     private int outgoingPartOffset;
     private int outgoingPendingLength;
@@ -155,6 +167,12 @@ public class MainActivity extends Activity {
     private enum TransferMode {
         RECEIVE_FROM_TYPEWRT,
         SEND_TO_TYPEWRT
+    }
+
+    private enum CompanionTab {
+        TRANSFER,
+        PANDOC,
+        GITHUB
     }
 
     @Override
@@ -238,7 +256,7 @@ public class MainActivity extends Activity {
         root.addView(statusView, statusParams);
 
         detailsView = new TextView(this);
-        detailsView.setText("Receive from Typewrt, or choose a text file and send it from the menu.");
+        detailsView.setText("Receive from Typewrt, or choose text files and send them from the menu.");
         detailsView.setTextSize(15);
         detailsView.setTextColor(COLOR_TEXT_SECONDARY);
         LinearLayout.LayoutParams detailsParams = new LinearLayout.LayoutParams(
@@ -247,6 +265,23 @@ public class MainActivity extends Activity {
         detailsParams.topMargin = dp(6);
         root.addView(detailsView, detailsParams);
 
+        LinearLayout tabs = new LinearLayout(this);
+        tabs.setOrientation(LinearLayout.HORIZONTAL);
+        tabs.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams tabsParams = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT);
+        tabsParams.topMargin = dp(18);
+        root.addView(tabs, tabsParams);
+
+        transferTabButton = addTabButton(tabs, "Transfer", CompanionTab.TRANSFER);
+        pandocTabButton = addTabButton(tabs, "Pandoc", CompanionTab.PANDOC);
+        githubTabButton = addTabButton(tabs, "Git", CompanionTab.GITHUB);
+
+        transferTabContent = addTabContent(root);
+        pandocTabContent = addTabContent(root);
+        githubTabContent = addTabContent(root);
+
         LinearLayout buttons = new LinearLayout(this);
         buttons.setOrientation(LinearLayout.HORIZONTAL);
         buttons.setGravity(Gravity.CENTER_VERTICAL);
@@ -254,14 +289,65 @@ public class MainActivity extends Activity {
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT);
         buttonsParams.topMargin = dp(18);
-        root.addView(buttons, buttonsParams);
+        transferTabContent.addView(buttons, buttonsParams);
 
         connectButton = new Button(this);
-        connectButton.setText("Receive from Typewrt");
+        connectButton.setText("Receive");
         connectButton.setAllCaps(false);
-        styleButton(connectButton, true);
+        styleActionButton(connectButton, true, R.drawable.ic_transfer_receive);
         connectButton.setOnClickListener(v -> startReceiver());
         buttons.addView(connectButton, new LinearLayout.LayoutParams(
+            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+
+        sendTypewrtButton = new Button(this);
+        sendTypewrtButton.setText("Send");
+        sendTypewrtButton.setAllCaps(false);
+        styleActionButton(sendTypewrtButton, true, R.drawable.ic_transfer_send);
+        sendTypewrtButton.setEnabled(false);
+        sendTypewrtButton.setOnClickListener(v -> startSender());
+        LinearLayout.LayoutParams sendTypewrtParams = new LinearLayout.LayoutParams(
+            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+        sendTypewrtParams.leftMargin = dp(10);
+        buttons.addView(sendTypewrtButton, sendTypewrtParams);
+
+        activeFileView = new TextView(this);
+        activeFileView.setText("No file received yet.");
+        activeFileView.setTextSize(15);
+        activeFileView.setTextColor(COLOR_TEXT_SECONDARY);
+        LinearLayout.LayoutParams activeParams = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT);
+        activeParams.topMargin = dp(12);
+        transferTabContent.addView(activeFileView, activeParams);
+
+        TextView sendLabel = sectionLabel("Selected text files");
+        transferTabContent.addView(sendLabel);
+
+        preparedFileView = new TextView(this);
+        preparedFileView.setText("No text files selected.");
+        preparedFileView.setTextSize(15);
+        preparedFileView.setTextColor(COLOR_TEXT_SECONDARY);
+        LinearLayout.LayoutParams preparedParams = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT);
+        preparedParams.topMargin = dp(6);
+        transferTabContent.addView(preparedFileView, preparedParams);
+
+        LinearLayout sendButtons = new LinearLayout(this);
+        sendButtons.setOrientation(LinearLayout.HORIZONTAL);
+        sendButtons.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams sendButtonsParams = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT);
+        sendButtonsParams.topMargin = dp(8);
+        transferTabContent.addView(sendButtons, sendButtonsParams);
+
+        chooseTextButton = new Button(this);
+        chooseTextButton.setText("Browse text files");
+        chooseTextButton.setAllCaps(false);
+        styleButton(chooseTextButton, false);
+        chooseTextButton.setOnClickListener(v -> chooseTextFile());
+        sendButtons.addView(chooseTextButton, new LinearLayout.LayoutParams(
             0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
 
         disconnectButton = new Button(this);
@@ -273,64 +359,13 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams disconnectParams = new LinearLayout.LayoutParams(
             0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
         disconnectParams.leftMargin = dp(10);
-        buttons.addView(disconnectButton, disconnectParams);
-
-        activeFileView = new TextView(this);
-        activeFileView.setText("No file received yet.");
-        activeFileView.setTextSize(15);
-        activeFileView.setTextColor(COLOR_TEXT_SECONDARY);
-        LinearLayout.LayoutParams activeParams = new LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT);
-        activeParams.topMargin = dp(12);
-        root.addView(activeFileView, activeParams);
-
-        TextView sendLabel = sectionLabel("Send to Typewrt");
-        root.addView(sendLabel);
-
-        preparedFileView = new TextView(this);
-        preparedFileView.setText("No text file selected.");
-        preparedFileView.setTextSize(15);
-        preparedFileView.setTextColor(COLOR_TEXT_SECONDARY);
-        LinearLayout.LayoutParams preparedParams = new LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT);
-        preparedParams.topMargin = dp(6);
-        root.addView(preparedFileView, preparedParams);
-
-        LinearLayout sendButtons = new LinearLayout(this);
-        sendButtons.setOrientation(LinearLayout.HORIZONTAL);
-        sendButtons.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout.LayoutParams sendButtonsParams = new LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT);
-        sendButtonsParams.topMargin = dp(8);
-        root.addView(sendButtons, sendButtonsParams);
-
-        chooseTextButton = new Button(this);
-        chooseTextButton.setText("Choose text file");
-        chooseTextButton.setAllCaps(false);
-        styleButton(chooseTextButton, false);
-        chooseTextButton.setOnClickListener(v -> chooseTextFile());
-        sendButtons.addView(chooseTextButton, new LinearLayout.LayoutParams(
-            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-
-        sendTypewrtButton = new Button(this);
-        sendTypewrtButton.setText("Send to Typewrt");
-        sendTypewrtButton.setAllCaps(false);
-        styleButton(sendTypewrtButton, true);
-        sendTypewrtButton.setEnabled(false);
-        sendTypewrtButton.setOnClickListener(v -> startSender());
-        LinearLayout.LayoutParams sendTypewrtParams = new LinearLayout.LayoutParams(
-            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
-        sendTypewrtParams.leftMargin = dp(10);
-        sendButtons.addView(sendTypewrtButton, sendTypewrtParams);
+        sendButtons.addView(disconnectButton, disconnectParams);
 
         TextView pandocLabel = sectionLabel("Pandoc export");
-        root.addView(pandocLabel);
+        pandocTabContent.addView(pandocLabel);
 
         pandocServerField = addTextField(
-            root,
+            pandocTabContent,
             "Pandoc server URL (http://host:3030/)",
             "");
         pandocServerField.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
@@ -341,7 +376,7 @@ public class MainActivity extends Activity {
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT);
         formatParams.topMargin = dp(8);
-        root.addView(pandocFormats, formatParams);
+        pandocTabContent.addView(pandocFormats, formatParams);
 
         pandocFromSpinner = addSpinner(
             pandocFormats,
@@ -360,15 +395,15 @@ public class MainActivity extends Activity {
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT);
         exportParams.topMargin = dp(8);
-        root.addView(pandocExportButton, exportParams);
+        pandocTabContent.addView(pandocExportButton, exportParams);
 
         TextView githubLabel = sectionLabel("GitHub upload");
-        root.addView(githubLabel);
+        githubTabContent.addView(githubLabel);
 
-        githubRepoField = addTextField(root, "Repository owner/name", "");
-        githubPathField = addTextField(root, "Repository path", "");
-        githubBranchField = addTextField(root, "Branch", "main");
-        githubTokenField = addTextField(root, "GitHub token", "");
+        githubRepoField = addTextField(githubTabContent, "Repository owner/name", "");
+        githubPathField = addTextField(githubTabContent, "Repository path", "");
+        githubBranchField = addTextField(githubTabContent, "Branch", "main");
+        githubTokenField = addTextField(githubTabContent, "GitHub token", "");
         githubTokenField.setInputType(
             InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
 
@@ -382,7 +417,7 @@ public class MainActivity extends Activity {
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT);
         uploadParams.topMargin = dp(8);
-        root.addView(githubUploadButton, uploadParams);
+        githubTabContent.addView(githubUploadButton, uploadParams);
 
         TextView logLabel = new TextView(this);
         logLabel.setText("Transfer log");
@@ -413,7 +448,51 @@ public class MainActivity extends Activity {
         root.addView(scroll, scrollParams);
 
         setContentView(page);
+        showTab(CompanionTab.TRANSFER);
         updateSendFileActions();
+    }
+
+    private Button addTabButton(LinearLayout root, String text, CompanionTab tab) {
+        Button button = new Button(this);
+        button.setText(text);
+        button.setAllCaps(false);
+        button.setTextSize(14);
+        button.setMinHeight(dp(44));
+        button.setOnClickListener(v -> showTab(tab));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+            0,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            1);
+        if (root.getChildCount() > 0) {
+            params.leftMargin = dp(8);
+        }
+        root.addView(button, params);
+        return button;
+    }
+
+    private LinearLayout addTabContent(LinearLayout root) {
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT);
+        root.addView(content, params);
+        return content;
+    }
+
+    private void showTab(CompanionTab tab) {
+        if (transferTabContent != null) {
+            transferTabContent.setVisibility(tab == CompanionTab.TRANSFER ? View.VISIBLE : View.GONE);
+        }
+        if (pandocTabContent != null) {
+            pandocTabContent.setVisibility(tab == CompanionTab.PANDOC ? View.VISIBLE : View.GONE);
+        }
+        if (githubTabContent != null) {
+            githubTabContent.setVisibility(tab == CompanionTab.GITHUB ? View.VISIBLE : View.GONE);
+        }
+        styleTabButton(transferTabButton, tab == CompanionTab.TRANSFER);
+        styleTabButton(pandocTabButton, tab == CompanionTab.PANDOC);
+        styleTabButton(githubTabButton, tab == CompanionTab.GITHUB);
     }
 
     private TextView sectionLabel(String text) {
@@ -503,6 +582,38 @@ public class MainActivity extends Activity {
         button.setBackground(rippleBackground(normalColor, disabledColor, dp(8)));
     }
 
+    private void styleActionButton(Button button, boolean primary, int iconResId) {
+        styleButton(button, primary);
+        button.setMinHeight(dp(86));
+        button.setTextSize(17);
+        button.setGravity(Gravity.CENTER);
+        button.setLineSpacing(dp(2), 1.0f);
+        setButtonTopIcon(button, iconResId, primary ? 0xFF0B1720 : COLOR_TEXT_PRIMARY);
+    }
+
+    private void styleTabButton(Button button, boolean selected) {
+        if (button == null) {
+            return;
+        }
+        int normalColor = selected ? COLOR_BLUE : COLOR_SURFACE_HIGH;
+        int textColor = selected ? 0xFF0B1720 : COLOR_TEXT_PRIMARY;
+        button.setTextColor(textColor);
+        button.setBackground(rippleBackground(normalColor, 0xFF2A2D30, dp(22)));
+    }
+
+    private void setButtonTopIcon(Button button, int iconResId, int tint) {
+        Drawable icon = getDrawable(iconResId);
+
+        if (icon == null) {
+            return;
+        }
+        icon = icon.mutate();
+        icon.setTint(tint);
+        icon.setBounds(0, 0, dp(32), dp(32));
+        button.setCompoundDrawables(null, icon, null, null);
+        button.setCompoundDrawablePadding(dp(6));
+    }
+
     private void styleSpinnerText(TextView view, boolean dropdown) {
         view.setTextColor(COLOR_TEXT_PRIMARY);
         view.setTextSize(14);
@@ -551,8 +662,8 @@ public class MainActivity extends Activity {
     }
 
     private void startSender() {
-        if (pendingSendFile == null) {
-            setStatus("No text file selected", "Choose a text file first.");
+        if (pendingSendFiles.isEmpty()) {
+            setStatus("No text files selected", "Choose one or more text files first.");
             return;
         }
         transferMode = TransferMode.SEND_TO_TYPEWRT;
@@ -566,11 +677,13 @@ public class MainActivity extends Activity {
     private void chooseTextFile() {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("text/*");
+        intent.setType("*/*");
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
         intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[] {
             "text/*",
             "application/json",
             "application/xml",
+            "application/x-markdown",
             "application/x-subrip"
         });
         startActivityForResult(intent, REQUEST_PICK_TEXT_FILE);
@@ -600,10 +713,14 @@ public class MainActivity extends Activity {
         if (requestCode != REQUEST_PICK_TEXT_FILE) {
             return;
         }
-        if (resultCode != RESULT_OK || data == null || data.getData() == null) {
+        if (resultCode != RESULT_OK || data == null) {
             return;
         }
-        prepareSelectedTextFile(data.getData());
+        ArrayList<Uri> uris = selectedUris(data);
+        if (uris.isEmpty()) {
+            return;
+        }
+        prepareSelectedTextFiles(uris);
     }
 
     private String[] requiredPermissions() {
@@ -661,7 +778,7 @@ public class MainActivity extends Activity {
             setStatus(
                 "Scanning for Typewrt",
                 "Run ble recv from the Typewrt menu before sending.");
-            appendLog("Scanning to send a text file to service 0xffe0...");
+            appendLog("Scanning to send text files to service 0xffe0...");
         } else {
             setStatus(
                 "Scanning for Typewrt",
@@ -979,20 +1096,45 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void prepareSelectedTextFile(Uri uri) {
-        pendingSendFile = null;
+    private ArrayList<Uri> selectedUris(Intent data) {
+        ArrayList<Uri> uris = new ArrayList<>();
+        ClipData clipData = data.getClipData();
+
+        if (clipData != null) {
+            for (int i = 0; i < clipData.getItemCount(); i++) {
+                Uri uri = clipData.getItemAt(i).getUri();
+                if (uri != null) {
+                    uris.add(uri);
+                }
+            }
+        } else if (data.getData() != null) {
+            uris.add(data.getData());
+        }
+        return uris;
+    }
+
+    private void prepareSelectedTextFiles(List<Uri> uris) {
+        pendingSendFiles.clear();
         updateSendFileActions();
-        setStatus("Preparing text file", "Reading selected document...");
-        appendLog("Preparing selected text file.");
+        setStatus("Preparing text files", "Reading " + uris.size() + " selected file" + plural(uris.size()) + "...");
+        appendLog("Preparing " + uris.size() + " selected file" + plural(uris.size()) + ".");
         Thread thread = new Thread(() -> {
             try {
-                byte[] data = readSelectedBytes(uri);
-                String name = sanitizeFileName(displayNameForUri(uri));
-                FileSnapshot snapshot = new FileSnapshot(name, data, uri);
+                ArrayList<FileSnapshot> snapshots = new ArrayList<>();
+                long totalBytes = 0;
+
+                for (Uri uri : uris) {
+                    byte[] data = readSelectedBytes(uri);
+                    String name = sanitizeFileName(displayNameForUri(uri));
+                    snapshots.add(new FileSnapshot(name, data, uri));
+                    totalBytes += data.length;
+                }
+                final long preparedBytes = totalBytes;
                 mainHandler.post(() -> {
-                    pendingSendFile = snapshot;
-                    setStatus("Prepared " + snapshot.name, snapshot.data.length + " bytes");
-                    appendLog("Prepared: " + snapshot.name + " (" + snapshot.data.length + " bytes)");
+                    pendingSendFiles.clear();
+                    pendingSendFiles.addAll(snapshots);
+                    setStatus("Prepared " + sendSelectionLabel(), preparedBytes + " bytes");
+                    appendLog("Prepared: " + sendSelectionLabel() + " (" + preparedBytes + " bytes)");
                     updateSendFileActions();
                 });
             } catch (IOException | RuntimeException e) {
@@ -1007,10 +1149,14 @@ public class MainActivity extends Activity {
     }
 
     private byte[] readSelectedBytes(Uri uri) throws IOException {
+        return readUriBytes(uri, "Selected file");
+    }
+
+    private byte[] readUriBytes(Uri uri, String label) throws IOException {
         try (InputStream in = getContentResolver().openInputStream(uri);
              ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             if (in == null) {
-                throw new IOException("Could not open selected file.");
+                throw new IOException("Could not open file.");
             }
             byte[] buffer = new byte[4096];
             long total = 0;
@@ -1018,7 +1164,7 @@ public class MainActivity extends Activity {
             while ((n = in.read(buffer)) != -1) {
                 total += n;
                 if (total > MAX_FILE_BYTES || total > Integer.MAX_VALUE) {
-                    throw new IOException("Selected file is larger than 20 MB.");
+                    throw new IOException(label + " is larger than 20 MB.");
                 }
                 out.write(buffer, 0, n);
             }
@@ -1053,14 +1199,13 @@ public class MainActivity extends Activity {
     }
 
     private void updateSendFileActions() {
-        FileSnapshot snapshot = pendingSendFile;
-        boolean hasPreparedFile = snapshot != null;
+        boolean hasPreparedFile = !pendingSendFiles.isEmpty();
         if (preparedFileView != null) {
             if (hasPreparedFile) {
                 preparedFileView.setText(
-                    "Prepared file: " + snapshot.name + " (" + snapshot.data.length + " bytes)");
+                    "Prepared: " + sendSelectionLabel() + " (" + pendingSendBytes() + " bytes)");
             } else {
-                preparedFileView.setText("No text file selected.");
+                preparedFileView.setText("No text files selected.");
             }
         }
         if (chooseTextButton != null) {
@@ -1070,6 +1215,28 @@ public class MainActivity extends Activity {
             sendTypewrtButton.setEnabled(
                 hasPreparedFile && bluetoothAdapter != null && activeGatt == null && !scanning);
         }
+    }
+
+    private String sendSelectionLabel() {
+        int count = pendingSendFiles.size();
+
+        if (count == 1) {
+            return pendingSendFiles.get(0).name;
+        }
+        return count + " files";
+    }
+
+    private long pendingSendBytes() {
+        long total = 0;
+
+        for (FileSnapshot snapshot : pendingSendFiles) {
+            total += snapshot.data.length;
+        }
+        return total;
+    }
+
+    private String plural(int count) {
+        return count == 1 ? "" : "s";
     }
 
     private void setIdleButtons() {
@@ -1083,26 +1250,38 @@ public class MainActivity extends Activity {
     }
 
     private void beginPreparedSend(BluetoothGatt gatt) {
-        FileSnapshot snapshot = pendingSendFile;
-        if (snapshot == null) {
-            failOutgoingTransfer(gatt, "No text file selected.");
+        if (pendingSendFiles.isEmpty()) {
+            failOutgoingTransfer(gatt, "No text files selected.");
             return;
         }
 
+        outgoingFileIndex = 0;
+        activeSendFile = null;
+        senderComplete = false;
+        beginNextOutgoingFile(gatt);
+    }
+
+    private void beginNextOutgoingFile(BluetoothGatt gatt) {
+        if (outgoingFileIndex >= pendingSendFiles.size()) {
+            finishOutgoingTransfer(gatt);
+            return;
+        }
+
+        FileSnapshot snapshot = pendingSendFiles.get(outgoingFileIndex);
         String name = sanitizeFileName(snapshot.name);
         byte[] header = ("TYPEWRT-FILE " + snapshot.data.length + " " + name + "\n")
             .getBytes(StandardCharsets.UTF_8);
         byte[] footer = ("\nTYPEWRT-END " + snapshot.data.length + " " + name + "\n")
             .getBytes(StandardCharsets.UTF_8);
+        activeSendFile = snapshot;
         outgoingParts = new byte[][] {header, snapshot.data, footer};
         outgoingPartIndex = 0;
         outgoingPartOffset = 0;
         outgoingPendingLength = 0;
         outgoingBytesSent = 0;
-        senderComplete = false;
 
         mainHandler.post(() -> {
-            setStatus("Sending " + name, "0 / " + snapshot.data.length + " bytes");
+            setStatus("Sending " + name, outgoingProgressText(0, snapshot.data.length));
             appendLog("Sending: " + name + " (" + snapshot.data.length + " bytes)");
             updateSendFileActions();
         });
@@ -1121,7 +1300,8 @@ public class MainActivity extends Activity {
             outgoingPartOffset = 0;
         }
         if (outgoingPartIndex >= outgoingParts.length) {
-            finishOutgoingTransfer(gatt);
+            outgoingFileIndex++;
+            beginNextOutgoingFile(gatt);
             return;
         }
 
@@ -1167,7 +1347,7 @@ public class MainActivity extends Activity {
     }
 
     private void publishOutgoingProgress() {
-        FileSnapshot snapshot = pendingSendFile;
+        FileSnapshot snapshot = activeSendFile;
         if (snapshot == null || outgoingParts == null) {
             return;
         }
@@ -1175,18 +1355,33 @@ public class MainActivity extends Activity {
         int fileBytesSent = Math.max(0, Math.min(snapshot.data.length, outgoingBytesSent - headerLength));
         String name = snapshot.name;
         mainHandler.post(() ->
-            setStatus("Sending " + name, fileBytesSent + " / " + snapshot.data.length + " bytes"));
+            setStatus("Sending " + name, outgoingProgressText(fileBytesSent, snapshot.data.length)));
+    }
+
+    private String outgoingProgressText(int sent, int total) {
+        String bytes = sent + " / " + total + " bytes";
+        String ordinal = outgoingFileOrdinal();
+
+        return ordinal.isEmpty() ? bytes : ordinal + "  " + bytes;
+    }
+
+    private String outgoingFileOrdinal() {
+        int count = pendingSendFiles.size();
+
+        if (count <= 1) {
+            return "";
+        }
+        return (outgoingFileIndex + 1) + " / " + count;
     }
 
     @SuppressLint("MissingPermission")
     private void finishOutgoingTransfer(BluetoothGatt gatt) {
-        FileSnapshot snapshot = pendingSendFile;
-        String name = snapshot == null ? "file" : snapshot.name;
+        String label = pendingSendFiles.isEmpty() ? "file" : sendSelectionLabel();
         senderComplete = true;
         resetOutgoingTransfer();
         mainHandler.post(() -> {
-            setStatus("Sent " + name, "Saved in the Typewrt menu directory.");
-            appendLog("Sent: " + name);
+            setStatus("Sent " + label, "Saved in the Typewrt menu directory.");
+            appendLog("Sent: " + label);
         });
         if (gatt != null && hasRequiredPermissions()) {
             gatt.disconnect();
@@ -1208,7 +1403,9 @@ public class MainActivity extends Activity {
     }
 
     private void resetOutgoingTransfer() {
+        activeSendFile = null;
         outgoingParts = null;
+        outgoingFileIndex = 0;
         outgoingPartIndex = 0;
         outgoingPartOffset = 0;
         outgoingPendingLength = 0;
@@ -1782,12 +1979,36 @@ public class MainActivity extends Activity {
 
     private void saveFile(String fileName, byte[] data) {
         ContentResolver resolver = getContentResolver();
+        Uri existingUri = findExistingDownload(resolver, fileName);
+
+        if (existingUri != null) {
+            try {
+                byte[] existingData = readUriBytes(existingUri, "Existing file");
+                if (bytesEqual(existingData, data)) {
+                    mainHandler.post(() -> {
+                        setLatestFile(fileName, data, existingUri);
+                        setStatus("Already current " + fileName, "Downloads/Typewrt");
+                        appendLog("Already current: " + existingUri);
+                        setIdleButtons();
+                    });
+                    return;
+                }
+                mainHandler.post(() -> askOverwrite(fileName, data, existingUri, existingData));
+                return;
+            } catch (IOException | RuntimeException e) {
+                mainHandler.post(() -> askOverwrite(fileName, data, existingUri, null));
+                return;
+            }
+        }
+        writeNewFile(fileName, data);
+    }
+
+    private void writeNewFile(String fileName, byte[] data) {
+        ContentResolver resolver = getContentResolver();
         ContentValues values = new ContentValues();
         values.put(MediaStore.Downloads.DISPLAY_NAME, fileName);
         values.put(MediaStore.Downloads.MIME_TYPE, guessMimeType(fileName));
-        values.put(
-            MediaStore.Downloads.RELATIVE_PATH,
-            Environment.DIRECTORY_DOWNLOADS + "/Typewrt");
+        values.put(MediaStore.Downloads.RELATIVE_PATH, TYPEWRT_DOWNLOAD_DIR);
         values.put(MediaStore.Downloads.IS_PENDING, 1);
 
         Uri uri = null;
@@ -1825,6 +2046,120 @@ public class MainActivity extends Activity {
                 updateFileActions();
             });
         }
+    }
+
+    private void askOverwrite(
+        String fileName,
+        byte[] data,
+        Uri existingUri,
+        byte[] existingData
+    ) {
+        new AlertDialog.Builder(this)
+            .setTitle("Overwrite " + fileName + "?")
+            .setMessage("A different file already exists in Downloads/Typewrt.")
+            .setNegativeButton("No", (dialog, which) -> {
+                if (existingData != null) {
+                    setLatestFile(fileName, existingData, existingUri);
+                }
+                setStatus("Kept existing " + fileName, "Received copy was not saved.");
+                appendLog("Overwrite skipped: " + fileName);
+                setIdleButtons();
+            })
+            .setPositiveButton("Yes", (dialog, which) -> {
+                Thread thread = new Thread(
+                    () -> overwriteFile(fileName, data, existingUri),
+                    "typewrt-overwrite");
+                thread.start();
+            })
+            .show();
+    }
+
+    private void overwriteFile(String fileName, byte[] data, Uri uri) {
+        try (OutputStream out = getContentResolver().openOutputStream(uri, "wt")) {
+            if (out == null) {
+                throw new IOException("Could not open output stream");
+            }
+            out.write(data);
+            mainHandler.post(() -> {
+                setLatestFile(fileName, data, uri);
+                setStatus("Overwrote " + fileName, "Downloads/Typewrt");
+                appendLog("Overwrote: " + uri);
+                setIdleButtons();
+            });
+        } catch (IOException | RuntimeException e) {
+            mainHandler.post(() -> {
+                setStatus("Overwrite failed", e.getMessage() == null ? e.toString() : e.getMessage());
+                appendLog("Overwrite failed: " + e);
+                setIdleButtons();
+                updateFileActions();
+            });
+        }
+    }
+
+    private Uri findExistingDownload(ContentResolver resolver, String fileName) {
+        String[] projection = {
+            MediaStore.MediaColumns._ID,
+            MediaStore.MediaColumns.RELATIVE_PATH,
+        };
+        String selection = MediaStore.MediaColumns.DISPLAY_NAME + " = ?";
+
+        try (Cursor cursor = resolver.query(
+            MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+            projection,
+            selection,
+            new String[] {fileName},
+            MediaStore.MediaColumns.DATE_MODIFIED + " DESC")) {
+            if (cursor == null) {
+                return null;
+            }
+            int idIndex = cursor.getColumnIndex(MediaStore.MediaColumns._ID);
+            int pathIndex = cursor.getColumnIndex(MediaStore.MediaColumns.RELATIVE_PATH);
+            if (idIndex < 0) {
+                return null;
+            }
+            while (cursor.moveToNext()) {
+                String relativePath = pathIndex >= 0 ? cursor.getString(pathIndex) : "";
+                if (!sameRelativePath(relativePath, TYPEWRT_DOWNLOAD_DIR)) {
+                    continue;
+                }
+                long id = cursor.getLong(idIndex);
+                return ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, id);
+            }
+        } catch (RuntimeException e) {
+            mainHandler.post(() -> appendLog("Existing file lookup failed: " + e));
+        }
+        return null;
+    }
+
+    private boolean sameRelativePath(String left, String right) {
+        return normalizeRelativePath(left).equals(normalizeRelativePath(right));
+    }
+
+    private String normalizeRelativePath(String path) {
+        String clean = path == null ? "" : path.trim().replace('\\', '/');
+
+        while (clean.startsWith("/")) {
+            clean = clean.substring(1);
+        }
+        while (clean.endsWith("/")) {
+            clean = clean.substring(0, clean.length() - 1);
+        }
+        return clean;
+    }
+
+    private boolean bytesEqual(byte[] left, byte[] right) {
+        if (left == right) {
+            return true;
+        }
+        if (left == null || right == null || left.length != right.length) {
+            return false;
+        }
+        for (int i = 0; i < left.length; i++) {
+            if (left[i] != right[i]) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private String guessMimeType(String fileName) {
