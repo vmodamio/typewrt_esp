@@ -937,10 +937,11 @@ static void led_open_next_row(int *crow, int *ctop)
 }
 
 static int led_input_at(sbuf *sb, char *post, int postn, int row, int flg,
-	int *pren, int ips, int icrow)
+	int *pren, int ips, int icrow, int ipre)
 {
 	int ai_max = 128 * xai;
-	int n, key, ps = ips, pre = -1, crow = icrow, ctop = xtop;
+	int n, key, ps = ips, pre = ipre >= 0 ? MAX(ipre, ips) : -1;
+	int crow = icrow, ctop = xtop;
 	char *postref = NULL;
 	ins_state is;
 	led_pcols = conf_hwwidth > 0 ? conf_hwwidth : 0;
@@ -1030,7 +1031,7 @@ static int led_input_at(sbuf *sb, char *post, int postn, int row, int flg,
 
 int led_input(sbuf *sb, char *post, int postn, int row, int flg, int *pren)
 {
-	return led_input_at(sb, post, postn, row, flg, pren, 0, xrow);
+	return led_input_at(sb, post, postn, row, flg, pren, 0, xrow, -1);
 }
 
 void led_done(void)

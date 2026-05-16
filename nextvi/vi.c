@@ -55,6 +55,7 @@ static int vi_visual;			/* visual mode */
 static int vi_vrow;			/* visual selection anchor row */
 static int vi_voff;			/* visual selection anchor offset */
 static int vi_defer_status = -1;	/* status line to draw after full redraw */
+static int vi_backspace_reenter;	/* keep backspace smooth after re-entry */
 #ifdef NEXTVI_NOTERM
 static int vi_insert_saved_xrows;	/* editor rows before hiding status */
 static int vi_insert_status_dirty;	/* status row needs repaint after insert */
@@ -1477,9 +1478,11 @@ static int vc_visual_op(int cmd)
 static int vc_insert(int cmd)
 {
 	char *post, *ln = lbuf_get(xb, xrow);
-	int row, cmdo, forced, ips = 0, l1, off, key, postn = 1;
+	int row, cmdo, forced, ipre, ips = 0, l1, off, key, postn = 1;
 	sbuf_smake(sb, xcols)
 	vi_insert_screen_enter();
+	ipre = vi_backspace_reenter ? 0 : -1;
+	vi_backspace_reenter = 0;
 	if (cmd == 'I')
 		xoff = lbuf_indents(xb, xrow);
 	else if (cmd == 'A')
@@ -1518,7 +1521,8 @@ static int vc_insert(int cmd)
 	if (l1)
 		sbuf_mem(sb, ln, l1)
 	nextvi_display_note_insert();
-	key = led_input_at(sb, post, postn, row, cmdo << 2, &postn, ips, xrow);
+	key = led_input_at(sb, post, postn, row, cmdo << 2, &postn, ips, xrow,
+		ipre);
 	if (postn != l1 || cmdo || !ln || key == LED_REFLOW) {
 		int lines = vi_linecount(sb->s);
 		lbuf_edit(xb, sb->s, row, row + !cmdo, off, xoff);
@@ -2077,6 +2081,7 @@ void vi(int init)
 					}
 					term_back(xoff != lbuf_eol(xb, xrow, 1) ? 'i' : 'a');
 					vi_insert_screen_enter();
+					vi_backspace_reenter = 1;
 					break;
 				}
 				if (c != 'A' && c != 'C' && xoff > 0)
