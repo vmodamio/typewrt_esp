@@ -38,7 +38,9 @@ Bluetooth stays off until a transfer command is used.
 | `:ble path` | Queue and advertise a file from the SD card |
 | `:ble status` | Show the current BLE state |
 | `:ble off` | Cancel the pending transfer and turn BLE back off |
-| Menu `ble recv` | Receive files into the current menu directory |
+| Menu `s` | Toggle the selected file between unmarked and pending sync |
+| Menu `b` or `ble send` | Send all pending `*` files |
+| Menu `ble recv` | Receive file updates and remote-delete markers |
 
 Connect from a BLE client such as nRF Connect or LightBlue, open service `0xffe0`,
 and subscribe to characteristic `0xffe1`. The transfer is sent as notifications with
@@ -50,24 +52,27 @@ For receive mode, open the menu, run `ble recv`, connect from the phone, and wri
 one or more `TYPEWRT-FILE <bytes> <name>\n` streams to characteristic `0xffe2`.
 The firmware writes each file directly into the menu's current directory; an optional
 `TYPEWRT-END <bytes> <name>\n` line after the raw bytes is accepted and ignored.
+The phone may also send `TYPEWRT-DELETE <path>\n`; Typewrt keeps the local copy and
+marks it as deleted remotely.
 
 ### Android companion app
 
 A tiny Android companion lives in `companion/typewrt-android`. Open that folder in
-Android Studio and install the app on a phone. To receive from Typewrt, run `:ble`
-or `:ble path` on Typewrt, then tap **Receive from Typewrt** in the app. Received
-files are saved under `Downloads/Typewrt`.
+Android Studio and install the app on a phone. To receive marked files from Typewrt,
+mark files in the menu with `s`, press `b`, then tap **From Typewrt** in the app.
+Received files are saved under `Downloads/Typewrt`.
 
-To send a phone-side text file into the embedded editor's SD card, open the Typewrt
-menu in the target directory, run `ble recv`, choose a text document in the app,
-then tap **Send to Typewrt**. The app uses service `0xffe0`, TX notifications on
+To send phone-side updates into the embedded editor's SD card, open the Typewrt menu
+in the target directory, run `ble recv`, queue text files and optional delete markers
+in the app, then tap **To Typewrt**. The app uses service `0xffe0`, TX notifications on
 `0xffe1` for phone receive, RX writes on `0xffe2` for Typewrt receive, and the
-`TYPEWRT-FILE` stream format described above.
+`TYPEWRT-FILE` / `TYPEWRT-DELETE` stream format described above.
 
 The companion can also export the latest received file through a reachable
-`pandoc-server`, then upload the latest received or exported file to GitHub using
-the repository contents REST API. `https://pandoc.org/app/` itself is browser-side
-Pandoc WASM, so the native app expects a real `pandoc-server` URL such as
+`pandoc-server`, fetch a GitHub repository or subfolder into the phone mirror and queue
+those changes for Typewrt, and upload the latest received or exported file to GitHub using
+the repository contents REST API. `https://pandoc.org/app/` itself is browser-side Pandoc
+WASM, so the native app expects a real `pandoc-server` URL such as
 `http://192.168.1.20:3030/`.
 
 ## Menu file browser
@@ -85,8 +90,10 @@ Entry prefixes:
 | Prefix | Meaning |
 | --- | --- |
 | `[+]` | Directory |
-| `s` | File queued for BLE sync and unchanged since then |
-| `*` | File not synced, or changed since the last BLE send |
+| `s` | File synced and unchanged since the last successful BLE send/receive |
+| `*` | File marked pending for the next menu BLE send |
+| `-` | File not marked for sync |
+| `x` | File was deleted remotely; the local copy is preserved |
 
 Normal menu keys:
 
@@ -98,7 +105,7 @@ Normal menu keys:
 | `Ctrl-D` / `Ctrl-U` | Page down/up |
 | `g` / `G` | First/last entry |
 | `Enter` or `o` | Open file, or enter directory |
-| `b` | Send selected file by BLE |
+| `b` | Send all pending `*` files by BLE |
 | `d` | Delete selected file/directory after confirmation |
 | `r` | Rename selected entry |
 | `c` | Copy selected file |
@@ -109,12 +116,11 @@ Normal menu keys:
 | `q` | Return to the current editor buffer |
 
 Each listing row reserves right-hand columns for word count and last modification time.
-Word counts use compact units such as `846 w` or `1.5 kw`. Modification time is shown
-as `HH:mm` for files changed today, `dd Mon` for this year, and `Mon YYYY` for
-older years.
+Word counts use compact units such as `846` or `1.5 k`. Modification time is shown
+as `HH:mm` for files changed today, and `Mon dd` for older files.
 
 Menu commands include `cd PATH`, `cd ..`, `cd -`, `ls`, `ls -s`, `ls -rt`,
-`ls *pattern*`, `mkdir PATH`, `open PATH`, `ble [PATH|recv|status|off]`, `rtc [datetime]`,
+`ls *pattern*`, `mkdir PATH`, `open PATH`, `ble [send|recv|selected|PATH|status|off]`, `rtc [datetime]`,
 `battery`, `off`, `rename`, `copy`, and `delete`. The command prompt temporarily
 replaces the bottom status row. Directory listing state is remembered per directory,
 including cursor position, scroll position, sort mode, and filter.

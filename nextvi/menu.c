@@ -3,6 +3,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <time.h>
+#include "typewrt_ble.h"
 
 #define MENU_TOP_ROW		0
 #define MENU_SPACER_ROW		1
@@ -23,6 +24,13 @@ typedef enum {
 	MENU_SORT_MTIME,
 } menu_sort;
 
+typedef enum {
+	MENU_SYNC_UNMARKED = 0,
+	MENU_SYNC_SYNCED,
+	MENU_SYNC_PENDING,
+	MENU_SYNC_REMOTE_DELETED,
+} menu_sync_state;
+
 typedef struct {
 	char *name;
 	char *path;
@@ -30,13 +38,14 @@ typedef struct {
 	long mtime;
 	long words;
 	int is_dir;
-	int synced;
+	menu_sync_state sync_state;
 } menu_entry;
 
 typedef struct {
 	char *path;
 	long size;
 	long mtime;
+	menu_sync_state state;
 } menu_sync;
 
 typedef struct {
@@ -249,11 +258,69 @@ static char *menu_path_normalize(const char *path)
 	return out;
 }
 
-void nextvi_menu_mark_synced(const char *path)
+static menu_sync *menu_sync_find(const char *path)
+{
+	for (int i = 0; i < menu_sync_count; i++)
+		if (menu_same_path(menu_syncs[i].path, path))
+			return &menu_syncs[i];
+	return NULL;
+}
+
+static menu_sync *menu_sync_ensure(const char *path)
+{
+	menu_sync *s = menu_sync_find(path);
+
+	if (s)
+		return s;
+	if (menu_sync_count < MENU_SYNC_MAX)
+		s = &menu_syncs[menu_sync_count++];
+	else {
+		s = &menu_syncs[menu_sync_next++ % MENU_SYNC_MAX];
+		free(s->path);
+	}
+	memset(s, 0, sizeof(*s));
+	s->path = uc_dup(path);
+	return s;
+}
+
+static void menu_sync_remove(const char *path)
+{
+	for (int i = 0; i < menu_sync_count; i++)
+		if (menu_same_path(menu_syncs[i].path, path)) {
+			free(menu_syncs[i].path);
+			menu_syncs[i] = menu_syncs[--menu_sync_count];
+			return;
+		}
+}
+
+static int menu_sync_stat_changed(const menu_sync *s, const struct stat *st)
+{
+	return s->size != (long)st->st_size || s->mtime != (long)st->st_mtime;
+}
+
+static menu_sync_state menu_sync_state_for(const char *path,
+	const struct stat *st)
+{
+	menu_sync *s = menu_sync_find(path);
+
+	if (!s)
+		return MENU_SYNC_UNMARKED;
+	if (s->state == MENU_SYNC_REMOTE_DELETED && menu_sync_stat_changed(s, st)) {
+		s->state = MENU_SYNC_UNMARKED;
+		s->size = (long)st->st_size;
+		s->mtime = (long)st->st_mtime;
+		return MENU_SYNC_UNMARKED;
+	}
+	if (s->state == MENU_SYNC_SYNCED && menu_sync_stat_changed(s, st))
+		return MENU_SYNC_PENDING;
+	return s->state;
+}
+
+static void menu_sync_set_state(const char *path, menu_sync_state state)
 {
 	struct stat st;
 	char *fspath;
-	int idx = -1;
+	menu_sync *s;
 
 	if (!path || !*path)
 		return;
@@ -262,32 +329,86 @@ void nextvi_menu_mark_synced(const char *path)
 		free(fspath);
 		return;
 	}
-	for (int i = 0; i < menu_sync_count; i++)
-		if (menu_same_path(menu_syncs[i].path, fspath)) {
-			idx = i;
-			break;
-		}
-	if (idx < 0) {
-		if (menu_sync_count < MENU_SYNC_MAX)
-			idx = menu_sync_count++;
-		else {
-			idx = menu_sync_next++ % MENU_SYNC_MAX;
-			free(menu_syncs[idx].path);
-		}
-		menu_syncs[idx].path = fspath;
-	} else
+	if (state == MENU_SYNC_UNMARKED) {
+		menu_sync_remove(fspath);
 		free(fspath);
-	menu_syncs[idx].size = (long)st.st_size;
-	menu_syncs[idx].mtime = (long)st.st_mtime;
+		return;
+	}
+	s = menu_sync_ensure(fspath);
+	s->size = (long)st.st_size;
+	s->mtime = (long)st.st_mtime;
+	s->state = state;
+	free(fspath);
 }
 
-static int menu_path_synced(const char *path, const struct stat *st)
+void nextvi_menu_mark_synced(const char *path)
 {
-	for (int i = 0; i < menu_sync_count; i++)
-		if (menu_same_path(menu_syncs[i].path, path))
-			return menu_syncs[i].size == (long)st->st_size &&
-				menu_syncs[i].mtime == (long)st->st_mtime;
-	return 0;
+	menu_sync_set_state(path, MENU_SYNC_SYNCED);
+}
+
+void nextvi_menu_mark_remote_deleted(const char *path)
+{
+	struct stat st;
+	char *fspath;
+	menu_sync *s;
+
+	if (!path || !*path)
+		return;
+	fspath = menu_path_normalize(path);
+	s = menu_sync_ensure(fspath);
+	if (!stat(fspath, &st) && !S_ISDIR(st.st_mode)) {
+		s->size = (long)st.st_size;
+		s->mtime = (long)st.st_mtime;
+	}
+	s->state = MENU_SYNC_REMOTE_DELETED;
+	free(fspath);
+}
+
+void nextvi_menu_mark_local_edited(const char *path)
+{
+	char *fspath;
+	menu_sync *s;
+
+	if (!path || !*path)
+		return;
+	fspath = menu_path_normalize(path);
+	s = menu_sync_find(fspath);
+	if (s && s->state == MENU_SYNC_REMOTE_DELETED)
+		menu_sync_remove(fspath);
+	free(fspath);
+}
+
+static void menu_mark_pending(const char *path)
+{
+	menu_sync_set_state(path, MENU_SYNC_PENDING);
+}
+
+static void menu_mark_unmarked(const char *path)
+{
+	char *fspath;
+
+	if (!path || !*path)
+		return;
+	fspath = menu_path_normalize(path);
+	menu_sync_remove(fspath);
+	free(fspath);
+}
+
+static const char *menu_sync_tag(const menu_entry *e)
+{
+	if (e->is_dir)
+		return "[+]";
+	switch (e->sync_state) {
+	case MENU_SYNC_SYNCED:
+		return " s ";
+	case MENU_SYNC_PENDING:
+		return " * ";
+	case MENU_SYNC_REMOTE_DELETED:
+		return " x ";
+	case MENU_SYNC_UNMARKED:
+	default:
+		return " - ";
+	}
 }
 
 static int menu_glob_match(const char *pat, const char *text)
@@ -361,7 +482,8 @@ static void menu_entry_add(menu_state *m, const char *name, char *path,
 	e->mtime = (long)st->st_mtime;
 	e->is_dir = S_ISDIR(st->st_mode);
 	e->words = e->is_dir ? -1 : menu_count_words(path);
-	e->synced = e->is_dir ? 0 : menu_path_synced(path, st);
+	e->sync_state = e->is_dir ? MENU_SYNC_UNMARKED :
+		menu_sync_state_for(path, st);
 }
 
 static int menu_entry_cmp(const void *a, const void *b)
@@ -664,7 +786,7 @@ static void menu_render_entry(char line[NEXTVI_DISPLAY_COLS + 1],
 	char left[128];
 	char words[16];
 	char date[16];
-	const char *tag = e->is_dir ? "[+]" : (e->synced ? " s " : " * ");
+	const char *tag = menu_sync_tag(e);
 	int words_len;
 	int date_len;
 	int left_cols = NEXTVI_DISPLAY_COLS - MENU_SIZE_COL_WIDTH -
@@ -954,6 +1076,8 @@ static void menu_delete_selected(menu_state *m)
 	if (ret)
 		menu_set_message(m, strerror(errno));
 	else {
+		if (!e->is_dir)
+			menu_mark_unmarked(e->path);
 		menu_set_message(m, "deleted");
 		menu_load(m);
 	}
@@ -964,6 +1088,7 @@ static void menu_rename_selected(menu_state *m)
 	menu_entry *e = menu_selected(m);
 	char dst_arg[256];
 	char *dst;
+	char *old_path = NULL;
 	if (!e) {
 		menu_set_message(m, "no file selected");
 		return;
@@ -975,12 +1100,17 @@ static void menu_rename_selected(menu_state *m)
 		menu_set_message(m, "rename cancelled");
 		return;
 	}
+	if (!e->is_dir)
+		old_path = uc_dup(e->path);
 	if (rename(e->path, dst))
 		menu_set_message(m, strerror(errno));
 	else {
+		if (old_path)
+			menu_mark_unmarked(old_path);
 		menu_set_message(m, "renamed");
 		menu_load(m);
 	}
+	free(old_path);
 	free(dst);
 }
 
@@ -1037,6 +1167,81 @@ static void menu_copy_selected(menu_state *m)
 	free(dst);
 }
 
+static void menu_toggle_sync_selected(menu_state *m)
+{
+	menu_entry *e = menu_selected(m);
+	char *selected;
+
+	if (!e || e->is_dir) {
+		menu_set_message(m, "select a file to mark");
+		return;
+	}
+	selected = uc_dup(e->path);
+	if (e->sync_state == MENU_SYNC_PENDING ||
+			e->sync_state == MENU_SYNC_SYNCED) {
+		menu_mark_unmarked(selected);
+		menu_set_message(m, "sync unmarked");
+	} else {
+		menu_mark_pending(selected);
+		menu_set_message(m, "sync pending");
+	}
+	menu_load(m);
+	menu_select_path(m, selected);
+	free(selected);
+}
+
+static const char *menu_sync_display_path(const char *path)
+{
+	int root_len = strlen(MENU_FS_ROOT);
+
+	if (menu_under_root(path) && path[root_len] == '/')
+		return path + root_len + 1;
+	return path;
+}
+
+static int menu_sync_is_pending(menu_sync *s)
+{
+	struct stat st;
+
+	if (!s || !s->path || stat(s->path, &st) || S_ISDIR(st.st_mode))
+		return 0;
+	return menu_sync_state_for(s->path, &st) == MENU_SYNC_PENDING;
+}
+
+static void menu_ble_send_marked(menu_state *m)
+{
+	typewrt_ble_file_request *files;
+	const char *err;
+	char status[128];
+	int count = 0;
+
+	for (int i = 0; i < menu_sync_count; i++)
+		if (menu_sync_is_pending(&menu_syncs[i]))
+			count++;
+	if (!count) {
+		menu_set_message(m, "no pending sync files");
+		return;
+	}
+	files = emalloc(count * sizeof(files[0]));
+	count = 0;
+	for (int i = 0; i < menu_sync_count; i++)
+		if (menu_sync_is_pending(&menu_syncs[i])) {
+			files[count].fs_path = menu_syncs[i].path;
+			files[count].display_path =
+				menu_sync_display_path(menu_syncs[i].path);
+			count++;
+		}
+	err = typewrt_ble_send_files(files, count);
+	free(files);
+	if (err) {
+		menu_set_message(m, err);
+		return;
+	}
+	m->ble_status_generation = typewrt_ble_status_generation();
+	typewrt_ble_get_status(status, sizeof(status));
+	menu_set_message(m, status);
+}
+
 static void menu_ble_path(menu_state *m, const char *display, const char *path)
 {
 	const char *err = typewrt_ble_send_file(display, path);
@@ -1045,10 +1250,9 @@ static void menu_ble_path(menu_state *m, const char *display, const char *path)
 		menu_set_message(m, err);
 		return;
 	}
-	nextvi_menu_mark_synced(path);
+	m->ble_status_generation = typewrt_ble_status_generation();
 	typewrt_ble_get_status(status, sizeof(status));
 	menu_set_message(m, status);
-	menu_load(m);
 }
 
 static void menu_ble_receive(menu_state *m)
@@ -1164,6 +1368,7 @@ static int menu_command(menu_state *m, char *cmdline)
 	if (!strcmp(cmd, "rm") || !strcmp(cmd, "delete")) {
 		char *path;
 		struct stat st;
+		int is_dir;
 		p = menu_trim(p);
 		if (!*p) {
 			menu_delete_selected(m);
@@ -1172,10 +1377,12 @@ static int menu_command(menu_state *m, char *cmdline)
 		path = menu_resolve_arg(p);
 		if (!path)
 			menu_set_message(m, "delete needs a path");
-		else if (!stat(path, &st) && S_ISDIR(st.st_mode) ? rmdir(path) :
-				unlink(path))
+		else if ((is_dir = (!stat(path, &st) && S_ISDIR(st.st_mode))) ?
+				rmdir(path) : unlink(path))
 			menu_set_message(m, strerror(errno));
 		else {
+			if (!is_dir)
+				menu_mark_unmarked(path);
 			menu_set_message(m, "deleted");
 			menu_load(m);
 		}
@@ -1197,6 +1404,7 @@ static int menu_command(menu_state *m, char *cmdline)
 		else if (rename(spath, dpath))
 			menu_set_message(m, strerror(errno));
 		else {
+			menu_mark_unmarked(spath);
 			menu_set_message(m, "renamed");
 			menu_load(m);
 		}
@@ -1226,15 +1434,18 @@ static int menu_command(menu_state *m, char *cmdline)
 		free(dpath);
 		return 0;
 	}
-		if (!strcmp(cmd, "ble")) {
-			p = menu_trim(p);
-			if (!*p)
-				menu_ble_selected(m);
-			else if (!strcmp(p, "recv") || !strcmp(p, "receive"))
-				menu_ble_receive(m);
-			else if (!strcmp(p, "off")) {
-				typewrt_ble_stop();
-				menu_set_message(m, "ble off");
+	if (!strcmp(cmd, "ble")) {
+		p = menu_trim(p);
+		if (!*p || !strcmp(p, "send") || !strcmp(p, "sync"))
+			menu_ble_send_marked(m);
+		else if (!strcmp(p, "recv") || !strcmp(p, "receive") ||
+				!strcmp(p, "updates"))
+			menu_ble_receive(m);
+		else if (!strcmp(p, "selected"))
+			menu_ble_selected(m);
+		else if (!strcmp(p, "off")) {
+			typewrt_ble_stop();
+			menu_set_message(m, "ble off");
 		} else if (!strcmp(p, "status")) {
 			char status[128];
 			typewrt_ble_get_status(status, sizeof(status));
@@ -1351,7 +1562,7 @@ int nextvi_menu_run(void)
 			}
 			break;
 		case 'b':
-			menu_ble_selected(&m);
+			menu_ble_send_marked(&m);
 			break;
 		case 'c':
 			menu_copy_selected(&m);
@@ -1361,6 +1572,9 @@ int nextvi_menu_run(void)
 			break;
 		case 'r':
 			menu_rename_selected(&m);
+			break;
+		case 's':
+			menu_toggle_sync_selected(&m);
 			break;
 		case 'R':
 			menu_load(&m);

@@ -1038,6 +1038,9 @@ static void *ec_write(char *loc, char *cmd, char *arg)
 		ec_setpath(NULL, NULL, path);
 	lbuf_saved(xb, 0);
 	ex_buf->mtime = mtime(path);
+#ifdef NEXTVI_EMBEDDED
+	nextvi_menu_mark_local_edited(path);
+#endif
 	if (cmd[0] == 'x' || (cmd[0] == 'w' && cmd[1] == 'q'))
 		ec_quit("", cmd, "");
 	done:
@@ -1852,12 +1855,6 @@ static void *ec_ble(char *loc, char *cmd, char *arg)
 	}
 	if (err)
 		return (void*)err;
-#ifdef NEXTVI_EMBEDDED
-	if (*a)
-		nextvi_menu_mark_synced(a);
-	else if (*xb_path && !xb->modified)
-		nextvi_menu_mark_synced(xb_path);
-#endif
 	typewrt_ble_get_status(msg, sizeof(msg));
 	ex_print(msg)
 	return NULL;

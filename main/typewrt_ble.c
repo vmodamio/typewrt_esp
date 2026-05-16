@@ -72,6 +72,14 @@ typedef enum {
     TYPEWRT_BLE_MODE_RECEIVE,
 } typewrt_ble_mode_t;
 
+typedef struct {
+    char *name;
+    char *path;
+    char *data;
+    size_t len;
+    bool is_buffer;
+} typewrt_ble_pending_file_t;
+
 static const char *TAG = "typewrt_ble";
 static StaticSemaphore_t ble_mutex_storage;
 static SemaphoreHandle_t ble_mutex;
@@ -93,11 +101,8 @@ static unsigned ble_status_generation;
 static TaskHandle_t ble_transfer_task_handle;
 static TaskHandle_t ble_shutdown_task_handle;
 static bool ble_transfer_cancel;
-static char *ble_pending_name;
-static char *ble_pending_path;
-static char *ble_pending_data;
-static size_t ble_pending_len;
-static bool ble_pending_is_buffer;
+static typewrt_ble_pending_file_t *ble_pending_files;
+static size_t ble_pending_count;
 
 static char *ble_receive_dir;
 static char *ble_receive_path;
@@ -113,6 +118,16 @@ static size_t ble_receive_line_len;
 static void typewrt_ble_try_start_transfer(void);
 static void typewrt_ble_advertise(void);
 static void typewrt_ble_schedule_stack_shutdown(void);
+
+void __attribute__((weak)) nextvi_menu_mark_synced(const char *path)
+{
+    (void)path;
+}
+
+void __attribute__((weak)) nextvi_menu_mark_remote_deleted(const char *path)
+{
+    (void)path;
+}
 
 static void typewrt_ble_lock_prepare(void)
 {
@@ -176,16 +191,22 @@ static void typewrt_ble_release_awake_locked(void)
     }
 }
 
+static void typewrt_ble_free_file_list(typewrt_ble_pending_file_t *files,
+    size_t count)
+{
+    for (size_t i = 0; i < count; i++) {
+        free(files[i].name);
+        free(files[i].path);
+        free(files[i].data);
+    }
+    free(files);
+}
+
 static void typewrt_ble_free_pending_locked(void)
 {
-    free(ble_pending_name);
-    free(ble_pending_path);
-    free(ble_pending_data);
-    ble_pending_name = NULL;
-    ble_pending_path = NULL;
-    ble_pending_data = NULL;
-    ble_pending_len = 0;
-    ble_pending_is_buffer = false;
+    typewrt_ble_free_file_list(ble_pending_files, ble_pending_count);
+    ble_pending_files = NULL;
+    ble_pending_count = 0;
 }
 
 static void typewrt_ble_receive_close_locked(bool discard)
@@ -216,33 +237,56 @@ static void typewrt_ble_receive_reset_locked(bool discard)
 
 static bool typewrt_ble_rx_safe_name(const char *name, char *out, size_t out_len)
 {
-    const char *base = name;
     size_t n = 0;
 
     if (!name || !*name || out_len < 2) {
         return false;
     }
-    for (const char *p = name; *p; p++) {
-        if (*p == '/' || *p == '\\') {
-            base = p + 1;
+    if (name[0] == '/' || name[0] == '\\') {
+        return false;
+    }
+    for (const char *p = name; *p;) {
+        const char *seg = p;
+        size_t len;
+
+        while (*p && *p != '/' && *p != '\\') {
+            p++;
         }
-    }
-    while (*base == ' ' || *base == '\t') {
-        base++;
-    }
-    for (const char *p = base; *p && n + 1 < out_len; p++) {
-        unsigned char c = (unsigned char)*p;
-        if (c < 0x20 || c == 0x7f || c == '/' || c == '\\' || c == ':') {
-            out[n++] = '_';
-        } else {
-            out[n++] = (char)c;
+        len = (size_t)(p - seg);
+        while (len && (*seg == ' ' || *seg == '\t')) {
+            seg++;
+            len--;
         }
-    }
-    while (n && (out[n - 1] == ' ' || out[n - 1] == '\t')) {
-        n--;
+        while (len && (seg[len - 1] == ' ' || seg[len - 1] == '\t')) {
+            len--;
+        }
+        if (!len || (len == 1 && seg[0] == '.') ||
+                (len == 2 && seg[0] == '.' && seg[1] == '.')) {
+            return false;
+        }
+        if (n) {
+            if (n + 1 >= out_len) {
+                return false;
+            }
+            out[n++] = '/';
+        }
+        for (size_t i = 0; i < len; i++) {
+            unsigned char c = (unsigned char)seg[i];
+            if (n + 1 >= out_len) {
+                return false;
+            }
+            if (c < 0x20 || c == 0x7f || c == ':') {
+                out[n++] = '_';
+            } else {
+                out[n++] = (char)c;
+            }
+        }
+        if (*p) {
+            p++;
+        }
     }
     out[n] = '\0';
-    return n && strcmp(out, ".") && strcmp(out, "..");
+    return n > 0;
 }
 
 static char *typewrt_ble_rx_join_path(const char *dir, const char *name)
@@ -263,6 +307,23 @@ static char *typewrt_ble_rx_join_path(const char *dir, const char *name)
     return path;
 }
 
+static int typewrt_ble_rx_make_parent_dirs(char *path)
+{
+    for (char *p = path + 1; *p; p++) {
+        if (*p != '/') {
+            continue;
+        }
+        *p = '\0';
+        if (mkdir(path, 0777) && errno != EEXIST) {
+            int err = errno ? errno : EIO;
+            *p = '/';
+            return err;
+        }
+        *p = '/';
+    }
+    return 0;
+}
+
 static int typewrt_ble_rx_fail_locked(int err)
 {
     char msg[128];
@@ -278,10 +339,16 @@ static int typewrt_ble_rx_finish_file_locked(void)
 {
     char msg[128];
     char name[TYPEWRT_BLE_RX_NAME_MAX];
+    char *path;
     size_t received = ble_receive_received;
 
     snprintf(name, sizeof(name), "%s", ble_receive_name);
+    path = ble_receive_path ? typewrt_ble_strdup(ble_receive_path) : NULL;
     typewrt_ble_receive_close_locked(false);
+    if (path) {
+        nextvi_menu_mark_synced(path);
+        free(path);
+    }
     ble_receive_completed_session++;
     ble_state = TYPEWRT_BLE_WAITING;
     snprintf(msg, sizeof(msg), "ble received %u bytes: %s",
@@ -384,11 +451,34 @@ static int typewrt_ble_rx_start_file_locked(char *line)
     unsigned long size;
     char safe[TYPEWRT_BLE_RX_NAME_MAX];
     char msg[128];
+    int err;
 
     if (!line[0]) {
         return 0;
     }
     if (!strncmp(line, "TYPEWRT-END ", 12)) {
+        return 0;
+    }
+    if (!strncmp(line, "TYPEWRT-DELETE ", 15)) {
+        char *path;
+
+        name = line + 15;
+        if (!typewrt_ble_rx_safe_name(name, safe, sizeof(safe))) {
+            return typewrt_ble_rx_fail_locked(EINVAL);
+        }
+        if (!ble_receive_dir) {
+            return typewrt_ble_rx_fail_locked(ENOENT);
+        }
+        path = typewrt_ble_rx_join_path(ble_receive_dir, safe);
+        if (!path) {
+            return typewrt_ble_rx_fail_locked(ENOMEM);
+        }
+        nextvi_menu_mark_remote_deleted(path);
+        free(path);
+        ble_receive_completed_session++;
+        ble_state = TYPEWRT_BLE_WAITING;
+        snprintf(msg, sizeof(msg), "ble remote deleted %s", safe);
+        typewrt_ble_set_msg_locked(msg);
         return 0;
     }
     if (strncmp(line, "TYPEWRT-FILE ", 13)) {
@@ -410,6 +500,10 @@ static int typewrt_ble_rx_start_file_locked(char *line)
     ble_receive_path = typewrt_ble_rx_join_path(ble_receive_dir, safe);
     if (!ble_receive_path) {
         return typewrt_ble_rx_fail_locked(ENOMEM);
+    }
+    err = typewrt_ble_rx_make_parent_dirs(ble_receive_path);
+    if (err) {
+        return typewrt_ble_rx_fail_locked(err);
     }
     snprintf(ble_receive_name, sizeof(ble_receive_name), "%s", safe);
     ble_receive_expected = (size_t)size;
@@ -725,13 +819,9 @@ static void typewrt_ble_finish_transfer(const char *msg, typewrt_ble_state_t sta
 
 static void typewrt_ble_transfer_task(void *arg)
 {
-    char *name;
-    char *path;
-    char *data;
-    size_t len;
-    bool is_buffer;
-    size_t sent = 0;
-    int fd = -1;
+    typewrt_ble_pending_file_t *files;
+    size_t count;
+    size_t total_sent = 0;
     int err = 0;
     char header[256];
     char footer[256];
@@ -740,62 +830,81 @@ static void typewrt_ble_transfer_task(void *arg)
     (void)arg;
 
     typewrt_ble_lock();
-    name = ble_pending_name;
-    path = ble_pending_path;
-    data = ble_pending_data;
-    len = ble_pending_len;
-    is_buffer = ble_pending_is_buffer;
-    ble_pending_name = NULL;
-    ble_pending_path = NULL;
-    ble_pending_data = NULL;
-    ble_pending_len = 0;
-    ble_pending_is_buffer = false;
+    files = ble_pending_files;
+    count = ble_pending_count;
+    ble_pending_files = NULL;
+    ble_pending_count = 0;
     ble_state = TYPEWRT_BLE_SENDING;
-    snprintf(ble_last_msg, sizeof(ble_last_msg), "ble sending %s", name);
+    if (count == 1 && files)
+        snprintf(msg, sizeof(msg), "ble sending %s", files[0].name);
+    else
+        snprintf(msg, sizeof(msg), "ble sending %u files", (unsigned)count);
+    typewrt_ble_set_msg_locked(msg);
     typewrt_ble_unlock();
 
-    if (!is_buffer) {
-        fd = open(path, O_RDONLY);
-        if (fd < 0) {
-            err = errno ? errno : ENOENT;
-        }
+    if (!files || !count) {
+        err = ENOENT;
     }
+    for (size_t i = 0; !err && i < count; i++) {
+        typewrt_ble_pending_file_t *file = &files[i];
+        size_t sent = 0;
+        int fd = -1;
 
-    if (!err) {
-        int n = snprintf(header, sizeof(header),
-            "TYPEWRT-FILE %u %s\n", (unsigned)len, name);
-        err = n > 0 ? typewrt_ble_notify(header, (size_t)n) : EIO;
-    }
-    if (!err) {
-        if (is_buffer) {
-            err = typewrt_ble_transfer_buffer(data, len, &sent);
-        } else {
-            err = typewrt_ble_transfer_file(fd, &sent);
-        }
-    }
-    if (!err) {
-        int n = snprintf(footer, sizeof(footer),
-            "\nTYPEWRT-END %u %s\n", (unsigned)sent, name);
-        err = n > 0 ? typewrt_ble_notify(footer, (size_t)n) : EIO;
-    }
+        typewrt_ble_lock();
+        snprintf(msg, sizeof(msg), "ble sending %s", file->name);
+        typewrt_ble_set_msg_locked(msg);
+        typewrt_ble_unlock();
 
-    if (fd >= 0) {
-        close(fd);
+        if (!file->is_buffer) {
+            fd = open(file->path, O_RDONLY);
+            if (fd < 0) {
+                err = errno ? errno : ENOENT;
+            }
+        }
+
+        if (!err) {
+            int n = snprintf(header, sizeof(header),
+                "TYPEWRT-FILE %u %s\n", (unsigned)file->len, file->name);
+            err = n > 0 ? typewrt_ble_notify(header, (size_t)n) : EIO;
+        }
+        if (!err) {
+            if (file->is_buffer) {
+                err = typewrt_ble_transfer_buffer(file->data,
+                    file->len, &sent);
+            } else {
+                err = typewrt_ble_transfer_file(fd, &sent);
+            }
+        }
+        if (!err) {
+            int n = snprintf(footer, sizeof(footer),
+                "\nTYPEWRT-END %u %s\n", (unsigned)sent, file->name);
+            err = n > 0 ? typewrt_ble_notify(footer, (size_t)n) : EIO;
+        }
+        if (fd >= 0) {
+            close(fd);
+        }
+        total_sent += sent;
     }
-    free(name);
-    free(path);
-    free(data);
 
     if (err) {
         snprintf(msg, sizeof(msg), "ble send failed: %s", strerror(err));
         ESP_LOGW(TAG, "%s", msg);
         typewrt_ble_finish_transfer(msg, TYPEWRT_BLE_ERROR);
     } else {
+        for (size_t i = 0; i < count; i++)
+            if (!files[i].is_buffer && files[i].path)
+                nextvi_menu_mark_synced(files[i].path);
         vTaskDelay(pdMS_TO_TICKS(TYPEWRT_BLE_DISCONNECT_DELAY_MS));
-        snprintf(msg, sizeof(msg), "ble sent %u bytes", (unsigned)sent);
+        if (count == 1)
+            snprintf(msg, sizeof(msg), "ble sent %u bytes",
+                (unsigned)total_sent);
+        else
+            snprintf(msg, sizeof(msg), "ble sent %u files",
+                (unsigned)count);
         ESP_LOGI(TAG, "%s", msg);
         typewrt_ble_finish_transfer(msg, TYPEWRT_BLE_DONE);
     }
+    typewrt_ble_free_file_list(files, count);
 
     vTaskDelete(NULL);
 }
@@ -944,10 +1053,10 @@ static int typewrt_ble_gap_event(struct ble_gap_event *event, void *arg)
                 ble_mode = TYPEWRT_BLE_MODE_NONE;
                 ble_state = count ? TYPEWRT_BLE_DONE : TYPEWRT_BLE_ERROR;
                 if (count == 1) {
-                    typewrt_ble_set_msg_locked("ble received 1 file");
+                    typewrt_ble_set_msg_locked("ble received 1 update");
                 } else if (count > 1) {
                     char msg[64];
-                    snprintf(msg, sizeof(msg), "ble received %u files", count);
+                    snprintf(msg, sizeof(msg), "ble received %u updates", count);
                     typewrt_ble_set_msg_locked(msg);
                 } else {
                     typewrt_ble_set_msg_locked("ble recv cancelled");
@@ -1166,12 +1275,17 @@ static const char *typewrt_ble_init(void)
     return NULL;
 }
 
-static const char *typewrt_ble_queue_transfer(char *name, char *path,
-    char *data, size_t len, bool is_buffer)
+static const char *typewrt_ble_queue_transfer(typewrt_ble_pending_file_t *files,
+    size_t count)
 {
     const char *err = typewrt_ble_init();
+    char msg[128];
 
     if (err) {
+        goto fail;
+    }
+    if (!files || !count) {
+        err = "ble no files";
         goto fail;
     }
 
@@ -1183,17 +1297,17 @@ static const char *typewrt_ble_queue_transfer(char *name, char *path,
         goto fail;
     }
     typewrt_ble_free_pending_locked();
-    ble_pending_name = name;
-    ble_pending_path = path;
-    ble_pending_data = data;
-    ble_pending_len = len;
-    ble_pending_is_buffer = is_buffer;
+    ble_pending_files = files;
+    ble_pending_count = count;
     ble_transfer_cancel = false;
     ble_enabled = true;
     ble_mode = TYPEWRT_BLE_MODE_SEND;
     ble_state = TYPEWRT_BLE_WAITING;
-    snprintf(ble_last_msg, sizeof(ble_last_msg),
-        "ble waiting: %s", name);
+    if (count == 1)
+        snprintf(msg, sizeof(msg), "ble waiting: %s", files[0].name);
+    else
+        snprintf(msg, sizeof(msg), "ble waiting: %u files", (unsigned)count);
+    typewrt_ble_set_msg_locked(msg);
     typewrt_ble_hold_awake_locked();
     typewrt_ble_unlock();
 
@@ -1202,17 +1316,14 @@ static const char *typewrt_ble_queue_transfer(char *name, char *path,
     return NULL;
 
 fail:
-    free(name);
-    free(path);
-    free(data);
+    typewrt_ble_free_file_list(files, count);
     return err;
 }
 
 const char *typewrt_ble_send_file(const char *display_path, const char *fs_path)
 {
     struct stat st;
-    char *name = NULL;
-    char *path = NULL;
+    typewrt_ble_pending_file_t *files;
 
     if (!fs_path || !*fs_path) {
         return "ble file missing";
@@ -1220,37 +1331,79 @@ const char *typewrt_ble_send_file(const char *display_path, const char *fs_path)
     if (stat(fs_path, &st) < 0 || !S_ISREG(st.st_mode)) {
         return "ble file not found";
     }
-    name = typewrt_ble_strdup(typewrt_ble_basename(
-        display_path && *display_path ? display_path : fs_path));
-    path = typewrt_ble_strdup(fs_path);
-    if (!name || !path) {
-        free(name);
-        free(path);
+    files = calloc(1, sizeof(files[0]));
+    if (!files) {
         return "ble memory failed";
     }
-    return typewrt_ble_queue_transfer(name, path, NULL, (size_t)st.st_size,
-        false);
+    files[0].name = typewrt_ble_strdup(typewrt_ble_basename(
+        display_path && *display_path ? display_path : fs_path));
+    files[0].path = typewrt_ble_strdup(fs_path);
+    files[0].len = (size_t)st.st_size;
+    if (!files[0].name || !files[0].path) {
+        typewrt_ble_free_file_list(files, 1);
+        return "ble memory failed";
+    }
+    return typewrt_ble_queue_transfer(files, 1);
+}
+
+const char *typewrt_ble_send_files(const typewrt_ble_file_request *requests,
+    size_t count)
+{
+    typewrt_ble_pending_file_t *files;
+
+    if (!requests || !count) {
+        return "ble no files";
+    }
+    files = calloc(count, sizeof(files[0]));
+    if (!files) {
+        return "ble memory failed";
+    }
+    for (size_t i = 0; i < count; i++) {
+        struct stat st;
+        const char *display;
+
+        if (!requests[i].fs_path || !*requests[i].fs_path) {
+            typewrt_ble_free_file_list(files, count);
+            return "ble file missing";
+        }
+        if (stat(requests[i].fs_path, &st) < 0 || !S_ISREG(st.st_mode)) {
+            typewrt_ble_free_file_list(files, count);
+            return "ble file not found";
+        }
+        display = requests[i].display_path && *requests[i].display_path ?
+            requests[i].display_path : typewrt_ble_basename(requests[i].fs_path);
+        files[i].name = typewrt_ble_strdup(display);
+        files[i].path = typewrt_ble_strdup(requests[i].fs_path);
+        files[i].len = (size_t)st.st_size;
+        if (!files[i].name || !files[i].path) {
+            typewrt_ble_free_file_list(files, count);
+            return "ble memory failed";
+        }
+    }
+    return typewrt_ble_queue_transfer(files, count);
 }
 
 const char *typewrt_ble_send_buffer(const char *name_arg, const char *data,
     size_t len)
 {
-    char *name = NULL;
-    char *copy = NULL;
+    typewrt_ble_pending_file_t *files;
 
-    name = typewrt_ble_strdup(typewrt_ble_basename(name_arg));
-    if (!name) {
+    files = calloc(1, sizeof(files[0]));
+    if (!files) {
         return "ble memory failed";
     }
-    copy = malloc(len ? len : 1);
-    if (!copy) {
-        free(name);
+    files[0].name = typewrt_ble_strdup(typewrt_ble_basename(name_arg));
+    files[0].data = malloc(len ? len : 1);
+    files[0].len = len;
+    files[0].is_buffer = true;
+    if (!files[0].name || !files[0].data) {
+        typewrt_ble_free_file_list(files, 1);
         return "ble memory failed";
     }
     if (len) {
-        memcpy(copy, data, len);
+        memcpy(files[0].data, data, len);
     }
-    return typewrt_ble_queue_transfer(name, NULL, copy, len, true);
+    return typewrt_ble_queue_transfer(files, 1);
 }
 
 const char *typewrt_ble_receive_dir(const char *dir)
