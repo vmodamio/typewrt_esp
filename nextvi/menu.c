@@ -900,14 +900,19 @@ static int menu_change_dir(menu_state *m, const char *path)
 	return 0;
 }
 
-static int menu_open_path(const char *path)
+static int menu_open_path(menu_state *m, const char *path)
 {
 	int old_xvis = xvis;
+	int ret;
 	xvis |= 4;
-	ex_edit(path, strlen(path));
+	ret = ex_edit(path, strlen(path));
 	xvis = old_xvis;
 	xquit = 0;
 	xmpt = 0;
+	if (ret < 0) {
+		menu_set_message(m, "open failed: not enough memory");
+		return 0;
+	}
 	return 1;
 }
 
@@ -922,7 +927,7 @@ static int menu_open_selected(menu_state *m)
 		menu_change_dir(m, e->path);
 		return 0;
 	}
-	return menu_open_path(e->path);
+	return menu_open_path(m, e->path);
 }
 
 static char *menu_resolve_arg(const char *arg)
@@ -1105,7 +1110,7 @@ static int menu_command(menu_state *m, char *cmdline)
 			menu_set_message(m, "open needs a path");
 			return 0;
 		}
-		ret = menu_open_path(path);
+		ret = menu_open_path(m, path);
 		free(path);
 		return ret;
 	}

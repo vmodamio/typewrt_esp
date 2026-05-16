@@ -393,6 +393,7 @@ struct buf {
 	char *path;			/* file path */
 	struct lbuf *lb;
 	int plen, row, off, top;
+	unsigned long lastused;		/* monotonically increasing LRU stamp */
 	long mtime;			/* modification time */
 };
 /* ex options */

@@ -41,6 +41,7 @@
 #include "esp_timer.h"
 #include "esp_sleep.h"
 #include "esp_vfs_fat.h"
+#include "esp_heap_caps.h"
 #include "driver/gpio.h"
 //#include "driver/uart.h"
 #include "driver/i2c_master.h"
@@ -2210,6 +2211,16 @@ void typewrt_sd_write_end(void)
             return;
         }
     }
+}
+
+size_t typewrt_heap_free_bytes(void)
+{
+    return heap_caps_get_free_size(MALLOC_CAP_8BIT);
+}
+
+size_t typewrt_heap_largest_free_block(void)
+{
+    return heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
 }
 
 static bool typewrt_sd_writes_idle(TickType_t timeout_ticks)

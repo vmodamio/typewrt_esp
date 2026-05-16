@@ -36,6 +36,7 @@ struct buf *ex_pbuf;		/* prev buffer */
 static struct buf *ex_tpbuf;	/* temp prev buffer */
 static int xbufsmax;		/* number of buffers */
 static int xbufsalloc = 10;	/* initial number of buffers */
+static unsigned long xbufclock;	/* buffer LRU clock */
 static int xgdep;		/* global command recursion depth */
 static int xexp = '%';		/* ex command internal state expand  */
 static char xuerr[] = "unreported error";
@@ -44,6 +45,7 @@ static char xuerr[] = "unreported error";
 #include "typewrt_ble.h"
 #include "typewrt_power.h"
 #define NEXTVI_FS_ROOT "/sdcard"
+#define NEXTVI_OPEN_FREE_FLOOR (1024UL * 1024UL)
 static char ex_vcwd[4096] = NEXTVI_FS_ROOT;
 bool typewrt_rtc_get_datetime(char *out, size_t out_len);
 const char *typewrt_rtc_set_datetime(const char *datetime, char *out, size_t out_len);
@@ -75,6 +77,14 @@ static int bufs_find(const char *path, int len)
 	return -1;
 }
 
+static const char *bufs_prepare_open(const char *path);
+
+static void bufs_touch(struct buf *buf)
+{
+	if (buf)
+		buf->lastused = ++xbufclock;
+}
+
 static void bufs_make_blank(int idx)
 {
 	bufs[idx].path = uc_dup("");
@@ -83,6 +93,7 @@ static void bufs_make_blank(int idx)
 	bufs[idx].row = 0;
 	bufs[idx].off = 0;
 	bufs[idx].top = 0;
+	bufs_touch(&bufs[idx]);
 	bufs[idx].mtime = -1;
 }
 
@@ -221,21 +232,22 @@ void bufs_switch(int idx)
 		ex_buf = &bufs[idx];
 	}
 	exbuf_load(ex_buf)
+	bufs_touch(ex_buf);
 }
 
 static int bufs_open(const char *path, int len)
 {
 	int i = xbufcur;
-	if (i <= xbufsmax - 1)
-		xbufcur++;
-	else
-		bufs_free(--i);
+	if (i >= xbufsmax)
+		return -1;
+	xbufcur++;
 	bufs[i].path = uc_dup(path);
 	bufs[i].lb = lbuf_make();
 	bufs[i].plen = len;
 	bufs[i].row = 0;
 	bufs[i].off = 0;
 	bufs[i].top = 0;
+	bufs_touch(&bufs[i]);
 	bufs[i].mtime = -1;
 	return i;
 }
@@ -249,6 +261,7 @@ void temp_open(int i, char *name)
 	tempbufs[i].row = 0;
 	tempbufs[i].off = 0;
 	tempbufs[i].top = 0;
+	bufs_touch(&tempbufs[i]);
 	tempbufs[i].mtime = -1;
 }
 
@@ -278,6 +291,7 @@ void temp_switch(int i, int swap)
 		ex_buf = &tempbufs[i];
 	}
 	exbuf_load(ex_buf)
+	bufs_touch(ex_buf);
 }
 
 void temp_write(int i, char *str)
@@ -468,7 +482,8 @@ static int ex_readfile(void)
 int ex_edit(const char *path, int len)
 {
 	char *stored;
-	int fd, ret;
+	const char *err;
+	int fd, ret, idx;
 	if (path[0] == '.' && path[1] == '/') {
 		path += 2;
 		len -= 2;
@@ -480,7 +495,17 @@ int ex_edit(const char *path, int len)
 		free(stored);
 		return 1;
 	}
-	bufs_switch(bufs_open(stored, len));
+	err = bufs_prepare_open(stored);
+	if (err) {
+		free(stored);
+		return -1;
+	}
+	idx = bufs_open(stored, len);
+	if (idx < 0) {
+		free(stored);
+		return -1;
+	}
+	bufs_switch(idx);
 	free(stored);
 	ret = ex_readfile();
 	if (ret <= 0)
@@ -492,7 +517,8 @@ static void *ec_edit(char *loc, char *cmd, char *arg)
 {
 	char msg[512];
 	char *stored;
-	int fd, len, rd = 0, cd = 0;
+	const char *err;
+	int fd, len, rd = 0, cd = 0, idx;
 	if (arg[0] == '.' && arg[1] == '/')
 		cd = 2;
 	len = strlen(arg+cd);
@@ -502,12 +528,18 @@ static void *ec_edit(char *loc, char *cmd, char *arg)
 		bufs_switchwft(fd)
 		free(stored);
 		return NULL;
-	} else if (xbufcur == xbufsmax && !strchr(cmd, '!') &&
-				bufs[xbufsmax - 1].lb->modified) {
-		free(stored);
-		return "last buffer modified";
 	} else if (len || !xbufcur || !strchr(cmd, '!')) {
-		bufs_switch(bufs_open(stored, len));
+		err = bufs_prepare_open(stored);
+		if (err) {
+			free(stored);
+			return (void*)err;
+		}
+		idx = bufs_open(stored, len);
+		if (idx < 0) {
+			free(stored);
+			return "buffer list full";
+		}
+		bufs_switch(idx);
 		cd = 3; /* XXX: quick hack to indicate new lbuf */
 	}
 	free(stored);
@@ -727,6 +759,97 @@ static struct buf *bufs_after_wipe(struct buf *p, int idx, int fallback,
 		return &bufs[pidx - 1];
 	return &bufs[pidx];
 }
+
+#ifdef NEXTVI_EMBEDDED
+static int bufs_protected(int idx)
+{
+	struct buf *p = &bufs[idx];
+	return p == ex_buf || p == ex_pbuf || p == ex_tpbuf;
+}
+
+static int bufs_saved_victim(void)
+{
+	int victim = -1;
+	unsigned long lastused = ULONG_MAX;
+	for (int i = 0; i < xbufcur; i++) {
+		if (bufs_protected(i) || bufs[i].lb->modified || !bufs[i].path[0])
+			continue;
+		if (bufs[i].lastused < lastused) {
+			lastused = bufs[i].lastused;
+			victim = i;
+		}
+	}
+	return victim;
+}
+
+static void bufs_evict_saved(int idx)
+{
+	int old_count = xbufcur;
+	bufs_free(idx);
+	for (int i = idx; i < xbufcur - 1; i++)
+		bufs[i] = bufs[i + 1];
+	xbufcur--;
+	ex_buf = bufs_after_wipe(ex_buf, idx, 0, old_count);
+	ex_pbuf = bufs_after_wipe(ex_pbuf, idx, 0, old_count);
+	ex_tpbuf = bufs_after_wipe(ex_tpbuf, idx, 0, old_count);
+}
+
+static int bufs_reclaim_one_saved(void)
+{
+	int idx = bufs_saved_victim();
+	if (idx < 0)
+		return 0;
+	bufs_evict_saved(idx);
+	return 1;
+}
+
+static void bufs_reclaim_until(size_t free_needed)
+{
+	while (typewrt_heap_free_bytes() < free_needed)
+		if (!bufs_reclaim_one_saved())
+			break;
+}
+
+static size_t ex_open_file_bytes(const char *path)
+{
+	struct stat st;
+	char *fspath = ex_pathresolve(path);
+	int ret = stat(fspath, &st);
+	free(fspath);
+	if (ret || !S_ISREG(st.st_mode) || st.st_size <= 0)
+		return 0;
+	return (size_t)st.st_size;
+}
+
+static const char *bufs_prepare_open(const char *path)
+{
+	size_t file_bytes = ex_open_file_bytes(path);
+	size_t free_needed = NEXTVI_OPEN_FREE_FLOOR;
+	size_t largest_needed = file_bytes ? file_bytes + 1 : 0;
+	if (file_bytes > (size_t)-1 - free_needed)
+		free_needed = (size_t)-1;
+	else
+		free_needed += file_bytes;
+	bufs_reclaim_until(free_needed);
+	while (largest_needed &&
+			typewrt_heap_largest_free_block() < largest_needed)
+		if (!bufs_reclaim_one_saved())
+			break;
+	if (xbufcur >= xbufsmax && !bufs_reclaim_one_saved())
+		return "no saved buffers to close";
+	if (typewrt_heap_free_bytes() < NEXTVI_OPEN_FREE_FLOOR)
+		return "not enough memory";
+	if (largest_needed && typewrt_heap_largest_free_block() < largest_needed)
+		return "not enough contiguous memory";
+	return NULL;
+}
+#else
+static const char *bufs_prepare_open(const char *path)
+{
+	(void)path;
+	return NULL;
+}
+#endif
 
 static void *ec_bufwipe(char *loc, char *cmd, char *arg)
 {

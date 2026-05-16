@@ -904,7 +904,9 @@ len = lbuf_s(path)->len; \
 path[len] = '\0'; \
 ret = ex_edit(path, len); \
 path[len] = '\n'; \
-if (ret && xrow) { \
+if (ret < 0) { \
+	*row = 0; *off = 0; \
+} else if (ret && xrow) { \
 	*row = xrow; *off = xoff; /* short circuit */ \
 	if (!vi_search('n', cnt, row, off, 0)) \
 		return 1; \
