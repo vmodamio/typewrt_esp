@@ -1946,14 +1946,18 @@ void vi(int init)
 				do_excmd:
 				if (k && ln[n])
 					ex_command(ln + n)
+				k = xredraw;
+				xredraw = 0;
+				if (k)
+					xmpt = 0;
 				vi_mod |= 1;
-				if (!xmpt)
+				if (!k && !xmpt)
 					vi_drawmsg(ln);
 				free(ln);
 				if (xquit) {
-					xmpt = xmpt ? xmpt : (xgrec > 1);
+					xmpt = k ? 0 : (xmpt ? xmpt : (xgrec > 1));
 					continue;
-				} else if (!xmpt)
+				} else if (!k && !xmpt)
 					xmpt = 1;
 				break;
 			case 'c':

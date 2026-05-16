@@ -406,6 +406,7 @@ extern int xgrp;
 extern int xpac;
 extern int xmpt;
 extern int xpr;
+extern int xredraw;
 extern int xlim;
 extern int xseq;
 extern int xerr;

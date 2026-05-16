@@ -8,6 +8,7 @@ int xgrp;			/* regex search group */
 int xpac;			/* print autocomplete options */
 int xmpt;			/* whether to prompt after printing > 1 lines in vi */
 int xpr;			/* ex_cprint register */
+int xredraw;			/* force a clean vi redraw after an ex command */
 int xlim = -1;			/* rendering cutoff for non cursor lines */
 int xseq = 1;			/* undo/redo sequence */
 int xerr = 1;			/* error handling -
@@ -755,6 +756,7 @@ static void *ec_bufwipe(char *loc, char *cmd, char *arg)
 		if (!current_temp) {
 			ex_buf = &bufs[0];
 			exbuf_load(ex_buf)
+			xredraw = 1;
 		}
 		return NULL;
 	}
@@ -772,6 +774,7 @@ static void *ec_bufwipe(char *loc, char *cmd, char *arg)
 	ex_tpbuf = bufs_after_wipe(ex_tpbuf, idx, fallback, old_count);
 	if (wiping_current) {
 		exbuf_load(ex_buf)
+		xredraw = 1;
 	}
 	return NULL;
 }
