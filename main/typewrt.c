@@ -1606,7 +1606,6 @@ static bool sdcard_init(void)
 #define PIN_KBD_OE 16
 #define PIN_KBD_LE 15
 
-#define SCANTIMEOUT 500    // in number of scans
 #define SCANPERIOD 1500  // us  Minimum response time (min debounce/denoise) is 8 consecutive periods.
 
 const volatile int KBD_IO[IOSIZE] = {PIN_KBD_IO0, PIN_KBD_IO1, PIN_KBD_IO2, PIN_KBD_IO3, 
@@ -1620,7 +1619,6 @@ esp_timer_handle_t KBD_SCAN_TIMER;
 volatile uint8_t KBD_COLS[IOSIZE];     // here uint8_t assuming 8 rows.
 volatile uint8_t KBD_COLFLAGS[IOSIZE];  // this is keeping the flag for scanning
 volatile uint8_t KBD_BUFFER[ (IOSIZE * IOSIZE) ]; // keeps the status of the keyboard
-volatile int KBD_SCANCOUNT;
 volatile bool KBD_NOKEY = true;   // wether no keys are pressed
 
 static inline IRAM_ATTR void cycle(uint32_t cycles) {
@@ -1712,7 +1710,6 @@ static void typewrt_light_sleep_if_idle(void)
     }
 
     if (!typewrt_light_sleep_allowed()) {
-        KBD_SCANCOUNT = SCANTIMEOUT;
         ESP_ERROR_CHECK(esp_timer_start_periodic(KBD_SCAN_TIMER, SCANPERIOD));
         return;
     }
@@ -1730,7 +1727,6 @@ static void typewrt_light_sleep_if_idle(void)
     refreshSplashStatusClock();
     typewrt_battery_monitor_check(false);
 
-    KBD_SCANCOUNT = SCANTIMEOUT;
     ESP_ERROR_CHECK(esp_timer_start_periodic(KBD_SCAN_TIMER, SCANPERIOD));
 #endif
 }
@@ -1743,73 +1739,64 @@ static IRAM_ATTR void kbd_scan(void* arg)
     int row = -1;
     uint8_t key_event = 0;
 
-    //ESP_LOGI(TAG, "-------------------  Matrix Scan Start ---------- ct: %d", KBD_SCANCOUNT);
+    //ESP_LOGI(TAG, "-------------------  Matrix Scan Start ----------");
 
-    if (KBD_SCANCOUNT) {
-      KBD_NOKEY = true;
-      for (row = 0 ; row < IOSIZE ; row++) {
-          GPIO.out_w1ts = (1UL << KBD_OE); // set OE high (active low)
+    KBD_NOKEY = true;
+    for (row = 0 ; row < IOSIZE ; row++) {
+        GPIO.out_w1ts = (1UL << KBD_OE); // set OE high (active low)
 	  cycle(16);
-          GPIO.out_w1tc = KBD_IO_MASK;  
-          GPIO.enable_w1ts = KBD_IO_MASK;  // set gpios to output
+        GPIO.out_w1tc = KBD_IO_MASK;  
+        GPIO.enable_w1ts = KBD_IO_MASK;  // set gpios to output
 	  cycle(32);
 	  // set all rows high but one 
-          GPIO.out_w1ts = KBD_IO_MASK;  
-          GPIO.out_w1tc = (1UL<< KBD_IO[row]);  
+        GPIO.out_w1ts = KBD_IO_MASK;  
+        GPIO.out_w1tc = (1UL<< KBD_IO[row]);  
 	  cycle(16);
-          GPIO.out_w1ts = (1UL << KBD_LE); // set LE high to transfer to OUTPUT (D->Q)
+        GPIO.out_w1ts = (1UL << KBD_LE); // set LE high to transfer to OUTPUT (D->Q)
 	  cycle(32);
-          GPIO.out_w1tc = (1UL << KBD_LE); // set LE low to latch
+        GPIO.out_w1tc = (1UL << KBD_LE); // set LE low to latch
 	  cycle(8);
-          GPIO.out_w1ts = KBD_IO_MASK;  // set all pins to high (for cols)
+        GPIO.out_w1ts = KBD_IO_MASK;  // set all pins to high (for cols)
 	  cycle(16);
-          GPIO.enable_w1tc = KBD_IO_MASK;  // set gpios to input (they are pulled up anyhow)
+        GPIO.enable_w1tc = KBD_IO_MASK;  // set gpios to input (they are pulled up anyhow)
 	  cycle(32);
-          GPIO.out_w1tc = (1UL << KBD_OE); // set OE low to enable output
+        GPIO.out_w1tc = (1UL << KBD_OE); // set OE low to enable output
 	  cycle(16);
 
-          uint32_t cols_read = GPIO.in; // read cols 
-          uint32_t cols_in = 0;
+        uint32_t cols_read = GPIO.in; // read cols 
+        uint32_t cols_in = 0;
 	  cols_read &= KBD_IO_MASK;
 	  for (int k=0; k< IOSIZE; k++) {
 	      cols_in |=  (((cols_read  >> KBD_IO[k]) & 1 ) << k);
 	  }
-          KBD_COLFLAGS[row] |= ( cols_in ^ (KBD_COLS[row]) );
-          uint8_t scan = KBD_COLFLAGS[row];
-          while (scan) {
-              col = __builtin_ffs(scan) -1;
-              KBD_BUFFER[(IOSIZE*row + col)] = ((KBD_BUFFER[(IOSIZE*row + col)]) << 1 ) | ((cols_in >> col) & 1);
-              if (((KBD_BUFFER[(IOSIZE*row + col)]) == 0x00 ) && (KBD_COLS[row] & (1 << col))) {
+        KBD_COLFLAGS[row] |= ( cols_in ^ (KBD_COLS[row]) );
+        uint8_t scan = KBD_COLFLAGS[row];
+        while (scan) {
+            col = __builtin_ffs(scan) -1;
+            KBD_BUFFER[(IOSIZE*row + col)] = ((KBD_BUFFER[(IOSIZE*row + col)]) << 1 ) | ((cols_in >> col) & 1);
+            if (((KBD_BUFFER[(IOSIZE*row + col)]) == 0x00 ) && (KBD_COLS[row] & (1 << col))) {
                 KBD_COLS[row] &= ~( 1  << col);
                 //KBD_BUFFER[(IOSIZE*row + col)] = 0xFF; 
-          	KBD_SCANCOUNT = SCANTIMEOUT;
                 //ESP_LOGI(TAG, "Key  PRESSED  %d", (IOSIZE*row + col));
                 //const char* kkk = "key event from ESP32s3\n";
                 //uart_write_bytes(2, (const char *)kkk , strlen(kkk));
 		key_event = KBDMAP[(IOSIZE*row + col)] | KEYDOWN_MASK;
                 xQueueSend( keyboard , &key_event , 0);
-          	KBD_COLFLAGS[row] &= (~(1 << col) & ((1<< IOSIZE) -1));
-              }
-              if (((KBD_BUFFER[(IOSIZE*row + col)]) == 0xFF ) && !(KBD_COLS[row] & (1 << col)) ) {
+                KBD_COLFLAGS[row] &= (~(1 << col) & ((1<< IOSIZE) -1));
+            }
+            if (((KBD_BUFFER[(IOSIZE*row + col)]) == 0xFF ) && !(KBD_COLS[row] & (1 << col)) ) {
                 KBD_COLS[row] |= ( 1  << col);
                 //KBD_BUFFER[(IOSIZE*row + col)] = 0x00; 
-          	KBD_SCANCOUNT = SCANTIMEOUT;
                 //ESP_LOGI(TAG, "Key RELEASED  %d", (IOSIZE*row + col));
                 //const char* kkk = "key event from ESP32s3\n";
                 //uart_write_bytes(2, (const char *)kkk , strlen(kkk));
 		key_event = KBDMAP[(IOSIZE*row + col)];
                 xQueueSend( keyboard , &key_event , 0);
-          	KBD_COLFLAGS[row] &= (~(1 << col) & ((1<< IOSIZE) -1));
-              }
-              scan &= (scan - 1);  // clears the lowest set bit
-          }
-          if ((~KBD_COLS[row]) & ((1UL << IOSIZE) -1)) KBD_NOKEY = false;
-      }
-      if (KBD_NOKEY) KBD_SCANCOUNT--;
-    }
-    else {
-      // Sleep is managed from the keyboard read task, where queue idleness is visible.
-      KBD_SCANCOUNT = SCANTIMEOUT;
+                KBD_COLFLAGS[row] &= (~(1 << col) & ((1<< IOSIZE) -1));
+            }
+            scan &= (scan - 1);  // clears the lowest set bit
+        }
+        if ((~KBD_COLS[row]) & ((1UL << IOSIZE) -1)) KBD_NOKEY = false;
     }
 }
 
@@ -1881,7 +1868,6 @@ void kbd_start()
     esp_sleep_enable_gpio_wakeup();
 #endif
 
-    KBD_SCANCOUNT = SCANTIMEOUT;
     ESP_ERROR_CHECK(esp_timer_start_periodic(KBD_SCAN_TIMER, SCANPERIOD));
 
 }
