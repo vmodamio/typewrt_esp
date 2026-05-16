@@ -2325,7 +2325,8 @@ void vi(int init)
 			vc_status(vi_tsm);
 		}
 #endif
-		term_cursor(1);
+		if (!vi_backspace_reenter)
+			term_cursor(1);
 		term_pos(xrow - xtop, n);
 		term_commit();
 		xb->useq += xseq;
