@@ -23,7 +23,7 @@ static unsigned char kq[128];
 static unsigned int kq_r, kq_w;
 static int key_shift, key_ctrl, key_alt, key_win, key_caps;
 
-/* Aligned with the compact key codes produced by KBDMAP in keyboard_input.h. */
+/* Aligned with the compact key codes produced by KBDMAP in typewrt_keymap.h. */
 static const unsigned char key_normal[64] = {
 	0, TK_ESC, '1', '2', '3', '4', '5', '6',
 	'7', '8', '9', '0', '-', '=', 127, '\t',
