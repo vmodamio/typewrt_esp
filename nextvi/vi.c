@@ -1766,8 +1766,26 @@ void vi(int init)
 				term_push(buf, strlen(ln)+3);
 				break; }
 			case TK_CTL('n'):
+			{
+				int idx, target;
+				if (xbufcur <= 0)
+					break;
 				vi_cndir = vi_arg ? -vi_cndir : vi_cndir;
-				vi_arg = ex_buf - bufs + vi_cndir;
+				if (ex_buf < bufs || ex_buf >= bufs + xbufcur)
+					vi_arg = -1;
+				else {
+					idx = ex_buf - bufs;
+					target = idx + vi_cndir;
+					if (target >= xbufcur)
+						target = 0;
+					if (target >= 0) {
+						vi_arg = target;
+						goto switchbuf;
+					}
+					vi_arg = -1;
+				}
+			}
+			/* fall through */
 			case TK_CTL('_'):	/* this is also ^7 on some systems */
 				if (vi_arg > 0)
 					goto switchbuf;
@@ -1820,12 +1838,14 @@ void vi(int init)
 				}
 				vc_status(vi_tsm);
 				break;
-				case TK_CTL('^'):
+			case TK_CTL('^'):
+				if (ex_pbuf >= bufs && ex_pbuf < bufs + xbufcur) {
 					bufs_switchwft(ex_pbuf - bufs)
 					vc_status(0);
 					vi_mod |= 1;
-					break;
-				case TK_CTL('k'):;
+				}
+				break;
+			case TK_CTL('k'):;
 					static struct lbuf *writexb;
 					if ((cs = ex_exec("w")) && writexb && xb == writexb)
 						cs = ex_exec("mpt0:w!");

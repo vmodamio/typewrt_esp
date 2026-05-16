@@ -133,6 +133,20 @@ static void noterm_clear_line(int row, int col)
 	noterm_dirty(row);
 }
 
+static void noterm_scroll_up(int first, int last)
+{
+	first = MAX(0, first);
+	last = MIN(last, NEXTVI_DISPLAY_ROWS);
+	if (first > last)
+		return;
+	for (int r = first; r < last; r++) {
+		memcpy(term_screen[r], term_screen[r + 1], sizeof(term_screen[r]));
+		memcpy(term_attrs[r], term_attrs[r + 1], NEXTVI_DISPLAY_COLS + 1);
+		noterm_dirty(r);
+	}
+	noterm_clear_line(last, 0);
+}
+
 static void noterm_room(int n)
 {
 	int count = abs(n);
@@ -188,7 +202,10 @@ static void noterm_put(int ch)
 		return;
 	}
 	if (ch == '\n') {
-		term_row = MIN(term_row + 1, NEXTVI_DISPLAY_ROWS);
+		if (term_row >= NEXTVI_DISPLAY_ROWS)
+			noterm_scroll_up(0, NEXTVI_DISPLAY_ROWS);
+		else
+			term_row++;
 		term_col = 0;
 		return;
 	}
@@ -317,6 +334,26 @@ static int noterm_alt_keymap(int ch)
 	}
 }
 
+static int noterm_ctrl_key(int ch)
+{
+	if (ch >= 'a' && ch <= 'z')
+		return TK_CTL(ch);
+	if (ch >= 'A' && ch <= 'Z')
+		return TK_CTL(ch);
+	switch (ch) {
+	case '[': return TK_CTL('[');
+	case '\\': return TK_CTL('\\');
+	case ']': return TK_CTL(']');
+	case '6':
+	case '^': return TK_CTL('^');
+	case '-':
+	case '7':
+	case '/':
+	case '_': return TK_CTL('_');
+	default: return 0;
+	}
+}
+
 static int noterm_key_event_timeout(int timeout_ms)
 {
 	unsigned char ev, code, ch;
@@ -333,10 +370,8 @@ static int noterm_key_event_timeout(int timeout_ms)
 		code = ev & NEXTVI_KEY_CODE_MASK;
 		ch = (key_shift ^ (key_caps && key_normal[code] >= 'a' &&
 			key_normal[code] <= 'z')) ? key_shifted[code] : key_normal[code];
-		if (key_ctrl && ch >= 'a' && ch <= 'z')
-			ch = TK_CTL(ch);
-		else if (key_ctrl && ch >= 'A' && ch <= 'Z')
-			ch = ((ch - 'A') + 'a') & 037;
+		if (key_ctrl)
+			ch = noterm_ctrl_key(ch);
 		if (key_alt && (kmap = noterm_alt_keymap(ch)) >= 0) {
 			xkmap = kmap;
 			if (kmap)

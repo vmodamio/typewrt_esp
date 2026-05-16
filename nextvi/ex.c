@@ -1071,8 +1071,10 @@ void ex_cprint(char *line, int r, int c, int left, int flg)
 		return;
 	}
 	if (flg && !(xvis & 2)) {
-		term_pos(xrows, 0);
-		if ((!xpln && xmpt > 0) || flg == 2)
+		int nl = (!xpln && xmpt > 0) || flg == 2;
+		if (!nl || xmpt <= 0)
+			term_pos(xrows, 0);
+		if (nl)
 			term_chr('\n');
 		xmpt += xmpt >= 0 && flg == 1;
 	}
