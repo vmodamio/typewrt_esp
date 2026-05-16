@@ -33,10 +33,12 @@ static int markidx(int mark)
 		return 'z' - 'a' + 1;
 	if (mark == '*')
 		return 'z' - 'a' + 2;
-	if (mark == '[')
+	if (mark == '^')
 		return 'z' - 'a' + 3;
-	if (mark == ']')
+	if (mark == '[')
 		return 'z' - 'a' + 4;
+	if (mark == ']')
+		return 'z' - 'a' + 5;
 	if (islower(mark))
 		return mark - 'a';
 	return -1;

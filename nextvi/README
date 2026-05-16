@@ -68,11 +68,12 @@ VI NORMAL
                    Move # characters backward, multi-line
      %             Move to closest <] ) } [ ( {> pair
      {#}%          Move to # percent line number
-     '{a-z ` ' [] *}
+     '{a-z ` ' [] * ^}
                    Move to a line mark
-     `{a-z ` ' [] *}
+     `{a-z ` ' [] * ^}
                    Move to a line mark with cursor position
      gg            Goto first line in buffer
+     gi            Goto last insert position and enter insert mode
      [#]G          Move to last line in buffer or # line
      H             Move to highest line on a screen
      L             Move to lowest line on a screen

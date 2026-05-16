@@ -1516,6 +1516,7 @@ static int vc_insert(int cmd)
 		lbuf_edit(xb, sb->s, row, row + !cmdo, off, xoff);
 		vi_hardwrap_range(row, lines);
 	}
+	lbuf_mark(xb, '^', xrow, xoff);
 	free(sb->s);
 	vi_insert_screen_leave();
 	return key;
@@ -2102,6 +2103,12 @@ void vi(int init)
 				else if (k == 'a') {
 					vi_tsm = 1;
 					goto status;
+				} else if (k == 'i') {
+					if (!lbuf_jump(xb, '^', &xrow, &xoff)) {
+						c = 'i';
+						k = vc_insert(c);
+						goto ins;
+					}
 				} else if (k == 'w') {
 					preserve(int, xgrp, xgrp = 2;)
 					preserve(int, xvis, xvis = 1;)
