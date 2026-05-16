@@ -1519,8 +1519,13 @@ static void *ec_setdir(char *loc, char *cmd, char *arg)
 static void *ec_chdir(char *loc, char *cmd, char *arg)
 {
 #ifdef NEXTVI_EMBEDDED
-	char *path = ex_pathresolve(*arg ? arg : NEXTVI_FS_ROOT);
+	char *path;
 	struct stat st;
+	if (!*arg) {
+		ex_print(ex_vcwd)
+		return NULL;
+	}
+	path = ex_pathresolve(arg);
 	if (stat(path, &st) || !S_ISDIR(st.st_mode)) {
 		free(path);
 		return "chdir error";
@@ -1548,9 +1553,13 @@ static void *ec_chdir(char *loc, char *cmd, char *arg)
 	if (!getcwd(oldpath, sizeof(oldpath)))
 		if ((opath = getenv("PWD")))
 			strncpy(oldpath, opath, sizeof(oldpath)-1);
+	if (!*arg) {
+		ex_print(oldpath)
+		return NULL;
+	}
 	plen = strlen(oldpath);
 	i = plen == sizeof(oldpath)-1;
-	if (chdir(*arg ? arg : oldpath))
+	if (chdir(arg))
 		return "chdir error";
 	if (!getcwd(newpath, sizeof(newpath)))
 		return "getcwd error";

@@ -761,8 +761,7 @@ EX COMMANDS
      cd[path]
              Set a working directory
 
-             No argument relinks the current directory in case it got removed
-             or unmounted.
+             No argument prints the current working directory.
 
              Currently open buffers' file paths will be automatically adjusted
              to reflect a newly set working directory.
