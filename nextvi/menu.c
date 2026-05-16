@@ -1264,7 +1264,8 @@ static int menu_command(menu_state *m, char *cmdline)
 		return 0;
 	}
 	if (!strcmp(cmd, "off")) {
-		typewrt_power_off();
+		if (!typewrt_power_off())
+			menu_set_message(m, "power off failed: sd card busy");
 		return 0;
 	}
 	menu_set_message(m, "unknown menu command");
@@ -1360,7 +1361,8 @@ int nextvi_menu_run(void)
 			menu_load(&m);
 			break;
 		case 'P':
-			typewrt_power_off();
+			if (!typewrt_power_off())
+				menu_set_message(&m, "power off failed: sd card busy");
 			break;
 		case ':':
 			if (menu_prompt(&m, ":", cmd, sizeof(cmd)) &&

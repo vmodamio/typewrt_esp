@@ -45,6 +45,8 @@
 #define TYPEWRT_BLE_NOTIFY_SETTLE_MS 1
 #define TYPEWRT_BLE_DISCONNECT_DELAY_MS 120
 #define TYPEWRT_BLE_SHUTDOWN_DELAY_MS 350
+#define TYPEWRT_BLE_POWEROFF_WAIT_MS 2000
+#define TYPEWRT_BLE_POWEROFF_POLL_MS 20
 #define TYPEWRT_BLE_SHUTDOWN_STACK 3072
 #define TYPEWRT_BLE_SHUTDOWN_PRIO 3
 #define TYPEWRT_BLE_TRANSFER_STACK 4096
@@ -550,6 +552,33 @@ static void typewrt_ble_tune_connection(uint16_t conn_handle)
 void typewrt_ble_stop(void)
 {
     typewrt_ble_stop_transport(true);
+}
+
+bool typewrt_ble_prepare_poweroff(void)
+{
+    TickType_t start = xTaskGetTickCount();
+    TickType_t timeout = pdMS_TO_TICKS(TYPEWRT_BLE_POWEROFF_WAIT_MS);
+    TickType_t poll = pdMS_TO_TICKS(TYPEWRT_BLE_POWEROFF_POLL_MS);
+
+    typewrt_ble_stop_transport(true);
+    if (!poll) {
+        poll = 1;
+    }
+    for (;;) {
+        bool active;
+
+        typewrt_ble_lock();
+        active = ble_transfer_task_handle != NULL;
+        typewrt_ble_unlock();
+        if (!active) {
+            return true;
+        }
+        if (xTaskGetTickCount() - start >= timeout) {
+            ESP_LOGW(TAG, "Timed out waiting for BLE transfer to stop");
+            return false;
+        }
+        vTaskDelay(poll);
+    }
 }
 
 static size_t typewrt_ble_notify_chunk_size(void)

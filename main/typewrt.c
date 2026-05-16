@@ -58,6 +58,7 @@
 #include "keyboard_input.h"
 #include "typewrt_splash.h"
 #include "typewrt_power.h"
+#include "typewrt_ble.h"
 #undef MIN
 #undef MAX
 #include "vi.h"
@@ -116,6 +117,8 @@
 #define TYPEWRT_BATTERY_WARN_LOW_PULSES 3
 #define TYPEWRT_BATTERY_WARN_CRIT_TOGGLE_US 100000
 #define TYPEWRT_BATTERY_WARN_CRIT_DURATION_US 2000000
+#define TYPEWRT_POWEROFF_SD_WAIT_MS 3000
+#define TYPEWRT_POWEROFF_SD_POLL_MS 20
 #define TYPEWRT_REFRESH_FULL_DISPLAY 0
 #define TYPEWRT_SD_MOUNT_POINT "/sdcard"
 #define TYPEWRT_RTC_I2C_PORT I2C_NUM_0
@@ -2209,6 +2212,44 @@ void typewrt_sd_write_end(void)
     }
 }
 
+static bool typewrt_sd_writes_idle(TickType_t timeout_ticks)
+{
+    TickType_t start = xTaskGetTickCount();
+    TickType_t poll = pdMS_TO_TICKS(TYPEWRT_POWEROFF_SD_POLL_MS);
+
+    if (!poll) {
+        poll = 1;
+    }
+    while (__atomic_load_n(&typewrt_sd_write_locks,
+            __ATOMIC_RELAXED) != 0) {
+        if (xTaskGetTickCount() - start >= timeout_ticks) {
+            ESP_LOGW(TAG, "Timed out waiting for SD writes to finish");
+            return false;
+        }
+        vTaskDelay(poll);
+    }
+    return true;
+}
+
+static bool typewrt_sdcard_unmount_for_poweroff(void)
+{
+    esp_err_t ret;
+
+    if (!sd_card_mounted) {
+        return true;
+    }
+    ret = esp_vfs_fat_sdcard_unmount(TYPEWRT_SD_MOUNT_POINT, sd_card);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to unmount SD card before power off: %s",
+            esp_err_to_name(ret));
+        return false;
+    }
+    sd_card_mounted = false;
+    sd_card = NULL;
+    ESP_LOGI(TAG, "SD card unmounted for power off");
+    return true;
+}
+
 static uint64_t typewrt_battery_check_interval_us(uint32_t soc_tenths)
 {
     if (soc_tenths >= 500) {
@@ -2352,9 +2393,17 @@ static void typewrt_power_domain_pins_high_z(void)
     gpio_config(&io_conf);
 }
 
-void typewrt_power_off(void)
+bool typewrt_power_off(void)
 {
     typewrt_sleep_lock();
+
+    if (!typewrt_ble_prepare_poweroff() ||
+            !typewrt_sd_writes_idle(pdMS_TO_TICKS(TYPEWRT_POWEROFF_SD_WAIT_MS)) ||
+            !typewrt_sdcard_unmount_for_poweroff()) {
+        typewrt_sleep_unlock();
+        return false;
+    }
+
     if (splash_clock_timer) {
         (void)esp_timer_stop(splash_clock_timer);
     }
@@ -2381,6 +2430,7 @@ void typewrt_power_off(void)
     gpio_deep_sleep_hold_en();
 
     esp_deep_sleep_start();
+    return true;
 }
 
 static void power_mng_init(void)

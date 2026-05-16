@@ -11,4 +11,4 @@ void typewrt_sleep_set_ui_wakeup_us(uint64_t delay_us);
 void typewrt_sd_write_begin(void);
 void typewrt_sd_write_end(void);
 bool typewrt_usb_power_present(void);
-void typewrt_power_off(void);
+bool typewrt_power_off(void);

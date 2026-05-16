@@ -9,3 +9,4 @@ const char *typewrt_ble_receive_dir(const char *dir);
 void typewrt_ble_get_status(char *out, size_t out_len);
 unsigned typewrt_ble_status_generation(void);
 void typewrt_ble_stop(void);
+bool typewrt_ble_prepare_poweroff(void);

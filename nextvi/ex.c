@@ -1636,8 +1636,7 @@ static void *ec_off(char *loc, char *cmd, char *arg)
 	(void)loc;
 	(void)cmd;
 	(void)arg;
-	typewrt_power_off();
-	return NULL;
+	return typewrt_power_off() ? NULL : "power off failed: sd card busy";
 #else
 	return "unsupported command";
 #endif
