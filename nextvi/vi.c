@@ -54,6 +54,7 @@ static int vi_nlmode;			/* new line mode for vi regions */
 static int vi_visual;			/* visual mode */
 static int vi_vrow;			/* visual selection anchor row */
 static int vi_voff;			/* visual selection anchor offset */
+static int vi_defer_status = -1;	/* status line to draw after full redraw */
 #ifdef NEXTVI_NOTERM
 static int vi_insert_saved_xrows;	/* editor rows before hiding status */
 static int vi_insert_status_dirty;	/* status row needs repaint after insert */
@@ -973,6 +974,11 @@ static void vc_status(int type)
 	vi_drawmsg_mpt(vi_msg)
 }
 
+static void vc_status_defer(int type)
+{
+	vi_defer_status = type;
+}
+
 /* read a motion */
 static int vi_motion(int vc, int *row, int *off)
 {
@@ -1159,7 +1165,7 @@ static int vi_motion(int vc, int *row, int *off)
 		bsync_ret:
 		for (i = xbufcur-1; i >= 0 && bufs[i].mtime == -1; i--)
 			ex_bufpostfix(&bufs[i], 1);
-		vc_status(0);
+		vc_status_defer(0);
 		xtop = MAX(0, *row - xrows / 2);
 		vi_mod |= 1;
 		break;
@@ -1795,7 +1801,7 @@ void vi(int init)
 				if (vi_arg > -1 && vi_arg < xbufcur) {
 					switchbuf:
 					bufs_switchwft(vi_arg < xbufcur ? vi_arg : 0)
-					vc_status(0);
+					vc_status_defer(0);
 				}
 				vi_mod |= 1;
 				break;
@@ -1841,7 +1847,7 @@ void vi(int init)
 			case TK_CTL('^'):
 				if (ex_pbuf >= bufs && ex_pbuf < bufs + xbufcur) {
 					bufs_switchwft(ex_pbuf - bufs)
-					vc_status(0);
+					vc_status_defer(0);
 					vi_mod |= 1;
 				}
 				break;
@@ -2294,6 +2300,13 @@ void vi(int init)
 			vi_drawupdate(otop - xtop);
 		if (vi_mod & 2 && !(vi_mod & 1))
 			vi_drawrow(xrow);
+		if (vi_defer_status >= 0) {
+			k = vi_defer_status;
+			vi_defer_status = -1;
+			vc_status(k);
+			if (vi_status && xmpt > 0)
+				xmpt = 0;
+		}
 		if (vi_status && xmpt < 1) {
 			xrows -= term_resized != vi_status;
 			vi_status = term_resized;
