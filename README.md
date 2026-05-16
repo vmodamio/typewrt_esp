@@ -104,6 +104,7 @@ Normal menu keys:
 | `c` | Copy selected file |
 | `R` | Refresh listing |
 | `P` | Power off |
+| `/` | Search the current listing by name |
 | `:` | Open menu command prompt |
 | `q` | Return to the current editor buffer |
 

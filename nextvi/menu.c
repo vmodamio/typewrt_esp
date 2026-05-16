@@ -810,6 +810,56 @@ static menu_entry *menu_selected(menu_state *m)
 	return &m->entry[m->cursor];
 }
 
+static int menu_name_contains(const char *name, const char *needle)
+{
+	int nlen;
+
+	if (!needle || !*needle)
+		return 1;
+	if (!name)
+		return 0;
+	nlen = strlen(needle);
+	for (int i = 0; name[i]; i++) {
+		int j = 0;
+		while (j < nlen && name[i + j] &&
+				tolower((unsigned char)name[i + j]) ==
+				tolower((unsigned char)needle[j]))
+			j++;
+		if (j == nlen)
+			return 1;
+	}
+	return 0;
+}
+
+static void menu_search(menu_state *m)
+{
+	char query[80];
+	int start;
+
+	if (!menu_prompt(m, "/", query, sizeof(query)))
+		return;
+	if (!*query) {
+		menu_set_message(m, "search cancelled");
+		return;
+	}
+	if (!m->count) {
+		menu_set_message(m, "empty");
+		return;
+	}
+	start = m->cursor;
+	for (int pass = 0; pass < m->count; pass++) {
+		int idx = (start + 1 + pass) % m->count;
+		if (!strcmp(m->entry[idx].name, ".."))
+			continue;
+		if (menu_name_contains(m->entry[idx].name, query)) {
+			m->cursor = idx;
+			menu_fit_cursor(m);
+			return;
+		}
+	}
+	menu_set_message(m, "not found");
+}
+
 static int menu_change_dir(menu_state *m, const char *path)
 {
 	const char *arg = path && *path ? path : MENU_FS_ROOT;
@@ -1317,6 +1367,9 @@ int nextvi_menu_run(void)
 					menu_command(&m, cmd)) {
 				return menu_finish(&m, 1);
 			}
+			break;
+		case '/':
+			menu_search(&m);
 			break;
 		case 'q':
 			return menu_finish(&m, 1);
