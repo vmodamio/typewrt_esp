@@ -110,6 +110,190 @@ static void vi_drawmsg(char *msg)
 }
 #define vi_drawmsg_mpt(msg) { vi_drawmsg(msg); if (!xmpt) xmpt = 1; }
 
+static int vi_scycle_valid;
+static int vi_scycle_done;
+static int vi_scycle_dir;
+static int vi_scycle_kwdcnt;
+static int vi_scycle_total;
+static int vi_scycle_steps;
+static int vi_scycle_row;
+static int vi_scycle_off;
+static int vi_scycle_currow;
+static int vi_scycle_curoff;
+
+static void vi_msg_right(char *msg, int msg_len, const char *right)
+{
+	char out[512];
+	int width = MIN(xcols > 0 ? xcols : 80, msg_len - 1);
+	int rlen, mlen, left_cols;
+
+	if (!right || !*right || width <= 0)
+		return;
+	rlen = strlen(right);
+	if (rlen >= width || width >= (int)sizeof(out))
+		return;
+	mlen = strlen(msg);
+	left_cols = width - rlen - 1;
+	if (mlen > left_cols)
+		mlen = left_cols;
+	memset(out, ' ', width);
+	out[width] = '\0';
+	if (mlen > 0)
+		memcpy(out, msg, mlen);
+	memcpy(out + width - rlen, right, rlen);
+	snprintf(msg, msg_len, "%s", out);
+}
+
+static int vi_search_count_at(int row, int off, int *idx, int *total)
+{
+	if (!xkwdrs || !lbuf_len(xb))
+		return 0;
+	*idx = 0;
+	*total = 0;
+	for (int r = 0; r < lbuf_len(xb); r++) {
+		char *s = lbuf_get(xb, r);
+		int offs[xkwdrs->nsubc], boff = 0, flg = REG_NEWLINE;
+		if (!s)
+			continue;
+		while (rset_find(xkwdrs, s + boff, offs, flg) >= 0) {
+			int g1 = offs[xgrp], g2 = offs[xgrp + 1];
+			flg |= REG_NOTBOL;
+			if (g1 < 0) {
+				boff += offs[1] > 0 ? offs[1] : 1;
+				continue;
+			}
+			int moff = uc_off(s, boff + g1);
+			(*total)++;
+			if (r < row || (r == row && moff <= off))
+				*idx = *total;
+			boff += g2 > 0 ? g2 : 1;
+		}
+	}
+	if (*total && !*idx)
+		*idx = 1;
+	return *total > 0;
+}
+
+static int vi_search_exact_at(int row, int off, int *idx, int *total)
+{
+	int exact = 0;
+
+	if (!xkwdrs || !lbuf_len(xb))
+		return 0;
+	*idx = 0;
+	*total = 0;
+	for (int r = 0; r < lbuf_len(xb); r++) {
+		char *s = lbuf_get(xb, r);
+		int offs[xkwdrs->nsubc], boff = 0, flg = REG_NEWLINE;
+		if (!s)
+			continue;
+		while (rset_find(xkwdrs, s + boff, offs, flg) >= 0) {
+			int g1 = offs[xgrp], g2 = offs[xgrp + 1];
+			flg |= REG_NOTBOL;
+			if (g1 < 0) {
+				boff += offs[1] > 0 ? offs[1] : 1;
+				continue;
+			}
+			int moff = uc_off(s, boff + g1);
+			(*total)++;
+			if (r == row && moff == off) {
+				*idx = *total;
+				exact = 1;
+			}
+			boff += g2 > 0 ? g2 : 1;
+		}
+	}
+	return exact;
+}
+
+static void vi_search_counter(char *out, int out_len, int row, int off)
+{
+	int idx, total;
+
+	out[0] = '\0';
+	if (vi_search_count_at(row, off, &idx, &total)) {
+		if (vi_scycle_done && vi_scycle_kwdcnt == xkwdcnt &&
+				row == vi_scycle_row && off == vi_scycle_off)
+			snprintf(out, out_len, "%d/+", idx);
+		else
+			snprintf(out, out_len, "%d/%d", idx, total);
+	}
+}
+
+static void vi_draw_search_status(int row, int off)
+{
+	char msg[512], counter[32];
+	const char *pat = xregs['/'] ? xregs['/']->s : "";
+
+	snprintf(msg, sizeof(msg), "%c%s", xkwddir < 0 ? '?' : '/', pat);
+	vi_search_counter(counter, sizeof(counter), row, off);
+	vi_msg_right(msg, sizeof(msg), counter);
+	vi_drawmsg_mpt(msg)
+}
+
+static int vi_lbuf_search_wrap(int dir, int pskip, int *row, int *off)
+{
+	int sdir = dir < 0 ? -1 : 1;
+
+	if (!lbuf_search(xb, xkwdrs, sdir, 0, lbuf_len(xb),
+			pskip, 1, row, off))
+		return 0;
+	if (sdir > 0) {
+		*row = 0;
+		*off = 0;
+	} else {
+		*row = lbuf_len(xb) - 1;
+		*off = lbuf_eol(xb, *row, 1) + 1;
+	}
+	return lbuf_search(xb, xkwdrs, sdir, 0, lbuf_len(xb),
+			-1, 1, row, off);
+}
+
+static void vi_search_cycle_clear(void)
+{
+	vi_scycle_valid = 0;
+	vi_scycle_done = 0;
+}
+
+static void vi_search_cycle_begin(int dir, int row, int off, int total)
+{
+	vi_scycle_valid = 1;
+	vi_scycle_done = 0;
+	vi_scycle_dir = dir < 0 ? -1 : 1;
+	vi_scycle_kwdcnt = xkwdcnt;
+	vi_scycle_total = total;
+	vi_scycle_steps = 0;
+	vi_scycle_row = row;
+	vi_scycle_off = off;
+	vi_scycle_currow = row;
+	vi_scycle_curoff = off;
+}
+
+static int vi_search_cycle_current(int dir, int row, int off)
+{
+	return vi_scycle_valid && vi_scycle_kwdcnt == xkwdcnt &&
+		vi_scycle_dir == (dir < 0 ? -1 : 1) &&
+		vi_scycle_currow == row && vi_scycle_curoff == off;
+}
+
+static void vi_search_cycle_step(int *row, int *off, int total)
+{
+	if (total != vi_scycle_total) {
+		vi_search_cycle_begin(vi_scycle_dir, *row, *off, total);
+		return;
+	}
+	vi_scycle_steps++;
+	vi_scycle_currow = *row;
+	vi_scycle_curoff = *off;
+	if (vi_scycle_steps >= vi_scycle_total) {
+		vi_scycle_done = 1;
+		*row = vi_scycle_row;
+		*off = vi_scycle_off;
+		vi_scycle_currow = *row;
+		vi_scycle_curoff = *off;
+	}
+}
+
 static int vi_nextcol(char *ln, int dir, int *off)
 {
 	int o = ren_off(ln, ren_next(ln, ren_pos(ln, *off), dir));
@@ -500,9 +684,10 @@ static int vi_linecount(char *s)
 
 static int vi_search(int cmd, int cnt, int *row, int *off, int msg)
 {
-	int i, dir, ret;
+	int i, dir, sdir, ret, explicit;
 	char vi_msg[512];
-	if (cmd == '/' || cmd == '?') {
+	explicit = cmd == '/' || cmd == '?';
+	if (explicit) {
 		char sign[4] = {cmd};
 		char *kw = vi_prompt(sign, NULL, &ret, &xkmap, &i);
 		vi_drawmsg_mpt(kw)
@@ -514,14 +699,36 @@ static int vi_search(int cmd, int cnt, int *row, int *off, int msg)
 		if (!xkwdrs)
 			vi_drawmsg_mpt("syntax error")
 		free(kw);
+		vi_search_cycle_clear();
 	} else if (msg)
 		ex_krsset(xregs['/'] ? xregs['/']->s : NULL, xkwddir);
 	if (!lbuf_len(xb) || (!xkwddir || !xkwdrs))
 		return 1;
 	dir = cmd == 'N' ? -xkwddir : xkwddir;
+	sdir = dir < 0 ? -1 : 1;
+	if (msg && !explicit && vi_search_cycle_current(sdir, *row, *off) &&
+			vi_scycle_done) {
+		if (vi_status)
+			xmpt = 0;
+		else
+			vi_draw_search_status(*row, *off);
+		return 0;
+	}
+	if (msg && !explicit && !vi_search_cycle_current(sdir, *row, *off)) {
+		int idx, total;
+		vi_search_cycle_clear();
+		if (vi_search_exact_at(*row, *off, &idx, &total))
+			vi_search_cycle_begin(sdir, *row, *off, total);
+	}
 	for (i = 0; i < cnt; i++) {
-		if (lbuf_search(xb, xkwdrs, dir, 0, lbuf_len(xb),
-				msg ? dir : -1, 1, row, off)) {
+		int idx, total, matched, in_cycle;
+		int pskip = msg ? (dir > 0 ? 1 : -1) : -1;
+		in_cycle = msg && !explicit &&
+			vi_search_cycle_current(sdir, *row, *off);
+		matched = msg ? !vi_lbuf_search_wrap(sdir, pskip, row, off) :
+			!lbuf_search(xb, xkwdrs, sdir, 0, lbuf_len(xb),
+				pskip, 1, row, off);
+		if (!matched) {
 			if (msg) {
 				snprintf(vi_msg, sizeof(vi_msg), "\"%s\" not found %d/%d",
 						xregs['/'] ? xregs['/']->s : "", i, cnt);
@@ -529,6 +736,20 @@ static int vi_search(int cmd, int cnt, int *row, int *off, int msg)
 			}
 			return 1;
 		}
+		if (msg && vi_search_count_at(*row, *off, &idx, &total)) {
+			if (explicit || !in_cycle)
+				vi_search_cycle_begin(sdir, *row, *off, total);
+			else
+				vi_search_cycle_step(row, off, total);
+			if (vi_scycle_done)
+				break;
+		}
+	}
+	if (msg) {
+		if (vi_status)
+			xmpt = 0;
+		else
+			vi_draw_search_status(*row, *off);
 	}
 	return 0;
 }
@@ -737,12 +958,15 @@ static void vc_status(int type)
 			cbuf, cp, cp, cp, l, rstate->wid[xoff], c - lbuf_get(xb, xrow),
 			xoff, col);
 	} else {
+		char counter[32];
 		snprintf(vi_msg, sizeof(vi_msg),
 			"\"%s\"%s%dL %d%% L%d C%d B%td",
 			xb_path[0] ? xb_path : "unnamed",
 			xb->modified ? "* " : " ", lbuf_len(xb),
 			xrow * 100 / MAX(1, lbuf_len(xb)-1), xrow+1, col,
 			istempbuf(ex_buf) ? tempbufs - ex_buf - 1 : ex_buf - bufs);
+		vi_search_counter(counter, sizeof(counter), xrow, xoff);
+		vi_msg_right(vi_msg, sizeof(vi_msg), counter);
 	}
 	vi_drawmsg_mpt(vi_msg)
 }
