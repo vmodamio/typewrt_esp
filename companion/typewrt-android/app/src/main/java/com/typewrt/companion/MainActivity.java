@@ -19,14 +19,8 @@ import android.bluetooth.le.ScanRecord;
 import android.bluetooth.le.ScanCallback;
 import android.bluetooth.le.ScanResult;
 import android.bluetooth.le.ScanSettings;
-import android.content.ContentResolver;
-import android.content.ContentValues;
-import android.content.ClipData;
-import android.content.ContentUris;
-import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
-import android.database.Cursor;
 import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
@@ -35,22 +29,21 @@ import android.graphics.drawable.StateListDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.ParcelUuid;
-import android.provider.MediaStore;
-import android.provider.OpenableColumns;
 import android.text.Editable;
 import android.text.InputType;
+import android.text.Spannable;
+import android.text.SpannableString;
 import android.text.TextWatcher;
-import android.text.method.ScrollingMovementMethod;
+import android.text.style.ForegroundColorSpan;
+import android.text.style.StyleSpan;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
-import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Spinner;
@@ -58,18 +51,26 @@ import android.widget.TextView;
 import android.util.Base64;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.ProtocolException;
 import java.net.URL;
 import java.net.URLEncoder;
+import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -79,28 +80,27 @@ import org.json.JSONObject;
 
 public class MainActivity extends Activity {
     private static final int REQUEST_BLE_PERMISSIONS = 7;
-    private static final int REQUEST_PICK_TEXT_FILE = 8;
     private static final long SCAN_TIMEOUT_MS = 15000;
     private static final long MAX_FILE_BYTES = 20L * 1024L * 1024L;
     private static final int HTTP_TIMEOUT_MS = 30000;
     private static final int DEFAULT_BLE_WRITE_CHUNK = 20;
     private static final int REQUESTED_BLE_MTU = 247;
     private static final int MAX_BLE_WRITE_CHUNK = REQUESTED_BLE_MTU - 3;
-    private static final long SPLASH_DURATION_MS = 950;
     private static final long GITHUB_ACCESS_CHECK_DELAY_MS = 900;
-    private static final int COLOR_BACKGROUND = 0xFF212121;
-    private static final int COLOR_SURFACE = 0xFF2B2B2B;
+    private static final int COLOR_BACKGROUND = 0xFF21211F;
+    private static final int COLOR_SURFACE = 0xFF2B2B29;
     private static final int COLOR_SURFACE_HIGH = 0xFF33383D;
-    private static final int COLOR_FIELD = 0xFF262A2E;
+    private static final int COLOR_FIELD = 0xFF272A29;
     private static final int COLOR_STROKE = 0xFF454A50;
     private static final int COLOR_TEXT_PRIMARY = 0xFFFFFFFF;
     private static final int COLOR_TEXT_SECONDARY = 0xFFC8D0D6;
     private static final int COLOR_TEXT_MUTED = 0xFF8E989F;
-    private static final int COLOR_BLUE = 0xFF64B5F6;
-    private static final int COLOR_BLUE_DARK = 0xFF1976D2;
-    private static final int COLOR_RIPPLE = 0x3342A5F5;
+    private static final int COLOR_BLUE = 0xFFA1BCC1;
+    private static final int COLOR_BLUE_DARK = 0xFF78979C;
+    private static final int COLOR_RIPPLE = 0x33A1BCC1;
     private static final String GITHUB_API_VERSION = "2026-03-10";
-    private static final String TYPEWRT_DOWNLOAD_DIR = Environment.DIRECTORY_DOWNLOADS + "/Typewrt";
+    private static final String REMOTE_DIR_NAME = "remote";
+    private static final String OUTPUT_DIR_NAME = "output";
 
     private static final UUID SERVICE_UUID =
         UUID.fromString("0000ffe0-0000-1000-8000-00805f9b34fb");
@@ -120,23 +120,27 @@ public class MainActivity extends Activity {
     private TextView detailsView;
     private TextView activeFileView;
     private TextView preparedFileView;
-    private TextView logView;
+    private TextView repositoryLabel;
+    private LinearLayout remoteBrowserView;
     private Button connectButton;
     private Button disconnectButton;
-    private Button chooseTextButton;
     private Button sendTypewrtButton;
-    private Button queueDeleteButton;
     private Button clearUpdatesButton;
     private Button pandocExportButton;
-    private Button githubUploadButton;
+    private Button githubCommitButton;
     private Button githubFetchButton;
+    private Button githubRestoreButton;
+    private Button githubFileHistoryButton;
+    private TextView githubLabel;
     private TextView githubAccessView;
-    private EditText deletePathField;
+    private LinearLayout githubConfigPanel;
     private EditText pandocServerField;
     private EditText githubRepoField;
     private EditText githubPathField;
     private EditText githubBranchField;
     private EditText githubTokenField;
+    private EditText githubCommitField;
+    private EditText githubHistoryPathField;
     private Spinner pandocFromSpinner;
     private Spinner pandocToSpinner;
     private Button transferTabButton;
@@ -159,6 +163,8 @@ public class MainActivity extends Activity {
     private int bleWriteChunkSize = DEFAULT_BLE_WRITE_CHUNK;
     private int scanGeneration;
     private int githubAccessGeneration;
+    private String remoteBrowserPath = "";
+    private boolean githubConfigVisible;
 
     private ByteArrayOutputStream headerBuffer = new ByteArrayOutputStream();
     private ByteArrayOutputStream fileBuffer = new ByteArrayOutputStream();
@@ -170,6 +176,7 @@ public class MainActivity extends Activity {
     private String latestFileName;
     private Uri latestFileUri;
     private final ArrayList<FileSnapshot> pendingSendFiles = new ArrayList<>();
+    private boolean restorePending;
     private FileSnapshot activeSendFile;
     private byte[][] outgoingParts;
     private int outgoingFileIndex;
@@ -192,46 +199,14 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        showSplashScreen();
-        mainHandler.postDelayed(() -> {
-            buildUi();
-            initializeBluetooth();
-        }, SPLASH_DURATION_MS);
+        buildUi();
+        initializeBluetooth();
     }
 
     @Override
     protected void onDestroy() {
         disconnect();
         super.onDestroy();
-    }
-
-    private void showSplashScreen() {
-        LinearLayout splash = new LinearLayout(this);
-        splash.setOrientation(LinearLayout.VERTICAL);
-        splash.setGravity(Gravity.CENTER);
-        splash.setBackgroundColor(COLOR_BACKGROUND);
-        splash.setPadding(dp(24), dp(24), dp(24), dp(24));
-
-        TextView mark = new TextView(this);
-        mark.setText("wrt");
-        mark.setGravity(Gravity.CENTER);
-        mark.setTextColor(COLOR_TEXT_PRIMARY);
-        mark.setTextSize(86);
-        mark.setIncludeFontPadding(false);
-        mark.setTypeface(getResources().getFont(R.font.momo_trust_display_regular));
-        splash.addView(mark, new LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.WRAP_CONTENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT));
-
-        ImageView subtitle = new ImageView(this);
-        subtitle.setImageResource(R.drawable.splash_companion_mark_ii);
-        subtitle.setAdjustViewBounds(true);
-        subtitle.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        LinearLayout.LayoutParams subtitleParams = new LinearLayout.LayoutParams(dp(220), dp(26));
-        subtitleParams.topMargin = dp(16);
-        splash.addView(subtitle, subtitleParams);
-
-        setContentView(splash);
     }
 
     private void buildUi() {
@@ -325,7 +300,7 @@ public class MainActivity extends Activity {
         buttons.addView(sendTypewrtButton, sendTypewrtParams);
 
         activeFileView = new TextView(this);
-        activeFileView.setText("Phone mirror empty.");
+        activeFileView.setText("Repository ready.");
         activeFileView.setTextSize(15);
         activeFileView.setTextColor(COLOR_TEXT_SECONDARY);
         LinearLayout.LayoutParams activeParams = new LinearLayout.LayoutParams(
@@ -334,8 +309,20 @@ public class MainActivity extends Activity {
         activeParams.topMargin = dp(12);
         transferTabContent.addView(activeFileView, activeParams);
 
-        TextView sendLabel = sectionLabel("Phone update queue");
-        transferTabContent.addView(sendLabel);
+        repositoryLabel = sectionLabel("Repository");
+        styleDisclosureLabel(repositoryLabel);
+        repositoryLabel.setOnClickListener(v -> showRepositoryStoragePath());
+        transferTabContent.addView(repositoryLabel);
+
+        remoteBrowserView = new LinearLayout(this);
+        remoteBrowserView.setOrientation(LinearLayout.VERTICAL);
+        remoteBrowserView.setBackground(roundedDrawable(COLOR_SURFACE, dp(8), COLOR_STROKE, 1));
+        remoteBrowserView.setPadding(dp(8), dp(8), dp(8), dp(8));
+        LinearLayout.LayoutParams browserParams = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT);
+        browserParams.topMargin = dp(6);
+        transferTabContent.addView(remoteBrowserView, browserParams);
 
         preparedFileView = new TextView(this);
         preparedFileView.setText("No updates queued.");
@@ -347,23 +334,6 @@ public class MainActivity extends Activity {
         preparedParams.topMargin = dp(6);
         transferTabContent.addView(preparedFileView, preparedParams);
 
-        LinearLayout sendButtons = new LinearLayout(this);
-        sendButtons.setOrientation(LinearLayout.HORIZONTAL);
-        sendButtons.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout.LayoutParams sendButtonsParams = new LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT);
-        sendButtonsParams.topMargin = dp(8);
-        transferTabContent.addView(sendButtons, sendButtonsParams);
-
-        chooseTextButton = new Button(this);
-        chooseTextButton.setText("Add files");
-        chooseTextButton.setAllCaps(false);
-        styleButton(chooseTextButton, false);
-        chooseTextButton.setOnClickListener(v -> chooseTextFile());
-        sendButtons.addView(chooseTextButton, new LinearLayout.LayoutParams(
-            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-
         clearUpdatesButton = new Button(this);
         clearUpdatesButton.setText("Clear queue");
         clearUpdatesButton.setAllCaps(false);
@@ -371,31 +341,10 @@ public class MainActivity extends Activity {
         clearUpdatesButton.setEnabled(false);
         clearUpdatesButton.setOnClickListener(v -> clearQueuedUpdates());
         LinearLayout.LayoutParams clearParams = new LinearLayout.LayoutParams(
-            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
-        clearParams.leftMargin = dp(10);
-        sendButtons.addView(clearUpdatesButton, clearParams);
-
-        deletePathField = addTextField(
-            transferTabContent,
-            "Deleted path, for example notes/draft.txt",
-            "");
-
-        LinearLayout utilityButtons = new LinearLayout(this);
-        utilityButtons.setOrientation(LinearLayout.HORIZONTAL);
-        utilityButtons.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout.LayoutParams utilityParams = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT);
-        utilityParams.topMargin = dp(8);
-        transferTabContent.addView(utilityButtons, utilityParams);
-
-        queueDeleteButton = new Button(this);
-        queueDeleteButton.setText("Add delete");
-        queueDeleteButton.setAllCaps(false);
-        styleButton(queueDeleteButton, false);
-        queueDeleteButton.setOnClickListener(v -> queueRemoteDelete());
-        utilityButtons.addView(queueDeleteButton, new LinearLayout.LayoutParams(
-            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        clearParams.topMargin = dp(8);
+        transferTabContent.addView(clearUpdatesButton, clearParams);
 
         disconnectButton = new Button(this);
         disconnectButton.setText("Disconnect");
@@ -404,9 +353,10 @@ public class MainActivity extends Activity {
         disconnectButton.setEnabled(false);
         disconnectButton.setOnClickListener(v -> disconnect());
         LinearLayout.LayoutParams disconnectParams = new LinearLayout.LayoutParams(
-            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
-        disconnectParams.leftMargin = dp(10);
-        utilityButtons.addView(disconnectButton, disconnectParams);
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT);
+        disconnectParams.topMargin = dp(8);
+        transferTabContent.addView(disconnectButton, disconnectParams);
 
         TextView pandocLabel = sectionLabel("Pandoc export");
         pandocTabContent.addView(pandocLabel);
@@ -444,13 +394,22 @@ public class MainActivity extends Activity {
         exportParams.topMargin = dp(8);
         pandocTabContent.addView(pandocExportButton, exportParams);
 
-        TextView githubLabel = sectionLabel("GitHub repository");
+        githubLabel = sectionLabel("GitHub repository");
+        styleDisclosureLabel(githubLabel);
+        githubLabel.setOnClickListener(v -> toggleGithubConfig());
         githubTabContent.addView(githubLabel);
 
-        githubRepoField = addTextField(githubTabContent, "Repository owner/name", "");
-        githubPathField = addTextField(githubTabContent, "Repository root/path (optional)", "");
-        githubBranchField = addTextField(githubTabContent, "Branch", "main");
-        githubTokenField = addTextField(githubTabContent, "GitHub token", "");
+        githubConfigPanel = new LinearLayout(this);
+        githubConfigPanel.setOrientation(LinearLayout.VERTICAL);
+        githubConfigPanel.setVisibility(View.GONE);
+        githubTabContent.addView(githubConfigPanel, new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        githubRepoField = addTextField(githubConfigPanel, "Repository owner/name", "");
+        githubPathField = addTextField(githubConfigPanel, "Repository root/path (optional)", "");
+        githubBranchField = addTextField(githubConfigPanel, "Branch", "main");
+        githubTokenField = addTextField(githubConfigPanel, "GitHub token", "");
         githubTokenField.setInputType(
             InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         githubAccessView = new TextView(this);
@@ -461,11 +420,11 @@ public class MainActivity extends Activity {
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT);
         accessParams.topMargin = dp(8);
-        githubTabContent.addView(githubAccessView, accessParams);
+        githubConfigPanel.addView(githubAccessView, accessParams);
         installGithubConfigWatchers();
 
         githubFetchButton = new Button(this);
-        githubFetchButton.setText("Fetch from GitHub");
+        githubFetchButton.setText("Pull");
         githubFetchButton.setAllCaps(false);
         styleButton(githubFetchButton, true);
         githubFetchButton.setEnabled(false);
@@ -476,48 +435,55 @@ public class MainActivity extends Activity {
         fetchParams.topMargin = dp(8);
         githubTabContent.addView(githubFetchButton, fetchParams);
 
-        githubUploadButton = new Button(this);
-        githubUploadButton.setText("Send latest file");
-        githubUploadButton.setAllCaps(false);
-        styleButton(githubUploadButton, true);
-        githubUploadButton.setEnabled(false);
-        githubUploadButton.setOnClickListener(v -> uploadLatestToGithub());
-        LinearLayout.LayoutParams uploadParams = new LinearLayout.LayoutParams(
+        githubCommitField = addTextField(
+            githubTabContent,
+            "Commit message (optional)",
+            "");
+
+        githubCommitButton = new Button(this);
+        githubCommitButton.setText("Commit changes");
+        githubCommitButton.setAllCaps(false);
+        styleButton(githubCommitButton, true);
+        githubCommitButton.setEnabled(false);
+        githubCommitButton.setOnClickListener(v -> commitGithubRepository());
+        LinearLayout.LayoutParams commitParams = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT);
-        uploadParams.topMargin = dp(8);
-        githubTabContent.addView(githubUploadButton, uploadParams);
+        commitParams.topMargin = dp(8);
+        githubTabContent.addView(githubCommitButton, commitParams);
 
-        TextView logLabel = new TextView(this);
-        logLabel.setText("Transfer log");
-        logLabel.setTextSize(14);
-        logLabel.setTypeface(Typeface.DEFAULT_BOLD);
-        logLabel.setTextColor(COLOR_BLUE);
-        LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(
+        githubRestoreButton = new Button(this);
+        githubRestoreButton.setText("Restore");
+        githubRestoreButton.setAllCaps(false);
+        styleButton(githubRestoreButton, false);
+        githubRestoreButton.setEnabled(false);
+        githubRestoreButton.setOnClickListener(v -> showGithubRestoreDialog());
+        LinearLayout.LayoutParams restoreParams = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT);
-        labelParams.topMargin = dp(24);
-        root.addView(logLabel, labelParams);
+        restoreParams.topMargin = dp(8);
+        githubTabContent.addView(githubRestoreButton, restoreParams);
 
-        logView = new TextView(this);
-        logView.setTextColor(COLOR_TEXT_PRIMARY);
-        logView.setTextSize(14);
-        logView.setTypeface(Typeface.MONOSPACE);
-        logView.setMovementMethod(new ScrollingMovementMethod());
-        logView.setText("");
+        githubHistoryPathField = addTextField(
+            githubTabContent,
+            "File history path, for example notes/draft.txt",
+            "");
 
-        ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
-        scroll.setBackground(roundedDrawable(COLOR_SURFACE, dp(10), COLOR_STROKE, 1));
-        scroll.setPadding(smallPad, smallPad, smallPad, smallPad);
-        scroll.addView(logView);
-        LinearLayout.LayoutParams scrollParams = new LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, dp(180));
-        scrollParams.topMargin = dp(8);
-        root.addView(scroll, scrollParams);
+        githubFileHistoryButton = new Button(this);
+        githubFileHistoryButton.setText("File commits");
+        githubFileHistoryButton.setAllCaps(false);
+        styleButton(githubFileHistoryButton, false);
+        githubFileHistoryButton.setEnabled(false);
+        githubFileHistoryButton.setOnClickListener(v -> showGithubFileHistory());
+        LinearLayout.LayoutParams historyParams = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT);
+        historyParams.topMargin = dp(8);
+        githubTabContent.addView(githubFileHistoryButton, historyParams);
 
         setContentView(page);
         showTab(CompanionTab.TRANSFER);
+        refreshRemoteTree();
         updateSendFileActions();
     }
 
@@ -578,6 +544,13 @@ public class MainActivity extends Activity {
         return label;
     }
 
+    private void styleDisclosureLabel(TextView label) {
+        label.setMinHeight(dp(44));
+        label.setGravity(Gravity.CENTER_VERTICAL);
+        label.setPadding(dp(12), 0, dp(12), 0);
+        label.setBackground(rippleBackground(COLOR_SURFACE_HIGH, COLOR_SURFACE_HIGH, dp(8)));
+    }
+
     private EditText addTextField(LinearLayout root, String hint, String initial) {
         EditText field = new EditText(this);
         field.setHint(hint);
@@ -617,6 +590,9 @@ public class MainActivity extends Activity {
         githubPathField.addTextChangedListener(watcher);
         githubBranchField.addTextChangedListener(watcher);
         githubTokenField.addTextChangedListener(watcher);
+        if (githubHistoryPathField != null) {
+            githubHistoryPathField.addTextChangedListener(watcher);
+        }
         scheduleGithubAccessCheck();
     }
 
@@ -656,9 +632,39 @@ public class MainActivity extends Activity {
         if (githubFetchButton != null) {
             githubFetchButton.setEnabled(ready);
         }
-        if (githubUploadButton != null) {
-            githubUploadButton.setEnabled(ready && latestFileSnapshot() != null);
+        if (githubCommitButton != null) {
+            githubCommitButton.setEnabled(ready);
         }
+        if (githubRestoreButton != null) {
+            githubRestoreButton.setEnabled(ready);
+        }
+        if (githubFileHistoryButton != null) {
+            githubFileHistoryButton.setEnabled(ready);
+        }
+    }
+
+    private void toggleGithubConfig() {
+        githubConfigVisible = !githubConfigVisible;
+        if (githubConfigPanel != null) {
+            githubConfigPanel.setVisibility(githubConfigVisible ? View.VISIBLE : View.GONE);
+        }
+    }
+
+    private void showRepositoryStoragePath() {
+        Thread thread = new Thread(() -> {
+            try {
+                String path = remoteDir().getAbsolutePath();
+                mainHandler.post(() -> new AlertDialog.Builder(this)
+                    .setTitle("Repository folder")
+                    .setMessage(path)
+                    .setPositiveButton("OK", null)
+                    .show());
+            } catch (IOException | RuntimeException e) {
+                mainHandler.post(() ->
+                    setStatus("Repository unavailable", usefulMessage(e)));
+            }
+        }, "typewrt-repository-path");
+        thread.start();
     }
 
     private void checkGithubAccess(int generation) {
@@ -746,9 +752,9 @@ public class MainActivity extends Activity {
     }
 
     private void styleButton(Button button, boolean primary) {
-        int normalColor = primary ? COLOR_BLUE : COLOR_SURFACE_HIGH;
+        int normalColor = COLOR_BLUE;
         int disabledColor = primary ? 0xFF3A4D5E : 0xFF2A2D30;
-        int textColor = primary ? 0xFF0B1720 : COLOR_TEXT_PRIMARY;
+        int textColor = 0xFF0B1720;
         button.setMinHeight(dp(48));
         button.setPadding(dp(14), 0, dp(14), 0);
         button.setTextColor(new ColorStateList(
@@ -841,7 +847,7 @@ public class MainActivity extends Activity {
 
     private void startSender() {
         if (pendingSendFiles.isEmpty()) {
-            setStatus("No updates queued", "Choose text files or queue a delete marker first.");
+            setStatus("No updates queued", "Pull or restore from GitHub, or request a delete first.");
             return;
         }
         transferMode = TransferMode.SEND_TO_TYPEWRT;
@@ -850,21 +856,6 @@ public class MainActivity extends Activity {
             return;
         }
         startScan();
-    }
-
-    private void chooseTextFile() {
-        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("*/*");
-        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
-        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[] {
-            "text/*",
-            "application/json",
-            "application/xml",
-            "application/x-markdown",
-            "application/x-subrip"
-        });
-        startActivityForResult(intent, REQUEST_PICK_TEXT_FILE);
     }
 
     @Override
@@ -883,22 +874,6 @@ public class MainActivity extends Activity {
             setStatus("Bluetooth permission denied", "The app needs BLE permission to find Typewrt.");
             appendLog("Permission denied.");
         }
-    }
-
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode != REQUEST_PICK_TEXT_FILE) {
-            return;
-        }
-        if (resultCode != RESULT_OK || data == null) {
-            return;
-        }
-        ArrayList<Uri> uris = selectedUris(data);
-        if (uris.isEmpty()) {
-            return;
-        }
-        prepareSelectedTextFiles(uris);
     }
 
     private String[] requiredPermissions() {
@@ -1276,128 +1251,12 @@ public class MainActivity extends Activity {
         }
     }
 
-    private ArrayList<Uri> selectedUris(Intent data) {
-        ArrayList<Uri> uris = new ArrayList<>();
-        ClipData clipData = data.getClipData();
-
-        if (clipData != null) {
-            for (int i = 0; i < clipData.getItemCount(); i++) {
-                Uri uri = clipData.getItemAt(i).getUri();
-                if (uri != null) {
-                    uris.add(uri);
-                }
-            }
-        } else if (data.getData() != null) {
-            uris.add(data.getData());
-        }
-        return uris;
-    }
-
-    private void prepareSelectedTextFiles(List<Uri> uris) {
-        updateSendFileActions();
-        setStatus("Preparing text files", "Reading " + uris.size() + " selected file" + plural(uris.size()) + "...");
-        appendLog("Preparing " + uris.size() + " selected file" + plural(uris.size()) + ".");
-        Thread thread = new Thread(() -> {
-            try {
-                ArrayList<FileSnapshot> snapshots = new ArrayList<>();
-                long totalBytes = 0;
-
-                for (Uri uri : uris) {
-                    byte[] data = readSelectedBytes(uri);
-                    String name = sanitizeTransferPath(displayNameForUri(uri), "typewrt.txt");
-                    snapshots.add(FileSnapshot.file(name, data, uri));
-                    totalBytes += data.length;
-                }
-                final long preparedBytes = totalBytes;
-                mainHandler.post(() -> {
-                    pendingSendFiles.addAll(snapshots);
-                    setStatus("Queued " + queueSummary(), preparedBytes + " bytes added");
-                    appendLog("Queued files: " + snapshots.size() + " (" + preparedBytes + " bytes)");
-                    updateSendFileActions();
-                });
-            } catch (IOException | RuntimeException e) {
-                mainHandler.post(() -> {
-                    setStatus("Could not prepare file", usefulMessage(e));
-                    appendLog("Prepare failed: " + e);
-                    updateSendFileActions();
-                });
-            }
-        }, "typewrt-prepare-send");
-        thread.start();
-    }
-
-    private byte[] readSelectedBytes(Uri uri) throws IOException {
-        return readUriBytes(uri, "Selected file");
-    }
-
-    private byte[] readUriBytes(Uri uri, String label) throws IOException {
-        try (InputStream in = getContentResolver().openInputStream(uri);
-             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            if (in == null) {
-                throw new IOException("Could not open file.");
-            }
-            byte[] buffer = new byte[4096];
-            long total = 0;
-            int n;
-            while ((n = in.read(buffer)) != -1) {
-                total += n;
-                if (total > MAX_FILE_BYTES || total > Integer.MAX_VALUE) {
-                    throw new IOException(label + " is larger than 20 MB.");
-                }
-                out.write(buffer, 0, n);
-            }
-            return out.toByteArray();
-        }
-    }
-
-    private String displayNameForUri(Uri uri) {
-        String name = null;
-        try (Cursor cursor = getContentResolver().query(
-            uri,
-            new String[] {OpenableColumns.DISPLAY_NAME},
-            null,
-            null,
-            null)) {
-            if (cursor != null && cursor.moveToFirst()) {
-                int index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
-                if (index >= 0) {
-                    name = cursor.getString(index);
-                }
-            }
-        } catch (RuntimeException ignored) {
-            name = null;
-        }
-        if (name == null || name.trim().isEmpty()) {
-            name = uri.getLastPathSegment();
-        }
-        if (name == null || name.trim().isEmpty()) {
-            name = "typewrt.txt";
-        }
-        return name;
-    }
-
-    private void queueRemoteDelete() {
-        String path = sanitizeTransferPath(
-            deletePathField == null ? "" : deletePathField.getText().toString(),
-            "");
-
-        if (path.isEmpty()) {
-            setStatus("Delete path missing", "Enter a relative Typewrt path first.");
-            return;
-        }
-        pendingSendFiles.add(FileSnapshot.deleteMarker(path));
-        if (deletePathField != null) {
-            deletePathField.setText("");
-        }
-        setStatus("Queued " + queueSummary(), path);
-        appendLog("Queued delete: " + path);
-        updateSendFileActions();
-    }
-
     private void clearQueuedUpdates() {
         pendingSendFiles.clear();
+        restorePending = false;
         setStatus("Cleared updates", "No updates queued.");
         appendLog("Cleared queued updates.");
+        refreshRemoteTree();
         updateSendFileActions();
     }
 
@@ -1406,20 +1265,15 @@ public class MainActivity extends Activity {
         if (preparedFileView != null) {
             if (hasPreparedFile) {
                 preparedFileView.setText(
-                    "Queued: " + queueSummary() + " (" + pendingSendBytes() + " bytes)");
+                    (restorePending ? "Restore queued: " : "Queued: ") +
+                        queueSummary() + " (" + pendingSendBytes() + " bytes)");
             } else {
                 preparedFileView.setText("No updates queued.");
             }
         }
-        if (chooseTextButton != null) {
-            chooseTextButton.setEnabled(activeGatt == null && !scanning);
-        }
         if (sendTypewrtButton != null) {
             sendTypewrtButton.setEnabled(
                 hasPreparedFile && bluetoothAdapter != null && activeGatt == null && !scanning);
-        }
-        if (queueDeleteButton != null) {
-            queueDeleteButton.setEnabled(activeGatt == null && !scanning);
         }
         if (clearUpdatesButton != null) {
             clearUpdatesButton.setEnabled(hasPreparedFile && activeGatt == null && !scanning);
@@ -1631,9 +1485,11 @@ public class MainActivity extends Activity {
         senderComplete = true;
         resetOutgoingTransfer();
         pendingSendFiles.clear();
+        restorePending = false;
         mainHandler.post(() -> {
             setStatus("Sent " + label, "Applied in the Typewrt menu directory.");
             appendLog("Sent: " + label);
+            refreshRemoteTree();
             updateSendFileActions();
         });
         if (gatt != null && hasRequiredPermissions()) {
@@ -1929,16 +1785,6 @@ public class MainActivity extends Activity {
         return slash >= 0 ? safe.substring(slash + 1) : safe;
     }
 
-    private String transferRelativeDir(String path) {
-        String safe = sanitizeTransferPath(path, "typewrt.txt");
-        int slash = safe.lastIndexOf('/');
-
-        if (slash < 0) {
-            return TYPEWRT_DOWNLOAD_DIR;
-        }
-        return TYPEWRT_DOWNLOAD_DIR + "/" + safe.substring(0, slash);
-    }
-
     private void setLatestFile(String fileName, byte[] data, Uri uri) {
         synchronized (latestFileLock) {
             latestFileName = fileName;
@@ -1954,9 +1800,9 @@ public class MainActivity extends Activity {
         if (activeFileView != null) {
             if (hasFile) {
                 activeFileView.setText(
-                    "Latest from Typewrt: " + snapshot.name + " (" + snapshot.data.length + " bytes)");
+                    "Latest remote file: " + snapshot.name + " (" + snapshot.data.length + " bytes)");
             } else {
-                activeFileView.setText("Phone mirror empty.");
+                activeFileView.setText("Repository ready.");
             }
         }
         if (pandocExportButton != null) {
@@ -2003,7 +1849,7 @@ public class MainActivity extends Activity {
             try {
                 String text = new String(snapshot.data, StandardCharsets.UTF_8);
                 byte[] output = postPandoc(serverUrl, text, from, to);
-                saveFile(outputName, output);
+                saveOutputFile(outputName, output);
             } catch (IOException | JSONException e) {
                 mainHandler.post(() -> {
                     setStatus("Pandoc export failed", usefulMessage(e));
@@ -2050,17 +1896,14 @@ public class MainActivity extends Activity {
         return response;
     }
 
-    private void uploadLatestToGithub() {
-        FileSnapshot snapshot = latestFileSnapshot();
-        if (snapshot == null) {
-            setStatus("Nothing to upload", "Receive or export a file first.");
-            return;
-        }
-
+    private void commitGithubRepository() {
         String repoText = githubRepoField.getText().toString().trim();
         String rootPath = githubPathField.getText().toString().trim();
         String branch = githubBranchField.getText().toString().trim();
         String token = githubTokenField.getText().toString().trim();
+        String message = githubCommitField == null ? "" :
+            githubCommitField.getText().toString().trim();
+
         if (repoText.isEmpty() || !repoText.contains("/")) {
             setStatus("GitHub repository missing", "Use owner/repository.");
             return;
@@ -2070,8 +1913,11 @@ public class MainActivity extends Activity {
             githubBranchField.setText(branch);
         }
         if (token.isEmpty()) {
-            setStatus("GitHub token missing", "Use a token with Contents: write.");
+            setStatus("GitHub token missing", "Use a token with Contents: read and write.");
             return;
+        }
+        if (message.isEmpty()) {
+            message = "Sync repository";
         }
 
         String[] repo = repoText.split("/", 2);
@@ -2082,37 +1928,47 @@ public class MainActivity extends Activity {
             return;
         }
 
-        String path = githubPathForSnapshot(rootPath, snapshot.name);
-        githubUploadButton.setEnabled(false);
-        setStatus("Sending to GitHub", owner + "/" + name + "/" + path);
-        appendLog("GitHub upload: " + owner + "/" + name + " " + path);
+        if (githubCommitButton != null) {
+            githubCommitButton.setEnabled(false);
+        }
+        setStatus("Checking remote changes", owner + "/" + name + "@" + branch);
+        appendLog("GitHub commit: " + owner + "/" + name + " " +
+            sanitizeOptionalRepoPath(rootPath));
 
-        String finalPath = path;
         String finalBranch = branch;
+        String finalMessage = message;
+        String finalRootPath = rootPath;
         Thread thread = new Thread(() -> {
             try {
-                String sha = fetchGithubSha(owner, name, finalPath, finalBranch, token);
-                String htmlUrl = putGithubFile(
+                GitHubCommitResult result = performGithubCommit(
                     owner,
                     name,
-                    finalPath,
                     finalBranch,
+                    finalRootPath,
                     token,
-                    snapshot,
-                    sha);
+                    finalMessage);
                 mainHandler.post(() -> {
-                    setStatus("Sent to GitHub", finalPath);
-                    appendLog("GitHub saved: " + htmlUrl);
-                    updateFileActions();
+                    if (result.noChanges) {
+                        setStatus("Nothing to commit", "remote/ already matches GitHub.");
+                        appendLog("GitHub commit skipped: no changes.");
+                    } else {
+                        setStatus(
+                            "Committed to GitHub",
+                            result.changed + " changed, " + result.deleted + " deleted");
+                        String shortSha = result.commitSha.length() <= 7 ?
+                            result.commitSha : result.commitSha.substring(0, 7);
+                        appendLog("GitHub commit: " + shortSha);
+                    }
+                    updateGithubActionButtons();
                 });
             } catch (IOException | JSONException e) {
                 mainHandler.post(() -> {
-                    setStatus("GitHub upload failed", usefulMessage(e));
-                    appendLog("GitHub failed: " + e);
-                    updateFileActions();
+                    setStatus("GitHub commit failed", usefulMessage(e));
+                    appendLog("GitHub commit failed: " + e);
+                    updateGithubActionButtons();
                 });
             }
-        }, "typewrt-github");
+        }, "typewrt-github-commit");
         thread.start();
     }
 
@@ -2161,14 +2017,17 @@ public class MainActivity extends Activity {
                     finalRootPath,
                     token);
                 mainHandler.post(() -> {
+                    pendingSendFiles.clear();
                     pendingSendFiles.addAll(result.updates);
+                    restorePending = !result.updates.isEmpty();
                     setStatus(
-                        "Fetched from GitHub",
+                        "Pulled from GitHub",
                         result.changed + " changed, " + result.unchanged +
                             " unchanged, " + result.deleted + " deleted");
-                    appendLog("GitHub fetch queued " + result.updates.size() +
+                    appendLog("GitHub pull queued " + result.updates.size() +
                         " update" + plural(result.updates.size()) +
                         (result.skipped > 0 ? "; skipped " + result.skipped : ""));
+                    refreshRemoteTree();
                     updateSendFileActions();
                     updateGithubActionButtons();
                 });
@@ -2196,7 +2055,13 @@ public class MainActivity extends Activity {
         ArrayList<FileSnapshot> updates = new ArrayList<>();
         GitHubFetchResult result = new GitHubFetchResult(updates);
 
-        collectGithubContents(owner, repo, branch, root, root, token, remoteFiles);
+        try {
+            collectGithubContents(owner, repo, branch, root, root, token, remoteFiles);
+        } catch (IOException e) {
+            if (!usefulMessage(e).startsWith("contents HTTP 404:")) {
+                throw e;
+            }
+        }
         for (GitHubRemoteFile remote : remoteFiles) {
             String localPath = remoteRelativePath(remote.path, root);
 
@@ -2206,7 +2071,7 @@ public class MainActivity extends Activity {
                 continue;
             }
             remotePaths.add(localPath);
-            byte[] data = downloadGithubBytes(remote.downloadUrl, token);
+            byte[] data = downloadGithubFile(owner, repo, token, remote);
             if (data.length > MAX_FILE_BYTES) {
                 result.skipped++;
                 continue;
@@ -2223,12 +2088,248 @@ public class MainActivity extends Activity {
             if (remotePaths.contains(local.path)) {
                 continue;
             }
-            if (deleteLocalMirrorFile(local.uri)) {
+            if (deleteLocalMirrorFile(local.file)) {
                 updates.add(FileSnapshot.deleteMarker(local.path));
                 result.deleted++;
             }
         }
         return result;
+    }
+
+    private GitHubCommitResult performGithubCommit(
+        String owner,
+        String repo,
+        String branch,
+        String rootPath,
+        String token,
+        String message
+    ) throws IOException, JSONException {
+        String root = sanitizeOptionalRepoPath(rootPath);
+        ArrayList<GitHubRemoteFile> remoteFiles = new ArrayList<>();
+        Map<String, GitHubRemoteFile> remoteByLocalPath = new HashMap<>();
+        JSONArray treeItems = new JSONArray();
+        GitHubCommitResult result = new GitHubCommitResult();
+
+        try {
+            collectGithubContents(owner, repo, branch, root, root, token, remoteFiles);
+        } catch (IOException e) {
+            if (!usefulMessage(e).startsWith("contents HTTP 404:")) {
+                throw e;
+            }
+        }
+        for (GitHubRemoteFile remote : remoteFiles) {
+            remoteByLocalPath.put(remoteRelativePath(remote.path, root), remote);
+        }
+
+        ArrayList<LocalMirrorFile> localFiles = listLocalMirrorFiles();
+        if (localFiles.isEmpty() && !remoteByLocalPath.isEmpty()) {
+            throw new IOException("remote/ is empty; pull or receive files before committing deletions.");
+        }
+
+        for (LocalMirrorFile local : localFiles) {
+            byte[] data = readFileBytes(local.file);
+            GitHubRemoteFile remote = remoteByLocalPath.remove(local.path);
+            boolean changed = true;
+
+            if (remote != null && remote.downloadUrl != null && !remote.downloadUrl.isEmpty() &&
+                    remote.size == data.length) {
+                byte[] remoteData = downloadGithubFile(owner, repo, token, remote);
+                changed = !bytesEqual(remoteData, data);
+            }
+            if (!changed) {
+                continue;
+            }
+
+            String blobSha = createGithubBlob(owner, repo, token, data);
+            JSONObject item = new JSONObject();
+            item.put("path", githubPathForSnapshot(root, local.path));
+            item.put("mode", "100644");
+            item.put("type", "blob");
+            item.put("sha", blobSha);
+            treeItems.put(item);
+            result.changed++;
+        }
+
+        for (Map.Entry<String, GitHubRemoteFile> entry : remoteByLocalPath.entrySet()) {
+            JSONObject item = new JSONObject();
+            item.put("path", githubPathForSnapshot(root, entry.getKey()));
+            item.put("sha", JSONObject.NULL);
+            treeItems.put(item);
+            result.deleted++;
+        }
+
+        if (treeItems.length() == 0) {
+            result.noChanges = true;
+            return result;
+        }
+
+        String headSha = fetchGithubRefSha(owner, repo, branch, token);
+        String baseTreeSha = fetchGithubCommitTreeSha(owner, repo, headSha, token);
+        String newTreeSha = createGithubTree(owner, repo, token, baseTreeSha, treeItems);
+        result.commitSha = createGithubCommit(owner, repo, token, message, newTreeSha, headSha);
+        updateGithubRef(owner, repo, branch, token, result.commitSha);
+        return result;
+    }
+
+    private void showGithubRestoreDialog() {
+        String repoText = githubRepoField.getText().toString().trim();
+        String rootPath = githubPathField.getText().toString().trim();
+        String branch = githubBranchField.getText().toString().trim();
+        String token = githubTokenField.getText().toString().trim();
+
+        if (repoText.isEmpty() || !repoText.contains("/") || branch.isEmpty() || token.isEmpty()) {
+            setStatus("GitHub configuration missing", "Enter repository, branch, and token first.");
+            return;
+        }
+
+        String[] repo = repoText.split("/", 2);
+        String owner = repo[0].trim();
+        String name = repo[1].trim();
+        if (owner.isEmpty() || name.isEmpty()) {
+            setStatus("GitHub repository missing", "Use owner/repository.");
+            return;
+        }
+
+        setStatus("Loading commits", owner + "/" + name + "@" + branch);
+        Thread thread = new Thread(() -> {
+            try {
+                ArrayList<GitHubCommitItem> commits =
+                    fetchGithubCommits(owner, name, branch, rootPath, token, "");
+                mainHandler.post(() -> showRestoreChoices(owner, name, branch, rootPath, token, commits));
+            } catch (IOException | JSONException e) {
+                mainHandler.post(() -> {
+                    setStatus("Commit list failed", usefulMessage(e));
+                    appendLog("GitHub commits failed: " + e);
+                });
+            }
+        }, "typewrt-github-commits");
+        thread.start();
+    }
+
+    private void showRestoreChoices(
+        String owner,
+        String repo,
+        String branch,
+        String rootPath,
+        String token,
+        ArrayList<GitHubCommitItem> commits
+    ) {
+        if (commits.isEmpty()) {
+            setStatus("No commits found", "GitHub returned an empty history.");
+            return;
+        }
+
+        String[] labels = new String[commits.size()];
+        for (int i = 0; i < commits.size(); i++) {
+            labels[i] = commits.get(i).label();
+        }
+
+        new AlertDialog.Builder(this)
+            .setTitle("Restore remote")
+            .setItems(labels, (dialog, which) -> restoreGithubCommit(
+                owner,
+                repo,
+                rootPath,
+                token,
+                commits.get(which)))
+            .show();
+    }
+
+    private void restoreGithubCommit(
+        String owner,
+        String repo,
+        String rootPath,
+        String token,
+        GitHubCommitItem commit
+    ) {
+        setStatus("Restoring " + commit.shortSha(), commit.title);
+        Thread thread = new Thread(() -> {
+            try {
+                GitHubFetchResult result = performGithubFetch(
+                    owner,
+                    repo,
+                    commit.sha,
+                    rootPath,
+                    token);
+                mainHandler.post(() -> {
+                    pendingSendFiles.clear();
+                    pendingSendFiles.addAll(result.updates);
+                    restorePending = !result.updates.isEmpty();
+                    setStatus(
+                        "Restored " + commit.shortSha(),
+                        result.changed + " changed, " + result.deleted + " deleted");
+                    appendLog("Restore queued " + result.updates.size() + " update" +
+                        plural(result.updates.size()));
+                    refreshRemoteTree();
+                    updateSendFileActions();
+                    updateGithubActionButtons();
+                });
+            } catch (IOException | JSONException e) {
+                mainHandler.post(() -> {
+                    setStatus("Restore failed", usefulMessage(e));
+                    appendLog("Restore failed: " + e);
+                    updateGithubActionButtons();
+                });
+            }
+        }, "typewrt-github-restore");
+        thread.start();
+    }
+
+    private void showGithubFileHistory() {
+        String repoText = githubRepoField.getText().toString().trim();
+        String rootPath = githubPathField.getText().toString().trim();
+        String branch = githubBranchField.getText().toString().trim();
+        String token = githubTokenField.getText().toString().trim();
+        String filePath = githubHistoryPathField == null ? "" :
+            githubHistoryPathField.getText().toString().trim();
+
+        if (filePath.isEmpty()) {
+            setStatus("File path missing", "Enter a remote file path first.");
+            return;
+        }
+        if (repoText.isEmpty() || !repoText.contains("/") || branch.isEmpty() || token.isEmpty()) {
+            setStatus("GitHub configuration missing", "Enter repository, branch, and token first.");
+            return;
+        }
+
+        String[] repo = repoText.split("/", 2);
+        String owner = repo[0].trim();
+        String name = repo[1].trim();
+        if (owner.isEmpty() || name.isEmpty()) {
+            setStatus("GitHub repository missing", "Use owner/repository.");
+            return;
+        }
+
+        setStatus("Loading file commits", filePath);
+        Thread thread = new Thread(() -> {
+            try {
+                ArrayList<GitHubCommitItem> commits =
+                    fetchGithubCommits(owner, name, branch, rootPath, token, filePath);
+                mainHandler.post(() -> showCommitList("File commits", commits));
+            } catch (IOException | JSONException e) {
+                mainHandler.post(() -> {
+                    setStatus("File history failed", usefulMessage(e));
+                    appendLog("File history failed: " + e);
+                });
+            }
+        }, "typewrt-github-file-history");
+        thread.start();
+    }
+
+    private void showCommitList(String title, ArrayList<GitHubCommitItem> commits) {
+        if (commits.isEmpty()) {
+            setStatus("No commits found", "GitHub returned an empty history.");
+            return;
+        }
+
+        String[] labels = new String[commits.size()];
+        for (int i = 0; i < commits.size(); i++) {
+            labels[i] = commits.get(i).label();
+        }
+        new AlertDialog.Builder(this)
+            .setTitle(title)
+            .setItems(labels, null)
+            .show();
     }
 
     private void collectGithubContents(
@@ -2292,7 +2393,8 @@ public class MainActivity extends Activity {
         out.add(new GitHubRemoteFile(
             path,
             entry.optLong("size", 0),
-            entry.optString("download_url", "")));
+            entry.optString("download_url", ""),
+            entry.optString("sha", "")));
     }
 
     private String remoteRelativePath(String remotePath, String rootPath) {
@@ -2310,6 +2412,27 @@ public class MainActivity extends Activity {
         return sanitizeTransferPath(remote, "typewrt.txt");
     }
 
+    private byte[] downloadGithubFile(
+        String owner,
+        String repo,
+        String token,
+        GitHubRemoteFile file
+    ) throws IOException, JSONException {
+        if (file.sha != null && !file.sha.isEmpty()) {
+            String endpoint = "https://api.github.com/repos/" + encodePathPart(owner)
+                + "/" + encodePathPart(repo)
+                + "/git/blobs/" + encodePathPart(file.sha);
+            JSONObject blob = sendGithubJson(endpoint, "GET", token, null);
+            String encoding = blob.optString("encoding", "");
+            String content = blob.optString("content", "").replace("\n", "");
+
+            if ("base64".equals(encoding) && !content.isEmpty()) {
+                return Base64.decode(content, Base64.DEFAULT);
+            }
+        }
+        return downloadGithubBytes(file.downloadUrl, token);
+    }
+
     private byte[] downloadGithubBytes(String downloadUrl, String token) throws IOException {
         HttpURLConnection connection = (HttpURLConnection) new URL(downloadUrl).openConnection();
         connection.setConnectTimeout(HTTP_TIMEOUT_MS);
@@ -2324,6 +2447,175 @@ public class MainActivity extends Activity {
             throw new IOException("download HTTP " + status + ": " + preview(response));
         }
         return response;
+    }
+
+    private ArrayList<GitHubCommitItem> fetchGithubCommits(
+        String owner,
+        String repo,
+        String branch,
+        String rootPath,
+        String token,
+        String filePath
+    ) throws IOException, JSONException {
+        String endpoint = "https://api.github.com/repos/" + encodePathPart(owner)
+            + "/" + encodePathPart(repo)
+            + "/commits?sha=" + encodePathPart(branch)
+            + "&per_page=30";
+        String path = sanitizeOptionalRepoPath(filePath);
+        String root = sanitizeOptionalRepoPath(rootPath);
+
+        if (!path.isEmpty()) {
+            endpoint += "&path=" + encodePathPart(githubPathForSnapshot(root, path));
+        } else if (!root.isEmpty()) {
+            endpoint += "&path=" + encodePathPart(root);
+        }
+
+        HttpURLConnection connection = openGithubConnection(endpoint, "GET", token);
+        int status = connection.getResponseCode();
+        byte[] response = readResponse(connection);
+        connection.disconnect();
+        if (status < 200 || status >= 300) {
+            throw new IOException("commits HTTP " + status + ": " + preview(response));
+        }
+
+        JSONArray json = new JSONArray(new String(response, StandardCharsets.UTF_8));
+        ArrayList<GitHubCommitItem> commits = new ArrayList<>();
+        for (int i = 0; i < json.length(); i++) {
+            JSONObject item = json.getJSONObject(i);
+            JSONObject commit = item.optJSONObject("commit");
+            JSONObject author = commit == null ? null : commit.optJSONObject("author");
+            String message = commit == null ? "" : commit.optString("message", "");
+            String title = message.split("\\n", 2)[0].trim();
+            commits.add(new GitHubCommitItem(
+                item.optString("sha", ""),
+                title.isEmpty() ? "(no message)" : title,
+                author == null ? "" : author.optString("date", "")));
+        }
+        return commits;
+    }
+
+    private String createGithubBlob(
+        String owner,
+        String repo,
+        String token,
+        byte[] data
+    ) throws IOException, JSONException {
+        String endpoint = "https://api.github.com/repos/" + encodePathPart(owner)
+            + "/" + encodePathPart(repo)
+            + "/git/blobs";
+        JSONObject request = new JSONObject();
+        request.put("content", Base64.encodeToString(data, Base64.NO_WRAP));
+        request.put("encoding", "base64");
+
+        return sendGithubJson(endpoint, "POST", token, request).getString("sha");
+    }
+
+    private String fetchGithubRefSha(
+        String owner,
+        String repo,
+        String branch,
+        String token
+    ) throws IOException, JSONException {
+        String endpoint = "https://api.github.com/repos/" + encodePathPart(owner)
+            + "/" + encodePathPart(repo)
+            + "/git/ref/heads/" + encodeRepoPath(branch);
+        JSONObject response = sendGithubJson(endpoint, "GET", token, null);
+        JSONObject object = response.getJSONObject("object");
+
+        return object.getString("sha");
+    }
+
+    private String fetchGithubCommitTreeSha(
+        String owner,
+        String repo,
+        String commitSha,
+        String token
+    ) throws IOException, JSONException {
+        String endpoint = "https://api.github.com/repos/" + encodePathPart(owner)
+            + "/" + encodePathPart(repo)
+            + "/git/commits/" + encodePathPart(commitSha);
+        JSONObject response = sendGithubJson(endpoint, "GET", token, null);
+        JSONObject tree = response.getJSONObject("tree");
+
+        return tree.getString("sha");
+    }
+
+    private String createGithubTree(
+        String owner,
+        String repo,
+        String token,
+        String baseTreeSha,
+        JSONArray treeItems
+    ) throws IOException, JSONException {
+        String endpoint = "https://api.github.com/repos/" + encodePathPart(owner)
+            + "/" + encodePathPart(repo)
+            + "/git/trees";
+        JSONObject request = new JSONObject();
+        request.put("base_tree", baseTreeSha);
+        request.put("tree", treeItems);
+
+        return sendGithubJson(endpoint, "POST", token, request).getString("sha");
+    }
+
+    private String createGithubCommit(
+        String owner,
+        String repo,
+        String token,
+        String message,
+        String treeSha,
+        String parentSha
+    ) throws IOException, JSONException {
+        String endpoint = "https://api.github.com/repos/" + encodePathPart(owner)
+            + "/" + encodePathPart(repo)
+            + "/git/commits";
+        JSONObject request = new JSONObject();
+        JSONArray parents = new JSONArray();
+        parents.put(parentSha);
+        request.put("message", message);
+        request.put("tree", treeSha);
+        request.put("parents", parents);
+
+        return sendGithubJson(endpoint, "POST", token, request).getString("sha");
+    }
+
+    private void updateGithubRef(
+        String owner,
+        String repo,
+        String branch,
+        String token,
+        String commitSha
+    ) throws IOException, JSONException {
+        String endpoint = "https://api.github.com/repos/" + encodePathPart(owner)
+            + "/" + encodePathPart(repo)
+            + "/git/refs/heads/" + encodeRepoPath(branch);
+        JSONObject request = new JSONObject();
+        request.put("sha", commitSha);
+        request.put("force", false);
+        sendGithubJson(endpoint, "PATCH", token, request);
+    }
+
+    private JSONObject sendGithubJson(
+        String endpoint,
+        String method,
+        String token,
+        JSONObject body
+    ) throws IOException, JSONException {
+        HttpURLConnection connection = openGithubConnection(endpoint, method, token);
+        if (body != null) {
+            connection.setDoOutput(true);
+            connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+            try (OutputStream out = connection.getOutputStream()) {
+                out.write(body.toString().getBytes(StandardCharsets.UTF_8));
+            }
+        }
+
+        int status = connection.getResponseCode();
+        byte[] response = readResponse(connection);
+        connection.disconnect();
+        if (status < 200 || status >= 300) {
+            throw new IOException(method + " HTTP " + status + ": " + preview(response));
+        }
+        return new JSONObject(new String(response, StandardCharsets.UTF_8));
     }
 
     private String performGithubAccessCheck(
@@ -2458,13 +2750,30 @@ public class MainActivity extends Activity {
         String token
     ) throws IOException {
         HttpURLConnection connection = (HttpURLConnection) new URL(endpoint).openConnection();
-        connection.setRequestMethod(method);
+        setHttpMethod(connection, method);
         connection.setConnectTimeout(HTTP_TIMEOUT_MS);
         connection.setReadTimeout(HTTP_TIMEOUT_MS);
         connection.setRequestProperty("Accept", "application/vnd.github+json");
         connection.setRequestProperty("Authorization", "Bearer " + token);
         connection.setRequestProperty("X-GitHub-Api-Version", GITHUB_API_VERSION);
         return connection;
+    }
+
+    private void setHttpMethod(HttpURLConnection connection, String method) throws IOException {
+        try {
+            connection.setRequestMethod(method);
+        } catch (ProtocolException e) {
+            if (!"PATCH".equals(method)) {
+                throw e;
+            }
+            try {
+                Field field = HttpURLConnection.class.getDeclaredField("method");
+                field.setAccessible(true);
+                field.set(connection, method);
+            } catch (ReflectiveOperationException | RuntimeException reflectionError) {
+                throw e;
+            }
+        }
     }
 
     private byte[] readResponse(HttpURLConnection connection) throws IOException {
@@ -2626,21 +2935,37 @@ public class MainActivity extends Activity {
         final String path;
         final long size;
         final String downloadUrl;
+        final String sha;
 
-        GitHubRemoteFile(String path, long size, String downloadUrl) {
+        GitHubRemoteFile(String path, long size, String downloadUrl, String sha) {
             this.path = path;
             this.size = size;
             this.downloadUrl = downloadUrl;
+            this.sha = sha;
         }
     }
 
     private static final class LocalMirrorFile {
         final String path;
-        final Uri uri;
+        final File file;
 
-        LocalMirrorFile(String path, Uri uri) {
+        LocalMirrorFile(String path, File file) {
             this.path = path;
-            this.uri = uri;
+            this.file = file;
+        }
+    }
+
+    private static final class BrowserEntry {
+        final String name;
+        final String path;
+        final File file;
+        final boolean directory;
+
+        BrowserEntry(String name, String path, File file, boolean directory) {
+            this.name = name;
+            this.path = path;
+            this.file = file;
+            this.directory = directory;
         }
     }
 
@@ -2656,208 +2981,102 @@ public class MainActivity extends Activity {
         }
     }
 
-    private boolean saveMirrorFileSync(String fileName, byte[] data) throws IOException {
-        ContentResolver resolver = getContentResolver();
-        String safePath = sanitizeTransferPath(fileName, "typewrt.txt");
-        Uri existingUri = findExistingDownload(resolver, safePath);
+    private static final class GitHubCommitResult {
+        boolean noChanges;
+        int changed;
+        int deleted;
+        String commitSha = "";
+    }
 
-        if (existingUri != null) {
+    private static final class GitHubCommitItem {
+        final String sha;
+        final String title;
+        final String date;
+
+        GitHubCommitItem(String sha, String title, String date) {
+            this.sha = sha;
+            this.title = title;
+            this.date = date;
+        }
+
+        String shortSha() {
+            return sha.length() <= 7 ? sha : sha.substring(0, 7);
+        }
+
+        String label() {
+            String cleanDate = date == null ? "" : date.replace('T', ' ');
+            int dot = cleanDate.indexOf('.');
+
+            if (dot > 0) {
+                cleanDate = cleanDate.substring(0, dot);
+            }
+            if (cleanDate.endsWith("Z")) {
+                cleanDate = cleanDate.substring(0, cleanDate.length() - 1);
+            }
+            return shortSha() + "  " + cleanDate + "  " + title;
+        }
+    }
+
+    private boolean saveMirrorFileSync(String fileName, byte[] data) throws IOException {
+        String safePath = sanitizeTransferPath(fileName, "typewrt.txt");
+        File target = remoteFile(safePath);
+
+        if (target.isFile()) {
             try {
-                byte[] existingData = readUriBytes(existingUri, "Mirror file");
+                byte[] existingData = readFileBytes(target);
                 if (bytesEqual(existingData, data)) {
-                    mainHandler.post(() -> setLatestFile(safePath, data, existingUri));
+                    mainHandler.post(() -> setLatestFile(safePath, data, null));
                     return false;
                 }
             } catch (IOException | RuntimeException ignored) {
                 // If the local mirror is unreadable, overwrite it from GitHub.
             }
-            overwriteMirrorFileSync(existingUri, data);
-            mainHandler.post(() -> setLatestFile(safePath, data, existingUri));
+            writeFileBytes(target, data);
+            mainHandler.post(() -> setLatestFile(safePath, data, null));
             return true;
         }
 
-        Uri uri = writeNewMirrorFileSync(safePath, data);
-        mainHandler.post(() -> setLatestFile(safePath, data, uri));
+        writeFileBytes(target, data);
+        mainHandler.post(() -> setLatestFile(safePath, data, null));
         return true;
     }
 
-    private Uri writeNewMirrorFileSync(String fileName, byte[] data) throws IOException {
-        ContentResolver resolver = getContentResolver();
-        String displayName = transferDisplayName(fileName);
-        String relativeDir = transferRelativeDir(fileName);
-        ContentValues values = new ContentValues();
-        values.put(MediaStore.Downloads.DISPLAY_NAME, displayName);
-        values.put(MediaStore.Downloads.MIME_TYPE, guessMimeType(displayName));
-        values.put(MediaStore.Downloads.RELATIVE_PATH, relativeDir);
-        values.put(MediaStore.Downloads.IS_PENDING, 1);
-
-        Uri uri = null;
-        try {
-            uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-            if (uri == null) {
-                throw new IOException("MediaStore insert returned null");
-            }
-            try (OutputStream out = resolver.openOutputStream(uri)) {
-                if (out == null) {
-                    throw new IOException("Could not open output stream");
-                }
-                out.write(data);
-            }
-
-            ContentValues done = new ContentValues();
-            done.put(MediaStore.Downloads.IS_PENDING, 0);
-            resolver.update(uri, done, null, null);
-            return uri;
-        } catch (IOException | RuntimeException e) {
-            if (uri != null) {
-                resolver.delete(uri, null, null);
-            }
-            if (e instanceof IOException) {
-                throw (IOException) e;
-            }
-            throw new IOException("Could not save mirror file: " + usefulMessage(e), e);
-        }
-    }
-
-    private void overwriteMirrorFileSync(Uri uri, byte[] data) throws IOException {
-        try (OutputStream out = getContentResolver().openOutputStream(uri, "wt")) {
-            if (out == null) {
-                throw new IOException("Could not open output stream");
-            }
-            out.write(data);
-        } catch (RuntimeException e) {
-            throw new IOException("Could not overwrite mirror file: " + usefulMessage(e), e);
-        }
-    }
-
     private ArrayList<LocalMirrorFile> listLocalMirrorFiles() {
-        ArrayList<LocalMirrorFile> files = new ArrayList<>();
-        ContentResolver resolver = getContentResolver();
-        String mirrorRoot = normalizeRelativePath(TYPEWRT_DOWNLOAD_DIR);
-        String[] projection = {
-            MediaStore.MediaColumns._ID,
-            MediaStore.MediaColumns.DISPLAY_NAME,
-            MediaStore.MediaColumns.RELATIVE_PATH,
-        };
-
-        try (Cursor cursor = resolver.query(
-            MediaStore.Downloads.EXTERNAL_CONTENT_URI,
-            projection,
-            null,
-            null,
-            MediaStore.MediaColumns.DISPLAY_NAME + " ASC")) {
-            if (cursor == null) {
-                return files;
-            }
-
-            int idIndex = cursor.getColumnIndex(MediaStore.MediaColumns._ID);
-            int nameIndex = cursor.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME);
-            int pathIndex = cursor.getColumnIndex(MediaStore.MediaColumns.RELATIVE_PATH);
-            if (idIndex < 0 || nameIndex < 0 || pathIndex < 0) {
-                return files;
-            }
-
-            while (cursor.moveToNext()) {
-                String displayName = cursor.getString(nameIndex);
-                String relativePath = normalizeRelativePath(cursor.getString(pathIndex));
-                String subdir;
-
-                if (relativePath.equals(mirrorRoot)) {
-                    subdir = "";
-                } else if (relativePath.startsWith(mirrorRoot + "/")) {
-                    subdir = relativePath.substring(mirrorRoot.length() + 1);
-                } else {
-                    continue;
-                }
-                String localPath = subdir.isEmpty() ? displayName : subdir + "/" + displayName;
-                String safePath = sanitizeTransferPath(localPath, "");
-                if (safePath.isEmpty()) {
-                    continue;
-                }
-                long id = cursor.getLong(idIndex);
-                Uri uri = ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, id);
-                files.add(new LocalMirrorFile(safePath, uri));
-            }
-        } catch (RuntimeException e) {
+        try {
+            return listFolderFiles(remoteDir());
+        } catch (IOException | RuntimeException e) {
             mainHandler.post(() -> appendLog("Mirror listing failed: " + e));
+            return new ArrayList<>();
         }
-        return files;
     }
 
-    private boolean deleteLocalMirrorFile(Uri uri) {
+    private boolean deleteLocalMirrorFile(File file) {
         try {
-            return getContentResolver().delete(uri, null, null) > 0;
+            boolean deleted = deleteRecursive(file);
+            pruneEmptyParents(file.getParentFile(), remoteDir());
+            return deleted;
         } catch (RuntimeException e) {
+            mainHandler.post(() -> appendLog("Mirror delete failed: " + e));
+            return false;
+        } catch (IOException e) {
             mainHandler.post(() -> appendLog("Mirror delete failed: " + e));
             return false;
         }
     }
 
     private void saveFile(String fileName, byte[] data) {
-        ContentResolver resolver = getContentResolver();
         String safePath = sanitizeTransferPath(fileName, "typewrt.txt");
-        Uri existingUri = findExistingDownload(resolver, safePath);
 
-        if (existingUri != null) {
-            try {
-                byte[] existingData = readUriBytes(existingUri, "Existing file");
-                if (bytesEqual(existingData, data)) {
-                    mainHandler.post(() -> {
-                        setLatestFile(safePath, data, existingUri);
-                        setStatus("Already current " + safePath, "Downloads/Typewrt");
-                        appendLog("Already current: " + existingUri);
-                        setIdleButtons();
-                    });
-                    return;
-                }
-                mainHandler.post(() -> askOverwrite(safePath, data, existingUri, existingData));
-                return;
-            } catch (IOException | RuntimeException e) {
-                mainHandler.post(() -> askOverwrite(safePath, data, existingUri, null));
-                return;
-            }
-        }
-        writeNewFile(safePath, data);
-    }
-
-    private void writeNewFile(String fileName, byte[] data) {
-        ContentResolver resolver = getContentResolver();
-        String displayName = transferDisplayName(fileName);
-        String relativeDir = transferRelativeDir(fileName);
-        ContentValues values = new ContentValues();
-        values.put(MediaStore.Downloads.DISPLAY_NAME, displayName);
-        values.put(MediaStore.Downloads.MIME_TYPE, guessMimeType(displayName));
-        values.put(MediaStore.Downloads.RELATIVE_PATH, relativeDir);
-        values.put(MediaStore.Downloads.IS_PENDING, 1);
-
-        Uri uri = null;
         try {
-            uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-            if (uri == null) {
-                throw new IOException("MediaStore insert returned null");
-            }
-            try (OutputStream out = resolver.openOutputStream(uri)) {
-                if (out == null) {
-                    throw new IOException("Could not open output stream");
-                }
-                out.write(data);
-            }
-
-            ContentValues done = new ContentValues();
-            done.put(MediaStore.Downloads.IS_PENDING, 0);
-            resolver.update(uri, done, null, null);
-
-            Uri savedUri = uri;
+            saveMirrorFileSync(safePath, data);
             mainHandler.post(() -> {
-                setLatestFile(fileName, data, savedUri);
-                setStatus("Saved " + fileName, relativeDir);
-                appendLog("Saved: " + savedUri);
+                setLatestFile(safePath, data, null);
+                setStatus("Saved " + safePath, "remote/");
+                appendLog("Remote saved: " + safePath);
+                refreshRemoteTree();
                 setIdleButtons();
             });
         } catch (IOException | RuntimeException e) {
-            if (uri != null) {
-                resolver.delete(uri, null, null);
-            }
             mainHandler.post(() -> {
                 setStatus("Save failed", e.getMessage() == null ? e.toString() : e.getMessage());
                 appendLog("Save failed: " + e);
@@ -2867,105 +3086,536 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void askOverwrite(
-        String fileName,
-        byte[] data,
-        Uri existingUri,
-        byte[] existingData
-    ) {
-        new AlertDialog.Builder(this)
-            .setTitle("Overwrite " + fileName + "?")
-            .setMessage("A different file already exists in Downloads/Typewrt.")
-            .setNegativeButton("No", (dialog, which) -> {
-                if (existingData != null) {
-                    setLatestFile(fileName, existingData, existingUri);
-                }
-                setStatus("Kept existing " + fileName, "Received copy was not saved.");
-                appendLog("Overwrite skipped: " + fileName);
-                setIdleButtons();
-            })
-            .setPositiveButton("Yes", (dialog, which) -> {
-                Thread thread = new Thread(
-                    () -> overwriteFile(fileName, data, existingUri),
-                    "typewrt-overwrite");
-                thread.start();
-            })
-            .show();
+    private void saveOutputFile(String fileName, byte[] data) throws IOException {
+        String safePath = sanitizeTransferPath(fileName, "typewrt.txt");
+        File target = outputFile(safePath);
+
+        writeFileBytes(target, data);
+        mainHandler.post(() -> {
+            setStatus("Exported " + safePath, "output/");
+            appendLog("Output saved: " + safePath);
+            updateFileActions();
+        });
     }
 
-    private void overwriteFile(String fileName, byte[] data, Uri uri) {
-        try (OutputStream out = getContentResolver().openOutputStream(uri, "wt")) {
-            if (out == null) {
-                throw new IOException("Could not open output stream");
-            }
-            out.write(data);
-            mainHandler.post(() -> {
-                setLatestFile(fileName, data, uri);
-                setStatus("Overwrote " + fileName, "Downloads/Typewrt");
-                appendLog("Overwrote: " + uri);
-                setIdleButtons();
-            });
+    private boolean deleteRemoteFile(String path) {
+        try {
+            File file = remoteFile(path);
+            boolean deleted = deleteRecursive(file);
+            pruneEmptyParents(file.getParentFile(), remoteDir());
+            return deleted;
         } catch (IOException | RuntimeException e) {
-            mainHandler.post(() -> {
-                setStatus("Overwrite failed", e.getMessage() == null ? e.toString() : e.getMessage());
-                appendLog("Overwrite failed: " + e);
-                setIdleButtons();
-                updateFileActions();
-            });
+            appendLog("Remote delete failed: " + e);
+            return false;
         }
     }
 
-    private Uri findExistingDownload(ContentResolver resolver, String fileName) {
-        String displayName = transferDisplayName(fileName);
-        String relativeDir = transferRelativeDir(fileName);
-        String[] projection = {
-            MediaStore.MediaColumns._ID,
-            MediaStore.MediaColumns.RELATIVE_PATH,
-        };
-        String selection = MediaStore.MediaColumns.DISPLAY_NAME + " = ?";
+    private File appStorageDir() throws IOException {
+        File root = getExternalFilesDir(null);
 
-        try (Cursor cursor = resolver.query(
-            MediaStore.Downloads.EXTERNAL_CONTENT_URI,
-            projection,
-            selection,
-            new String[] {displayName},
-            MediaStore.MediaColumns.DATE_MODIFIED + " DESC")) {
-            if (cursor == null) {
-                return null;
-            }
-            int idIndex = cursor.getColumnIndex(MediaStore.MediaColumns._ID);
-            int pathIndex = cursor.getColumnIndex(MediaStore.MediaColumns.RELATIVE_PATH);
-            if (idIndex < 0) {
-                return null;
-            }
-            while (cursor.moveToNext()) {
-                String relativePath = pathIndex >= 0 ? cursor.getString(pathIndex) : "";
-                if (!sameRelativePath(relativePath, relativeDir)) {
-                    continue;
+        if (root == null) {
+            root = getFilesDir();
+        }
+        if (root == null) {
+            throw new IOException("App storage is not available.");
+        }
+        if (!root.isDirectory() && !root.mkdirs()) {
+            throw new IOException("Could not create app storage.");
+        }
+        return root;
+    }
+
+    private File remoteDir() throws IOException {
+        return ensureFolder(new File(appStorageDir(), REMOTE_DIR_NAME));
+    }
+
+    private File outputDir() throws IOException {
+        return ensureFolder(new File(appStorageDir(), OUTPUT_DIR_NAME));
+    }
+
+    private File ensureFolder(File folder) throws IOException {
+        if (!folder.isDirectory() && !folder.mkdirs()) {
+            throw new IOException("Could not create " + folder.getName() + ".");
+        }
+        return folder;
+    }
+
+    private File remoteFile(String path) throws IOException {
+        return fileInside(remoteDir(), sanitizeTransferPath(path, "typewrt.txt"));
+    }
+
+    private File outputFile(String path) throws IOException {
+        return fileInside(outputDir(), sanitizeTransferPath(path, "typewrt.txt"));
+    }
+
+    private File fileInside(File root, String path) throws IOException {
+        File canonicalRoot = root.getCanonicalFile();
+        File file = new File(canonicalRoot, path).getCanonicalFile();
+        String rootPath = canonicalRoot.getPath();
+        String filePath = file.getPath();
+
+        if (!filePath.equals(rootPath) && !filePath.startsWith(rootPath + File.separator)) {
+            throw new IOException("Path escapes app storage.");
+        }
+        return file;
+    }
+
+    private void writeFileBytes(File file, byte[] data) throws IOException {
+        File parent = file.getParentFile();
+
+        if (parent != null && !parent.isDirectory() && !parent.mkdirs()) {
+            throw new IOException("Could not create " + parent.getName() + ".");
+        }
+        try (OutputStream out = new FileOutputStream(file, false)) {
+            out.write(data);
+        }
+    }
+
+    private byte[] readFileBytes(File file) throws IOException {
+        try (InputStream in = new FileInputStream(file);
+             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[4096];
+            long total = 0;
+            int n;
+
+            while ((n = in.read(buffer)) != -1) {
+                total += n;
+                if (total > MAX_FILE_BYTES || total > Integer.MAX_VALUE) {
+                    throw new IOException(file.getName() + " is larger than 20 MB.");
                 }
-                long id = cursor.getLong(idIndex);
-                return ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, id);
+                out.write(buffer, 0, n);
             }
-        } catch (RuntimeException e) {
-            mainHandler.post(() -> appendLog("Existing file lookup failed: " + e));
+            return out.toByteArray();
         }
-        return null;
     }
 
-    private boolean sameRelativePath(String left, String right) {
-        return normalizeRelativePath(left).equals(normalizeRelativePath(right));
+    private ArrayList<LocalMirrorFile> listFolderFiles(File root) throws IOException {
+        ArrayList<LocalMirrorFile> files = new ArrayList<>();
+
+        collectFolderFiles(root.getCanonicalFile(), root.getCanonicalFile(), files);
+        Collections.sort(files, (a, b) -> a.path.compareToIgnoreCase(b.path));
+        return files;
     }
 
-    private String normalizeRelativePath(String path) {
-        String clean = path == null ? "" : path.trim().replace('\\', '/');
+    private void collectFolderFiles(
+        File root,
+        File dir,
+        ArrayList<LocalMirrorFile> out
+    ) throws IOException {
+        File[] entries = dir.listFiles();
 
-        while (clean.startsWith("/")) {
-            clean = clean.substring(1);
+        if (entries == null) {
+            return;
         }
-        while (clean.endsWith("/")) {
-            clean = clean.substring(0, clean.length() - 1);
+        for (File entry : entries) {
+            if (entry.isDirectory()) {
+                collectFolderFiles(root, entry, out);
+            } else if (entry.isFile()) {
+                out.add(new LocalMirrorFile(relativeFilePath(root, entry), entry));
+            }
         }
-        return clean;
+    }
+
+    private String relativeFilePath(File root, File file) throws IOException {
+        String rootPath = root.getCanonicalPath();
+        String filePath = file.getCanonicalPath();
+
+        if (filePath.equals(rootPath)) {
+            return "";
+        }
+        if (filePath.startsWith(rootPath + File.separator)) {
+            return sanitizeTransferPath(
+                filePath.substring(rootPath.length() + 1).replace(File.separatorChar, '/'),
+                "");
+        }
+        throw new IOException("File is outside app storage.");
+    }
+
+    private boolean deleteRecursive(File file) {
+        if (!file.exists()) {
+            return false;
+        }
+        if (file.isDirectory()) {
+            File[] entries = file.listFiles();
+            if (entries != null) {
+                for (File entry : entries) {
+                    deleteRecursive(entry);
+                }
+            }
+        }
+        return file.delete();
+    }
+
+    private void pruneEmptyParents(File dir, File stopAt) throws IOException {
+        File stop = stopAt.getCanonicalFile();
+
+        while (dir != null) {
+            File current = dir.getCanonicalFile();
+            if (current.equals(stop)) {
+                return;
+            }
+            File[] entries = current.listFiles();
+            if (entries != null && entries.length > 0) {
+                return;
+            }
+            if (!current.delete()) {
+                return;
+            }
+            dir = current.getParentFile();
+        }
+    }
+
+    private TextView browserRow(String text, int color, Runnable action) {
+        TextView row = new TextView(this);
+        row.setText(text);
+        row.setTextColor(color);
+        row.setTextSize(14);
+        row.setTypeface(Typeface.MONOSPACE);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setMinHeight(dp(40));
+        row.setPadding(dp(8), 0, dp(8), 0);
+        row.setSingleLine(false);
+        if (action != null) {
+            row.setOnClickListener(v -> action.run());
+            row.setBackground(rippleBackground(COLOR_SURFACE_HIGH, COLOR_SURFACE_HIGH, dp(6)));
+        }
+        return row;
+    }
+
+    private String pendingMarkForPath(String path, boolean directory) {
+        boolean hasQueuedFile = false;
+        boolean hasQueuedDelete = false;
+        String prefix = path + "/";
+
+        for (FileSnapshot snapshot : pendingSendFiles) {
+            boolean match = directory ?
+                snapshot.name.startsWith(prefix) :
+                snapshot.name.equals(path);
+            if (!match) {
+                continue;
+            }
+            if (snapshot.deleteMarker) {
+                hasQueuedDelete = true;
+            } else {
+                hasQueuedFile = true;
+            }
+        }
+        if (hasQueuedDelete) {
+            return "x ";
+        }
+        if (hasQueuedFile) {
+            return "* ";
+        }
+        return "  ";
+    }
+
+    private boolean isDeleteQueued(String path) {
+        for (FileSnapshot snapshot : pendingSendFiles) {
+            if (snapshot.deleteMarker && snapshot.name.equals(path)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void queueDeleteForPath(String path) {
+        String safePath = sanitizeTransferPath(path, "");
+
+        if (safePath.isEmpty()) {
+            setStatus("Delete path missing", "No repository file selected.");
+            return;
+        }
+        deleteRemoteFile(safePath);
+        for (int i = pendingSendFiles.size() - 1; i >= 0; i--) {
+            if (pendingSendFiles.get(i).name.equals(safePath)) {
+                pendingSendFiles.remove(i);
+            }
+        }
+        pendingSendFiles.add(FileSnapshot.deleteMarker(safePath));
+        restorePending = true;
+        setStatus("Queued delete", safePath);
+        appendLog("Queued delete: " + safePath);
+        refreshRemoteTree();
+        updateSendFileActions();
+    }
+
+    private void showFileViewer(String path, File file) {
+        Thread thread = new Thread(() -> {
+            try {
+                byte[] data = readFileBytes(file);
+                String text = displayTextForFile(data);
+                boolean markdown = isMarkdownFile(path);
+                mainHandler.post(() -> showFileViewerDialog(path, text, markdown));
+            } catch (IOException | RuntimeException e) {
+                mainHandler.post(() ->
+                    setStatus("Could not open file", usefulMessage(e)));
+            }
+        }, "typewrt-file-viewer");
+        thread.start();
+    }
+
+    private String displayTextForFile(byte[] data) {
+        if (!looksLikeText(data)) {
+            return "(binary file)";
+        }
+        String text = new String(data, StandardCharsets.UTF_8);
+        int maxChars = 12000;
+
+        if (text.length() > maxChars) {
+            return text.substring(0, maxChars) + "\n\n(file preview truncated)";
+        }
+        return text;
+    }
+
+    private boolean looksLikeText(byte[] data) {
+        int controls = 0;
+        int limit = Math.min(data.length, 4096);
+
+        for (int i = 0; i < limit; i++) {
+            int b = data[i] & 0xff;
+            if (b == 0) {
+                return false;
+            }
+            if (b < 32 && b != '\n' && b != '\r' && b != '\t') {
+                controls++;
+            }
+        }
+        return limit == 0 || controls < Math.max(3, limit / 100);
+    }
+
+    private void showFileViewerDialog(String path, String text, boolean markdown) {
+        TextView body = new TextView(this);
+        body.setText(markdown ? highlightMarkdown(text) : text);
+        body.setTextColor(COLOR_TEXT_PRIMARY);
+        body.setTextSize(14);
+        body.setTypeface(Typeface.MONOSPACE);
+        body.setPadding(dp(14), dp(12), dp(14), dp(12));
+        body.setTextIsSelectable(true);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setBackgroundColor(COLOR_BACKGROUND);
+        scroll.addView(body);
+
+        AlertDialog.Builder builder = new AlertDialog.Builder(this)
+            .setTitle(path)
+            .setView(scroll)
+            .setNegativeButton("Close", null);
+
+        if (!isDeleteQueued(path)) {
+            builder.setPositiveButton("Queue delete", (dialog, which) -> queueDeleteForPath(path));
+        }
+        builder.show();
+    }
+
+    private boolean isMarkdownFile(String path) {
+        String lower = path.toLowerCase(Locale.US);
+        return lower.endsWith(".md") || lower.endsWith(".markdown") ||
+            lower.endsWith("readme") || lower.endsWith("readme.txt");
+    }
+
+    private SpannableString highlightMarkdown(String text) {
+        SpannableString span = new SpannableString(text);
+        int lineStart = 0;
+        boolean codeBlock = false;
+
+        while (lineStart <= text.length()) {
+            int lineEnd = text.indexOf('\n', lineStart);
+            if (lineEnd < 0) {
+                lineEnd = text.length();
+            }
+            String line = text.substring(lineStart, lineEnd);
+            String trimmed = line.trim();
+
+            if (trimmed.startsWith("```")) {
+                codeBlock = !codeBlock;
+                setSpan(span, new ForegroundColorSpan(COLOR_TEXT_MUTED), lineStart, lineEnd);
+            } else if (codeBlock) {
+                setSpan(span, new ForegroundColorSpan(COLOR_TEXT_MUTED), lineStart, lineEnd);
+            } else if (line.startsWith("#")) {
+                setSpan(span, new ForegroundColorSpan(COLOR_BLUE), lineStart, lineEnd);
+                setSpan(span, new StyleSpan(Typeface.BOLD), lineStart, lineEnd);
+            } else if (trimmed.startsWith("- ") || trimmed.startsWith("* ") ||
+                    trimmed.matches("[0-9]+\\.\\s+.*")) {
+                setSpan(span, new ForegroundColorSpan(COLOR_TEXT_SECONDARY), lineStart, lineEnd);
+            } else if (trimmed.startsWith(">")) {
+                setSpan(span, new ForegroundColorSpan(COLOR_TEXT_MUTED), lineStart, lineEnd);
+            }
+            highlightInlineMarkdown(span, text, lineStart, lineEnd);
+            if (lineEnd == text.length()) {
+                break;
+            }
+            lineStart = lineEnd + 1;
+        }
+        return span;
+    }
+
+    private void highlightInlineMarkdown(
+        SpannableString span,
+        String text,
+        int start,
+        int end
+    ) {
+        int pos = start;
+
+        while (pos < end) {
+            int left = text.indexOf('`', pos);
+            if (left < 0 || left >= end) {
+                break;
+            }
+            int right = text.indexOf('`', left + 1);
+            if (right < 0 || right >= end) {
+                break;
+            }
+            setSpan(span, new ForegroundColorSpan(COLOR_BLUE), left, right + 1);
+            pos = right + 1;
+        }
+
+        pos = start;
+        while (pos < end) {
+            int left = text.indexOf('[', pos);
+            if (left < 0 || left >= end) {
+                break;
+            }
+            int mid = text.indexOf("](", left);
+            int right = mid < 0 ? -1 : text.indexOf(')', mid + 2);
+            if (mid < 0 || right < 0 || right >= end) {
+                break;
+            }
+            setSpan(span, new ForegroundColorSpan(COLOR_BLUE), left, right + 1);
+            pos = right + 1;
+        }
+    }
+
+    private void setSpan(SpannableString text, Object what, int start, int end) {
+        if (start < end) {
+            text.setSpan(what, start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+    }
+
+    private void refreshRemoteTree() {
+        if (remoteBrowserView == null) {
+            return;
+        }
+        Thread thread = new Thread(() -> {
+            ArrayList<BrowserEntry> entries = new ArrayList<>();
+            String shownPath;
+            String error = null;
+
+            try {
+                File root = remoteDir();
+                File current = remoteBrowserPath.isEmpty() ?
+                    root : fileInside(root, remoteBrowserPath);
+
+                if (!current.isDirectory()) {
+                    remoteBrowserPath = "";
+                    current = root;
+                }
+                shownPath = remoteBrowserPath;
+                File[] children = current.listFiles();
+                if (children != null) {
+                    Arrays.sort(children, (a, b) -> {
+                        if (a.isDirectory() != b.isDirectory()) {
+                            return a.isDirectory() ? -1 : 1;
+                        }
+                        return a.getName().compareToIgnoreCase(b.getName());
+                    });
+                    for (File child : children) {
+                        String path = relativeFilePath(root, child);
+                        if (!path.isEmpty()) {
+                            entries.add(new BrowserEntry(
+                                child.getName(),
+                                path,
+                                child,
+                                child.isDirectory()));
+                        }
+                    }
+                }
+            } catch (IOException | RuntimeException e) {
+                shownPath = remoteBrowserPath;
+                error = usefulMessage(e);
+            }
+            String finalShownPath = shownPath;
+            String finalError = error;
+            mainHandler.post(() -> {
+                renderRemoteBrowser(finalShownPath, entries, finalError);
+                if (activeFileView != null && latestFileSnapshot() == null) {
+                    activeFileView.setText("Repository ready.");
+                }
+            });
+        }, "typewrt-remote-tree");
+        thread.start();
+    }
+
+    private void renderRemoteBrowser(
+        String shownPath,
+        List<BrowserEntry> entries,
+        String error
+    ) {
+        remoteBrowserView.removeAllViews();
+        remoteBrowserView.addView(browserRow(
+            "remote/" + (shownPath.isEmpty() ? "" : shownPath),
+            COLOR_BLUE,
+            null));
+
+        if (error != null) {
+            remoteBrowserView.addView(browserRow(error, COLOR_TEXT_SECONDARY, null));
+            return;
+        }
+        if (!shownPath.isEmpty()) {
+            remoteBrowserView.addView(browserRow("..", COLOR_TEXT_PRIMARY, () -> {
+                int slash = remoteBrowserPath.lastIndexOf('/');
+                remoteBrowserPath = slash < 0 ? "" : remoteBrowserPath.substring(0, slash);
+                refreshRemoteTree();
+            }));
+        }
+
+        Set<String> visiblePaths = new HashSet<>();
+        int visibleRows = 0;
+        for (BrowserEntry entry : entries) {
+            visiblePaths.add(entry.path);
+            String mark = pendingMarkForPath(entry.path, entry.directory);
+            String label = entry.directory ?
+                mark + "[+] " + entry.name :
+                mark + entry.name + "  " + entry.file.length() + " b";
+
+            remoteBrowserView.addView(browserRow(label, COLOR_TEXT_PRIMARY, () -> {
+                if (entry.directory) {
+                    remoteBrowserPath = entry.path;
+                    refreshRemoteTree();
+                } else {
+                    showFileViewer(entry.path, entry.file);
+                }
+            }));
+            visibleRows++;
+        }
+        for (FileSnapshot snapshot : pendingSendFiles) {
+            if (!snapshot.deleteMarker || visiblePaths.contains(snapshot.name)) {
+                continue;
+            }
+            if (!parentPath(snapshot.name).equals(shownPath)) {
+                continue;
+            }
+            remoteBrowserView.addView(browserRow(
+                "x " + fileNameFromPath(snapshot.name),
+                COLOR_TEXT_MUTED,
+                null));
+            visibleRows++;
+        }
+        if (visibleRows == 0) {
+            remoteBrowserView.addView(browserRow("empty", COLOR_TEXT_MUTED, null));
+        }
+    }
+
+    private String parentPath(String path) {
+        int slash = path.lastIndexOf('/');
+
+        return slash < 0 ? "" : path.substring(0, slash);
+    }
+
+    private String fileNameFromPath(String path) {
+        int slash = path.lastIndexOf('/');
+
+        return slash < 0 ? path : path.substring(slash + 1);
     }
 
     private boolean bytesEqual(byte[] left, byte[] right) {
@@ -3006,21 +3656,5 @@ public class MainActivity extends Activity {
     }
 
     private void appendLog(String message) {
-        String old = logView.getText().toString();
-        List<String> lines = new ArrayList<>();
-        if (!old.isEmpty()) {
-            Collections.addAll(lines, old.split("\\n"));
-        }
-        lines.add(message);
-        while (lines.size() > 80) {
-            lines.remove(0);
-        }
-        logView.setText(String.join("\n", lines));
-        logView.post(() -> {
-            View parent = (View) logView.getParent();
-            if (parent instanceof ScrollView) {
-                ((ScrollView) parent).fullScroll(View.FOCUS_DOWN);
-            }
-        });
     }
 }

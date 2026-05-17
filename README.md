@@ -60,19 +60,21 @@ marks it as deleted remotely.
 A tiny Android companion lives in `companion/typewrt-android`. Open that folder in
 Android Studio and install the app on a phone. To receive marked files from Typewrt,
 mark files in the menu with `s`, press `b`, then tap **From Typewrt** in the app.
-Received files are saved under `Downloads/Typewrt`.
+Received files are saved into the app-owned `remote/` mirror.
 
 To send phone-side updates into the embedded editor's SD card, open the Typewrt menu
-in the target directory, run `ble recv`, queue text files and optional delete markers
-in the app, then tap **To Typewrt**. The app uses service `0xffe0`, TX notifications on
-`0xffe1` for phone receive, RX writes on `0xffe2` for Typewrt receive, and the
-`TYPEWRT-FILE` / `TYPEWRT-DELETE` stream format described above.
+in the target directory, run `ble recv`, then tap **To Typewrt** after a GitHub pull,
+restore, or file-viewer delete request has queued updates. The Transfer tab includes a
+small repository browser; queued updates are marked with `*`, and queued deletes with
+`x`. The app uses service `0xffe0`, TX notifications on `0xffe1` for phone receive, RX
+writes on `0xffe2` for Typewrt receive, and the `TYPEWRT-FILE` / `TYPEWRT-DELETE` stream
+format described above.
 
 The companion can also export the latest received file through a reachable
-`pandoc-server`, fetch a GitHub repository or subfolder into the phone mirror and queue
-those changes for Typewrt, and upload the latest received or exported file to GitHub using
-the repository contents REST API. `https://pandoc.org/app/` itself is browser-side Pandoc
-WASM, so the native app expects a real `pandoc-server` URL such as
+`pandoc-server` into an `output/` folder, pull a GitHub repository or subfolder into the
+`remote/` mirror, commit all `remote/` changes back to GitHub, and restore `remote/` from
+a recent commit. `https://pandoc.org/app/` itself is browser-side Pandoc WASM, so the
+native app expects a real `pandoc-server` URL such as
 `http://192.168.1.20:3030/`.
 
 ## Menu file browser

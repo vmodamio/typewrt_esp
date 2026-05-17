@@ -1,6 +1,12 @@
 # Typewrt Android Companion
 
-Tiny Android companion for Typewrt BLE file transfers.
+Tiny Android companion for Typewrt BLE file transfers, GitHub sync, and Pandoc export.
+
+The app keeps its own storage area with two folders. Tap **Repository** in the Transfer
+tab to see the actual phone path.
+
+- `remote/` is the phone mirror synchronized with GitHub and the typewriter.
+- `output/` is for Pandoc exports and is not sent back to GitHub or Typewrt.
 
 ## Use
 
@@ -9,29 +15,30 @@ Tiny Android companion for Typewrt BLE file transfers.
 1. In the Typewrt menu, mark files with `s`, then press `b` or run `:ble send`.
 2. Open this app on the phone.
 3. Tap **From Typewrt** and accept the Bluetooth permission prompt.
-4. Received files are saved to `Downloads/Typewrt`, preserving relative subdirectories.
+4. Received files are saved to the app's `remote/` folder, preserving subdirectories.
 
 The app connects to the Typewrt BLE service `0xffe0`, subscribes to the TX characteristic
 `0xffe1`, receives one or more `TYPEWRT-FILE` blocks, and stores the raw file bytes
-locally. If a different file already exists in `Downloads/Typewrt`, the app asks before
-overwriting it.
+locally. The Typewrt copy is treated as authoritative for received files, so matching
+paths in `remote/` are updated directly.
 
 ### Send updates to Typewrt
 
-1. From the Typewrt menu, enter `ble recv` to advertise receive mode in the current directory.
-2. In the Android app, tap **Add files** and pick one or more local text documents.
-3. Optionally enter a relative path and tap **Add delete** to mark a file as deleted remotely.
-4. Tap **To Typewrt**.
+1. Pull or restore from GitHub, or open a file in the Repository browser and queue delete.
+2. From the Typewrt menu, enter `ble recv` to advertise receive mode in the current directory.
+3. Tap **To Typewrt**.
 
 The app writes the same `TYPEWRT-FILE <bytes> <name>\n` stream to the RX characteristic
 `0xffe2`. Delete markers are sent as `TYPEWRT-DELETE <path>\n`; Typewrt keeps its local
-copy and marks it with `x` in the menu.
+copy and marks it with `x` in the menu. The Repository browser marks queued file updates
+with `*` and queued deletes with `x`. Text files open read-only, with lightweight Markdown
+highlighting for Markdown files.
 
 ## Pandoc export
 
 After a file is received, enter the root URL of a reachable `pandoc-server`, choose input
-and output formats, then tap **Export**. The converted file is saved back into
-`Downloads/Typewrt` and becomes the new latest file.
+and output formats, then tap **Export**. The converted file is saved into the app's
+`output/` folder, separate from the synchronized `remote/` mirror.
 
 `https://pandoc.org/app/` is a browser-based Pandoc WASM app, not an upload API. For direct
 conversion from this native app, run a `pandoc-server` instance on a machine the phone can
@@ -45,21 +52,23 @@ Then use a URL such as `http://192.168.1.20:3030/` in the Android app.
 
 ## GitHub repository sync
 
-Fill in:
+Tap **GitHub repository** to show or hide the repository settings:
 
 - Repository as `owner/repository`
 - Repository root/path as an optional folder inside the repository, for example `notes`
 - Branch, usually `main`
 - A GitHub token with repository **Contents: read and write** permission
 
-The app checks repository access whenever the configuration changes. Tap **Fetch from
-GitHub** to download the whole repository, or the configured subfolder, into
-`Downloads/Typewrt`. Files that differ from the local phone mirror are queued for
-**To Typewrt**. Files that disappeared from GitHub are removed from the phone mirror and
-queued as `TYPEWRT-DELETE` markers so the typewriter can mark them with `x`.
+The app checks repository access whenever the configuration changes. Tap **Pull** to
+download the whole repository, or the configured subfolder, into `remote/`. Files that
+differ from the local phone mirror are queued for **To Typewrt**. Files that disappeared
+from GitHub are removed from the phone mirror and queued as `TYPEWRT-DELETE` markers so
+the typewriter can mark them with `x`.
 
-After receiving or exporting a file, tap **Send latest file** to create or update that one
-file under the configured repository root through the GitHub repository contents API.
+Tap **Commit** to compare `remote/` against GitHub and commit all additions, edits, and
+deletions with the message in the commit field. Tap **Restore** to choose a recent commit
+and rewrite `remote/` to that point; the resulting file changes are queued for **To
+Typewrt**. Use **File commits** with a relative path to inspect the history of one file.
 
 ## Build
 
