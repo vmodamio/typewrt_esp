@@ -70,11 +70,15 @@ small repository browser; queued updates are marked with `*`, and queued deletes
 writes on `0xffe2` for Typewrt receive, and the `TYPEWRT-FILE` / `TYPEWRT-DELETE` stream
 format described above.
 
-The companion can also export the latest received file through a reachable
-`pandoc-server` into an `output/` folder, pull a GitHub repository or subfolder into the
-`remote/` mirror, commit all `remote/` changes back to GitHub, and restore `remote/` from
-a recent commit. `https://pandoc.org/app/` itself is browser-side Pandoc WASM, so the
-native app expects a real `pandoc-server` URL such as
+The companion can also export selected `remote/` files through a reachable
+`pandoc-server` into an `output/` folder, using `.yaml` or `.yml` selections as Pandoc
+metadata and exposing completed exports to other Android apps, pull a GitHub repository
+or subfolder into the `remote/` mirror, commit locally tracked `remote/` changes back to
+GitHub, and restore `remote/` from a recent commit. A small `.typewrt-sync.json` manifest
+tracks GitHub blob SHAs and local hashes so commits avoid re-comparing the whole
+repository.
+`https://pandoc.org/app/` itself is browser-side Pandoc WASM, so the native app expects a
+real `pandoc-server` URL such as
 `http://192.168.1.20:3030/`.
 
 ## Menu file browser

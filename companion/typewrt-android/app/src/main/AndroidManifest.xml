@@ -25,6 +25,12 @@
         android:label="Typewrt"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:theme="@style/AppTheme">
+        <provider
+            android:name=".OutputContentProvider"
+            android:authorities="${applicationId}.output"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true">

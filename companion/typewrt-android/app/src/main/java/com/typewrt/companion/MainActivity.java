@@ -19,6 +19,9 @@ import android.bluetooth.le.ScanRecord;
 import android.bluetooth.le.ScanCallback;
 import android.bluetooth.le.ScanResult;
 import android.bluetooth.le.ScanSettings;
+import android.content.ActivityNotFoundException;
+import android.content.ClipData;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.graphics.Typeface;
@@ -62,12 +65,14 @@ import java.net.ProtocolException;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.lang.reflect.Field;
+import java.security.MessageDigest;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -101,6 +106,7 @@ public class MainActivity extends Activity {
     private static final String GITHUB_API_VERSION = "2026-03-10";
     private static final String REMOTE_DIR_NAME = "remote";
     private static final String OUTPUT_DIR_NAME = "output";
+    private static final String SYNC_MANIFEST_NAME = ".typewrt-sync.json";
 
     private static final UUID SERVICE_UUID =
         UUID.fromString("0000ffe0-0000-1000-8000-00805f9b34fb");
@@ -122,11 +128,14 @@ public class MainActivity extends Activity {
     private TextView preparedFileView;
     private TextView repositoryLabel;
     private LinearLayout remoteBrowserView;
+    private LinearLayout pandocOutputView;
     private Button connectButton;
     private Button disconnectButton;
     private Button sendTypewrtButton;
     private Button clearUpdatesButton;
     private Button pandocExportButton;
+    private Button pandocSelectButton;
+    private Button pandocClearButton;
     private Button githubCommitButton;
     private Button githubFetchButton;
     private Button githubRestoreButton;
@@ -135,12 +144,12 @@ public class MainActivity extends Activity {
     private TextView githubAccessView;
     private LinearLayout githubConfigPanel;
     private EditText pandocServerField;
+    private TextView pandocInputView;
     private EditText githubRepoField;
     private EditText githubPathField;
     private EditText githubBranchField;
     private EditText githubTokenField;
     private EditText githubCommitField;
-    private EditText githubHistoryPathField;
     private Spinner pandocFromSpinner;
     private Spinner pandocToSpinner;
     private Button transferTabButton;
@@ -172,6 +181,7 @@ public class MainActivity extends Activity {
     private long receivedSize;
     private String currentFileName = "typewrt.txt";
     private final ArrayList<FileSnapshot> receivedFiles = new ArrayList<>();
+    private final ArrayList<String> pandocInputPaths = new ArrayList<>();
     private byte[] latestFileData;
     private String latestFileName;
     private Uri latestFileUri;
@@ -380,19 +390,72 @@ public class MainActivity extends Activity {
             new String[] {"markdown", "plain", "gfm", "html", "rst", "org", "latex"});
         pandocToSpinner = addSpinner(
             pandocFormats,
-            new String[] {"html", "docx", "epub", "plain", "gfm", "markdown", "rst", "latex"});
+            new String[] {"epub", "html", "docx", "plain", "gfm", "markdown", "rst", "latex"});
+
+        pandocInputView = new TextView(this);
+        pandocInputView.setTextSize(15);
+        pandocInputView.setTextColor(COLOR_TEXT_SECONDARY);
+        LinearLayout.LayoutParams pandocInputParams = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT);
+        pandocInputParams.topMargin = dp(10);
+        pandocTabContent.addView(pandocInputView, pandocInputParams);
+
+        LinearLayout pandocFileActions = new LinearLayout(this);
+        pandocFileActions.setOrientation(LinearLayout.HORIZONTAL);
+        pandocFileActions.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams pandocFileActionParams = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT);
+        pandocFileActionParams.topMargin = dp(8);
+        pandocTabContent.addView(pandocFileActions, pandocFileActionParams);
+
+        pandocSelectButton = new Button(this);
+        pandocSelectButton.setText("Select files");
+        pandocSelectButton.setAllCaps(false);
+        styleButton(pandocSelectButton, false);
+        pandocSelectButton.setOnClickListener(v -> showPandocFilePicker());
+        pandocFileActions.addView(pandocSelectButton, new LinearLayout.LayoutParams(
+            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+
+        pandocClearButton = new Button(this);
+        pandocClearButton.setText("Clear");
+        pandocClearButton.setAllCaps(false);
+        styleButton(pandocClearButton, false);
+        pandocClearButton.setEnabled(false);
+        pandocClearButton.setOnClickListener(v -> clearPandocSelection());
+        LinearLayout.LayoutParams pandocClearParams = new LinearLayout.LayoutParams(
+            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+        pandocClearParams.leftMargin = dp(8);
+        pandocFileActions.addView(pandocClearButton, pandocClearParams);
 
         pandocExportButton = new Button(this);
         pandocExportButton.setText("Export");
         pandocExportButton.setAllCaps(false);
         styleButton(pandocExportButton, true);
         pandocExportButton.setEnabled(false);
-        pandocExportButton.setOnClickListener(v -> exportLatestWithPandoc());
+        pandocExportButton.setOnClickListener(v -> exportSelectedWithPandoc());
         LinearLayout.LayoutParams exportParams = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT);
         exportParams.topMargin = dp(8);
         pandocTabContent.addView(pandocExportButton, exportParams);
+
+        TextView pandocOutputLabel = sectionLabel("Pandoc outputs");
+        styleDisclosureLabel(pandocOutputLabel);
+        pandocOutputLabel.setOnClickListener(v -> refreshPandocOutputs());
+        pandocTabContent.addView(pandocOutputLabel);
+
+        pandocOutputView = new LinearLayout(this);
+        pandocOutputView.setOrientation(LinearLayout.VERTICAL);
+        pandocOutputView.setBackground(roundedDrawable(COLOR_SURFACE, dp(8), COLOR_STROKE, 1));
+        pandocOutputView.setPadding(dp(8), dp(8), dp(8), dp(8));
+        LinearLayout.LayoutParams outputParams = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT);
+        outputParams.topMargin = dp(6);
+        pandocTabContent.addView(pandocOutputView, outputParams);
+        updatePandocSelectionView();
 
         githubLabel = sectionLabel("GitHub repository");
         styleDisclosureLabel(githubLabel);
@@ -464,11 +527,6 @@ public class MainActivity extends Activity {
         restoreParams.topMargin = dp(8);
         githubTabContent.addView(githubRestoreButton, restoreParams);
 
-        githubHistoryPathField = addTextField(
-            githubTabContent,
-            "File history path, for example notes/draft.txt",
-            "");
-
         githubFileHistoryButton = new Button(this);
         githubFileHistoryButton.setText("File commits");
         githubFileHistoryButton.setAllCaps(false);
@@ -484,6 +542,7 @@ public class MainActivity extends Activity {
         setContentView(page);
         showTab(CompanionTab.TRANSFER);
         refreshRemoteTree();
+        refreshPandocOutputs();
         updateSendFileActions();
     }
 
@@ -528,6 +587,9 @@ public class MainActivity extends Activity {
         styleTabButton(transferTabButton, tab == CompanionTab.TRANSFER);
         styleTabButton(pandocTabButton, tab == CompanionTab.PANDOC);
         styleTabButton(githubTabButton, tab == CompanionTab.GITHUB);
+        if (tab == CompanionTab.PANDOC) {
+            refreshPandocOutputs();
+        }
     }
 
     private TextView sectionLabel(String text) {
@@ -590,9 +652,6 @@ public class MainActivity extends Activity {
         githubPathField.addTextChangedListener(watcher);
         githubBranchField.addTextChangedListener(watcher);
         githubTokenField.addTextChangedListener(watcher);
-        if (githubHistoryPathField != null) {
-            githubHistoryPathField.addTextChangedListener(watcher);
-        }
         scheduleGithubAccessCheck();
     }
 
@@ -1805,9 +1864,7 @@ public class MainActivity extends Activity {
                 activeFileView.setText("Repository ready.");
             }
         }
-        if (pandocExportButton != null) {
-            pandocExportButton.setEnabled(hasFile);
-        }
+        updatePandocSelectionView();
         updateGithubActionButtons();
     }
 
@@ -1820,10 +1877,200 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void exportLatestWithPandoc() {
-        FileSnapshot snapshot = latestFileSnapshot();
-        if (snapshot == null) {
-            setStatus("Nothing to export", "Receive a Typewrt file first.");
+    private void showPandocFilePicker() {
+        setStatus("Loading repository files", "Choose Pandoc inputs in export order.");
+        Thread thread = new Thread(() -> {
+            try {
+                ArrayList<LocalMirrorFile> files = listFolderFiles(remoteDir());
+                mainHandler.post(() -> showPandocFilePickerDialog(files));
+            } catch (IOException | RuntimeException e) {
+                mainHandler.post(() -> {
+                    setStatus("File picker failed", usefulMessage(e));
+                    appendLog("Pandoc file picker failed: " + e);
+                });
+            }
+        }, "typewrt-pandoc-file-picker");
+        thread.start();
+    }
+
+    private void showPandocFilePickerDialog(ArrayList<LocalMirrorFile> files) {
+        if (files.isEmpty()) {
+            setStatus("No files found", "Pull or receive files into the repository first.");
+            return;
+        }
+
+        String[] labels = new String[files.size()];
+        boolean[] checked = new boolean[files.size()];
+        HashSet<String> availablePaths = new HashSet<>();
+        for (LocalMirrorFile file : files) {
+            availablePaths.add(file.path);
+        }
+        ArrayList<String> selection = new ArrayList<>();
+        for (String path : pandocInputPaths) {
+            if (availablePaths.contains(path)) {
+                selection.add(path);
+            }
+        }
+        for (int i = 0; i < files.size(); i++) {
+            String path = files.get(i).path;
+            labels[i] = path;
+            checked[i] = selection.contains(path);
+        }
+
+        new AlertDialog.Builder(this)
+            .setTitle("Pandoc inputs")
+            .setMultiChoiceItems(labels, checked, (dialog, which, isChecked) -> {
+                String path = files.get(which).path;
+                if (isChecked) {
+                    if (!selection.contains(path)) {
+                        selection.add(path);
+                    }
+                } else {
+                    selection.remove(path);
+                }
+            })
+            .setPositiveButton("Use order", (dialog, which) -> {
+                pandocInputPaths.clear();
+                pandocInputPaths.addAll(selection);
+                setStatus("Pandoc inputs selected", pandocSelectionSummary());
+                updatePandocSelectionView();
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    private void clearPandocSelection() {
+        pandocInputPaths.clear();
+        setStatus("Pandoc inputs cleared", "Select files to export.");
+        updatePandocSelectionView();
+    }
+
+    private void refreshPandocOutputs() {
+        if (pandocOutputView == null) {
+            return;
+        }
+        Thread thread = new Thread(() -> {
+            ArrayList<LocalMirrorFile> files = new ArrayList<>();
+            String error = null;
+
+            try {
+                files = listFolderFiles(outputDir());
+            } catch (IOException | RuntimeException e) {
+                error = usefulMessage(e);
+            }
+
+            ArrayList<LocalMirrorFile> finalFiles = files;
+            String finalError = error;
+            mainHandler.post(() -> renderPandocOutputs(finalFiles, finalError));
+        }, "typewrt-pandoc-output-list");
+        thread.start();
+    }
+
+    private void renderPandocOutputs(List<LocalMirrorFile> files, String error) {
+        pandocOutputView.removeAllViews();
+        pandocOutputView.addView(browserRow("output/", COLOR_BLUE, null));
+
+        if (error != null) {
+            pandocOutputView.addView(browserRow(error, COLOR_TEXT_SECONDARY, null));
+            return;
+        }
+        if (files.isEmpty()) {
+            pandocOutputView.addView(browserRow("empty", COLOR_TEXT_MUTED, null));
+            return;
+        }
+
+        for (LocalMirrorFile output : files) {
+            String label = output.path + "  " + output.file.length() + " b";
+            pandocOutputView.addView(browserRow(label, COLOR_TEXT_PRIMARY, () ->
+                openPandocOutput(output.path)));
+        }
+    }
+
+    private void openPandocOutput(String path) {
+        String safePath = sanitizeTransferPath(path, "");
+
+        if (safePath.isEmpty()) {
+            setStatus("Output path missing", "No Pandoc output selected.");
+            return;
+        }
+
+        Uri uri = outputContentUri(safePath);
+        Intent intent = new Intent(Intent.ACTION_VIEW);
+        intent.setDataAndType(uri, guessMimeType(safePath));
+        intent.setClipData(ClipData.newUri(getContentResolver(), fileNameFromPath(safePath), uri));
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+        try {
+            startActivity(Intent.createChooser(intent, "Open " + fileNameFromPath(safePath)));
+        } catch (ActivityNotFoundException e) {
+            setStatus("No app found", "Install an app that can open " + extensionForPath(safePath) + " files.");
+        }
+    }
+
+    private Uri outputContentUri(String path) {
+        Uri.Builder builder = new Uri.Builder()
+            .scheme("content")
+            .authority(getPackageName() + ".output")
+            .appendPath(OUTPUT_DIR_NAME);
+        String[] parts = sanitizeTransferPath(path, "").split("/");
+
+        for (String part : parts) {
+            if (!part.isEmpty()) {
+                builder.appendPath(part);
+            }
+        }
+        return builder.build();
+    }
+
+    private void updatePandocSelectionView() {
+        boolean hasSelection = !pandocInputPaths.isEmpty();
+
+        if (pandocInputView != null) {
+            pandocInputView.setText(hasSelection ?
+                "Inputs:\n" + numberedPaths(pandocInputPaths) :
+                "No Pandoc inputs selected.");
+        }
+        if (pandocExportButton != null) {
+            pandocExportButton.setEnabled(hasSelection);
+        }
+        if (pandocClearButton != null) {
+            pandocClearButton.setEnabled(hasSelection);
+        }
+    }
+
+    private String numberedPaths(List<String> paths) {
+        StringBuilder out = new StringBuilder();
+
+        for (int i = 0; i < paths.size(); i++) {
+            if (i > 0) {
+                out.append('\n');
+            }
+            out.append(i + 1).append(". ").append(paths.get(i));
+            if (isYamlFile(paths.get(i))) {
+                out.append(" (metadata)");
+            }
+        }
+        return out.toString();
+    }
+
+    private String pandocSelectionSummary() {
+        int bodyFiles = 0;
+        int metadataFiles = 0;
+
+        for (String path : pandocInputPaths) {
+            if (isYamlFile(path)) {
+                metadataFiles++;
+            } else {
+                bodyFiles++;
+            }
+        }
+        return bodyFiles + " input" + plural(bodyFiles) +
+            (metadataFiles > 0 ? ", " + metadataFiles + " metadata" : "");
+    }
+
+    private void exportSelectedWithPandoc() {
+        if (pandocInputPaths.isEmpty()) {
+            setStatus("Nothing to export", "Select one or more repository files first.");
             return;
         }
 
@@ -1840,25 +2087,81 @@ public class MainActivity extends Activity {
 
         String from = selectedString(pandocFromSpinner);
         String to = selectedString(pandocToSpinner);
-        String outputName = convertedFileName(snapshot.name, to);
         pandocExportButton.setEnabled(false);
-        setStatus("Exporting with Pandoc", outputName);
+        setStatus("Exporting with Pandoc", pandocSelectionSummary());
         appendLog("Pandoc export: " + from + " -> " + to);
 
+        ArrayList<String> selectedPaths = new ArrayList<>(pandocInputPaths);
         Thread thread = new Thread(() -> {
             try {
-                String text = new String(snapshot.data, StandardCharsets.UTF_8);
-                byte[] output = postPandoc(serverUrl, text, from, to);
+                PandocInput input = buildPandocInput(selectedPaths);
+                String outputName = convertedFileName(input.outputBasePath, to);
+                byte[] output = postPandoc(serverUrl, input.text, from, to);
                 saveOutputFile(outputName, output);
             } catch (IOException | JSONException e) {
                 mainHandler.post(() -> {
                     setStatus("Pandoc export failed", usefulMessage(e));
                     appendLog("Pandoc failed: " + e);
-                    updateFileActions();
+                    updatePandocSelectionView();
                 });
             }
         }, "typewrt-pandoc");
         thread.start();
+    }
+
+    private PandocInput buildPandocInput(List<String> paths) throws IOException {
+        StringBuilder metadata = new StringBuilder();
+        StringBuilder body = new StringBuilder();
+        String outputBasePath = null;
+
+        for (String path : paths) {
+            String safePath = sanitizeTransferPath(path, "");
+            if (safePath.isEmpty()) {
+                continue;
+            }
+            File file = remoteFile(safePath);
+            String text = new String(readFileBytes(file), StandardCharsets.UTF_8);
+
+            if (isYamlFile(safePath)) {
+                String yaml = normalizeYamlMetadata(text);
+                if (!yaml.isEmpty()) {
+                    metadata.append(yaml).append('\n');
+                }
+                continue;
+            }
+
+            if (outputBasePath == null) {
+                outputBasePath = safePath;
+            }
+            if (body.length() > 0) {
+                body.append("\n\n");
+            }
+            body.append(text);
+        }
+
+        if (outputBasePath == null || body.length() == 0) {
+            throw new IOException("Select at least one non-YAML input file.");
+        }
+
+        if (metadata.length() > 0) {
+            body.insert(0, "---\n" + metadata.toString().trim() + "\n---\n\n");
+        }
+        return new PandocInput(body.toString(), outputBasePath);
+    }
+
+    private String normalizeYamlMetadata(String text) {
+        String clean = text.trim();
+
+        if (clean.startsWith("---")) {
+            clean = clean.substring(3).trim();
+        }
+        if (clean.endsWith("...")) {
+            clean = clean.substring(0, clean.length() - 3).trim();
+        }
+        if (clean.endsWith("---")) {
+            clean = clean.substring(0, clean.length() - 3).trim();
+        }
+        return clean;
     }
 
     private byte[] postPandoc(
@@ -2054,6 +2357,7 @@ public class MainActivity extends Activity {
         Set<String> remotePaths = new HashSet<>();
         ArrayList<FileSnapshot> updates = new ArrayList<>();
         GitHubFetchResult result = new GitHubFetchResult(updates);
+        SyncManifest manifest = loadSyncManifest();
 
         try {
             collectGithubContents(owner, repo, branch, root, root, token, remoteFiles);
@@ -2076,12 +2380,13 @@ public class MainActivity extends Activity {
                 result.skipped++;
                 continue;
             }
-            if (saveMirrorFileSync(localPath, data)) {
+            if (saveMirrorFileSync(localPath, data, false)) {
                 updates.add(FileSnapshot.file(localPath, data, null));
                 result.changed++;
             } else {
                 result.unchanged++;
             }
+            updateManifestRemoteClean(manifest, localPath, data, remote.sha);
         }
 
         for (LocalMirrorFile local : listLocalMirrorFiles()) {
@@ -2090,9 +2395,17 @@ public class MainActivity extends Activity {
             }
             if (deleteLocalMirrorFile(local.file)) {
                 updates.add(FileSnapshot.deleteMarker(local.path));
+                manifest.entries.remove(local.path);
                 result.deleted++;
             }
         }
+        for (Iterator<Map.Entry<String, SyncEntry>> it = manifest.entries.entrySet().iterator();
+                it.hasNext();) {
+            if (!remotePaths.contains(it.next().getKey())) {
+                it.remove();
+            }
+        }
+        saveSyncManifest(manifest);
         return result;
     }
 
@@ -2105,61 +2418,60 @@ public class MainActivity extends Activity {
         String message
     ) throws IOException, JSONException {
         String root = sanitizeOptionalRepoPath(rootPath);
-        ArrayList<GitHubRemoteFile> remoteFiles = new ArrayList<>();
-        Map<String, GitHubRemoteFile> remoteByLocalPath = new HashMap<>();
         JSONArray treeItems = new JSONArray();
         GitHubCommitResult result = new GitHubCommitResult();
+        SyncManifest manifest = loadSyncManifest();
 
-        try {
-            collectGithubContents(owner, repo, branch, root, root, token, remoteFiles);
-        } catch (IOException e) {
-            if (!usefulMessage(e).startsWith("contents HTTP 404:")) {
-                throw e;
+        reconcileManifestWithLocalFiles(manifest);
+
+        for (SyncEntry entry : new ArrayList<>(manifest.entries.values())) {
+            if (!entry.dirty && !entry.deleted) {
+                continue;
             }
-        }
-        for (GitHubRemoteFile remote : remoteFiles) {
-            remoteByLocalPath.put(remoteRelativePath(remote.path, root), remote);
-        }
-
-        ArrayList<LocalMirrorFile> localFiles = listLocalMirrorFiles();
-        if (localFiles.isEmpty() && !remoteByLocalPath.isEmpty()) {
-            throw new IOException("remote/ is empty; pull or receive files before committing deletions.");
-        }
-
-        for (LocalMirrorFile local : localFiles) {
-            byte[] data = readFileBytes(local.file);
-            GitHubRemoteFile remote = remoteByLocalPath.remove(local.path);
-            boolean changed = true;
-
-            if (remote != null && remote.downloadUrl != null && !remote.downloadUrl.isEmpty() &&
-                    remote.size == data.length) {
-                byte[] remoteData = downloadGithubFile(owner, repo, token, remote);
-                changed = !bytesEqual(remoteData, data);
-            }
-            if (!changed) {
+            if (entry.deleted) {
+                if (entry.githubSha.isEmpty() && entry.syncedHash.isEmpty()) {
+                    manifest.entries.remove(entry.path);
+                    continue;
+                }
+                JSONObject item = new JSONObject();
+                item.put("path", githubPathForSnapshot(root, entry.path));
+                item.put("sha", JSONObject.NULL);
+                treeItems.put(item);
+                result.deleted++;
                 continue;
             }
 
+            File localFile = remoteFile(entry.path);
+            if (!localFile.isFile()) {
+                entry.deleted = true;
+                JSONObject item = new JSONObject();
+                item.put("path", githubPathForSnapshot(root, entry.path));
+                item.put("sha", JSONObject.NULL);
+                treeItems.put(item);
+                result.deleted++;
+                continue;
+            }
+
+            byte[] data = readFileBytes(localFile);
             String blobSha = createGithubBlob(owner, repo, token, data);
             JSONObject item = new JSONObject();
-            item.put("path", githubPathForSnapshot(root, local.path));
+            item.put("path", githubPathForSnapshot(root, entry.path));
             item.put("mode", "100644");
             item.put("type", "blob");
             item.put("sha", blobSha);
             treeItems.put(item);
+            entry.githubSha = blobSha;
+            entry.localHash = sha256Hex(data);
+            entry.syncedHash = entry.localHash;
+            entry.size = data.length;
+            entry.dirty = false;
+            entry.deleted = false;
             result.changed++;
-        }
-
-        for (Map.Entry<String, GitHubRemoteFile> entry : remoteByLocalPath.entrySet()) {
-            JSONObject item = new JSONObject();
-            item.put("path", githubPathForSnapshot(root, entry.getKey()));
-            item.put("sha", JSONObject.NULL);
-            treeItems.put(item);
-            result.deleted++;
         }
 
         if (treeItems.length() == 0) {
             result.noChanges = true;
+            saveSyncManifest(manifest);
             return result;
         }
 
@@ -2168,6 +2480,14 @@ public class MainActivity extends Activity {
         String newTreeSha = createGithubTree(owner, repo, token, baseTreeSha, treeItems);
         result.commitSha = createGithubCommit(owner, repo, token, message, newTreeSha, headSha);
         updateGithubRef(owner, repo, branch, token, result.commitSha);
+        for (Iterator<Map.Entry<String, SyncEntry>> it = manifest.entries.entrySet().iterator();
+                it.hasNext();) {
+            SyncEntry entry = it.next().getValue();
+            if (entry.deleted) {
+                it.remove();
+            }
+        }
+        saveSyncManifest(manifest);
         return result;
     }
 
@@ -2280,13 +2600,7 @@ public class MainActivity extends Activity {
         String rootPath = githubPathField.getText().toString().trim();
         String branch = githubBranchField.getText().toString().trim();
         String token = githubTokenField.getText().toString().trim();
-        String filePath = githubHistoryPathField == null ? "" :
-            githubHistoryPathField.getText().toString().trim();
 
-        if (filePath.isEmpty()) {
-            setStatus("File path missing", "Enter a remote file path first.");
-            return;
-        }
         if (repoText.isEmpty() || !repoText.contains("/") || branch.isEmpty() || token.isEmpty()) {
             setStatus("GitHub configuration missing", "Enter repository, branch, and token first.");
             return;
@@ -2300,12 +2614,70 @@ public class MainActivity extends Activity {
             return;
         }
 
+        setStatus("Loading repository files", "Choose a file for history.");
+        Thread thread = new Thread(() -> {
+            try {
+                ArrayList<LocalMirrorFile> files = listFolderFiles(remoteDir());
+                mainHandler.post(() -> showGithubFileHistoryPicker(
+                    owner,
+                    name,
+                    branch,
+                    rootPath,
+                    token,
+                    files));
+            } catch (IOException | RuntimeException e) {
+                mainHandler.post(() -> {
+                    setStatus("File picker failed", usefulMessage(e));
+                    appendLog("File picker failed: " + e);
+                });
+            }
+        }, "typewrt-github-file-picker");
+        thread.start();
+    }
+
+    private void showGithubFileHistoryPicker(
+        String owner,
+        String repo,
+        String branch,
+        String rootPath,
+        String token,
+        ArrayList<LocalMirrorFile> files
+    ) {
+        if (files.isEmpty()) {
+            setStatus("No files found", "Pull or receive files into the repository first.");
+            return;
+        }
+
+        String[] labels = new String[files.size()];
+        for (int i = 0; i < files.size(); i++) {
+            labels[i] = files.get(i).path;
+        }
+        new AlertDialog.Builder(this)
+            .setTitle("File commits")
+            .setItems(labels, (dialog, which) -> loadGithubFileHistory(
+                owner,
+                repo,
+                branch,
+                rootPath,
+                token,
+                files.get(which).path))
+            .show();
+    }
+
+    private void loadGithubFileHistory(
+        String owner,
+        String repo,
+        String branch,
+        String rootPath,
+        String token,
+        String filePath
+    ) {
         setStatus("Loading file commits", filePath);
         Thread thread = new Thread(() -> {
             try {
                 ArrayList<GitHubCommitItem> commits =
-                    fetchGithubCommits(owner, name, branch, rootPath, token, filePath);
-                mainHandler.post(() -> showCommitList("File commits", commits));
+                    fetchGithubCommits(owner, repo, branch, rootPath, token, filePath);
+                mainHandler.post(() -> showCommitList("File commits: " + filePath, commits));
             } catch (IOException | JSONException e) {
                 mainHandler.post(() -> {
                     setStatus("File history failed", usefulMessage(e));
@@ -2828,6 +3200,13 @@ public class MainActivity extends Activity {
         }
     }
 
+    private String extensionForPath(String path) {
+        String name = fileNameFromPath(path);
+        int dot = name.lastIndexOf('.');
+
+        return dot >= 0 && dot < name.length() - 1 ? name.substring(dot) : "this";
+    }
+
     private String sanitizeRepoPath(String path) {
         String clean = path == null ? "" : path.trim().replace('\\', '/');
         while (clean.startsWith("/")) {
@@ -2931,6 +3310,16 @@ public class MainActivity extends Activity {
         }
     }
 
+    private static final class PandocInput {
+        final String text;
+        final String outputBasePath;
+
+        PandocInput(String text, String outputBasePath) {
+            this.text = text;
+            this.outputBasePath = outputBasePath;
+        }
+    }
+
     private static final class GitHubRemoteFile {
         final String path;
         final long size;
@@ -2988,6 +3377,24 @@ public class MainActivity extends Activity {
         String commitSha = "";
     }
 
+    private static final class SyncManifest {
+        final HashMap<String, SyncEntry> entries = new HashMap<>();
+    }
+
+    private static final class SyncEntry {
+        final String path;
+        String githubSha = "";
+        String syncedHash = "";
+        String localHash = "";
+        long size;
+        boolean dirty;
+        boolean deleted;
+
+        SyncEntry(String path) {
+            this.path = path;
+        }
+    }
+
     private static final class GitHubCommitItem {
         final String sha;
         final String title;
@@ -3017,7 +3424,193 @@ public class MainActivity extends Activity {
         }
     }
 
-    private boolean saveMirrorFileSync(String fileName, byte[] data) throws IOException {
+    private SyncManifest loadSyncManifest() throws IOException, JSONException {
+        SyncManifest manifest = new SyncManifest();
+        File file = syncManifestFile();
+
+        if (!file.isFile()) {
+            return manifest;
+        }
+
+        JSONObject root = new JSONObject(new String(readFileBytes(file), StandardCharsets.UTF_8));
+        JSONObject entries = root.optJSONObject("entries");
+        if (entries == null) {
+            return manifest;
+        }
+
+        Iterator<String> keys = entries.keys();
+        while (keys.hasNext()) {
+            String rawPath = keys.next();
+            String path = sanitizeTransferPath(rawPath, "");
+            if (path.isEmpty()) {
+                continue;
+            }
+            JSONObject json = entries.optJSONObject(rawPath);
+            if (json == null) {
+                continue;
+            }
+
+            SyncEntry entry = new SyncEntry(path);
+            entry.githubSha = json.optString("githubSha", "");
+            entry.syncedHash = json.optString("syncedHash", "");
+            entry.localHash = json.optString("localHash", entry.syncedHash);
+            if (entry.syncedHash.isEmpty()) {
+                entry.syncedHash = entry.localHash;
+            }
+            entry.size = json.optLong("size", 0);
+            entry.dirty = json.optBoolean("dirty", false);
+            entry.deleted = json.optBoolean("deleted", false);
+            manifest.entries.put(path, entry);
+        }
+        return manifest;
+    }
+
+    private void saveSyncManifest(SyncManifest manifest) throws IOException, JSONException {
+        JSONObject root = new JSONObject();
+        JSONObject entries = new JSONObject();
+
+        root.put("version", 1);
+        for (SyncEntry entry : manifest.entries.values()) {
+            if (entry.path.isEmpty()) {
+                continue;
+            }
+            JSONObject json = new JSONObject();
+            json.put("githubSha", entry.githubSha == null ? "" : entry.githubSha);
+            json.put("syncedHash", entry.syncedHash == null ? "" : entry.syncedHash);
+            json.put("localHash", entry.localHash == null ? "" : entry.localHash);
+            json.put("size", entry.size);
+            json.put("dirty", entry.dirty);
+            json.put("deleted", entry.deleted);
+            entries.put(entry.path, json);
+        }
+        root.put("entries", entries);
+        writeFileBytes(syncManifestFile(),
+            root.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    private File syncManifestFile() throws IOException {
+        return new File(appStorageDir(), SYNC_MANIFEST_NAME);
+    }
+
+    private SyncEntry manifestEntry(SyncManifest manifest, String path) {
+        String safePath = sanitizeTransferPath(path, "");
+        SyncEntry entry = manifest.entries.get(safePath);
+
+        if (entry == null) {
+            entry = new SyncEntry(safePath);
+            manifest.entries.put(safePath, entry);
+        }
+        return entry;
+    }
+
+    private void updateManifestRemoteClean(
+        SyncManifest manifest,
+        String path,
+        byte[] data,
+        String githubSha
+    ) {
+        SyncEntry entry = manifestEntry(manifest, path);
+        String hash = sha256Hex(data);
+
+        entry.githubSha = githubSha == null ? "" : githubSha;
+        entry.syncedHash = hash;
+        entry.localHash = hash;
+        entry.size = data.length;
+        entry.dirty = false;
+        entry.deleted = false;
+    }
+
+    private void markManifestLocalWrite(String path, byte[] data) {
+        try {
+            SyncManifest manifest = loadSyncManifest();
+            SyncEntry entry = manifestEntry(manifest, path);
+            String hash = sha256Hex(data);
+
+            entry.localHash = hash;
+            entry.size = data.length;
+            entry.deleted = false;
+            entry.dirty = entry.syncedHash == null || entry.syncedHash.isEmpty() ||
+                !entry.syncedHash.equals(hash);
+            saveSyncManifest(manifest);
+        } catch (IOException | JSONException | RuntimeException e) {
+            mainHandler.post(() -> appendLog("Sync manifest update failed: " + e));
+        }
+    }
+
+    private void markManifestDeleted(String path) {
+        try {
+            SyncManifest manifest = loadSyncManifest();
+            SyncEntry entry = manifestEntry(manifest, path);
+
+            entry.localHash = "";
+            entry.size = 0;
+            entry.deleted = true;
+            entry.dirty = true;
+            saveSyncManifest(manifest);
+        } catch (IOException | JSONException | RuntimeException e) {
+            mainHandler.post(() -> appendLog("Sync manifest delete failed: " + e));
+        }
+    }
+
+    private void reconcileManifestWithLocalFiles(SyncManifest manifest) {
+        HashSet<String> seen = new HashSet<>();
+        ArrayList<LocalMirrorFile> localFiles;
+
+        try {
+            localFiles = listFolderFiles(remoteDir());
+        } catch (IOException | RuntimeException e) {
+            mainHandler.post(() -> appendLog("Sync manifest scan failed: " + e));
+            return;
+        }
+
+        for (LocalMirrorFile local : localFiles) {
+            seen.add(local.path);
+            SyncEntry entry = manifest.entries.get(local.path);
+            if (entry != null) {
+                continue;
+            }
+            try {
+                byte[] data = readFileBytes(local.file);
+                entry = manifestEntry(manifest, local.path);
+                entry.localHash = sha256Hex(data);
+                entry.size = data.length;
+                entry.dirty = true;
+                entry.deleted = false;
+            } catch (IOException | RuntimeException e) {
+                mainHandler.post(() -> appendLog("Sync manifest scan failed: " + e));
+            }
+        }
+
+        for (SyncEntry entry : manifest.entries.values()) {
+            if (entry.deleted || seen.contains(entry.path)) {
+                continue;
+            }
+            if (!entry.githubSha.isEmpty() || !entry.syncedHash.isEmpty()) {
+                entry.deleted = true;
+                entry.dirty = true;
+            }
+        }
+    }
+
+    private String sha256Hex(byte[] data) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(data);
+            StringBuilder out = new StringBuilder(hash.length * 2);
+            for (byte b : hash) {
+                out.append(String.format(Locale.US, "%02x", b & 0xff));
+            }
+            return out.toString();
+        } catch (Exception e) {
+            throw new IllegalStateException("SHA-256 is not available", e);
+        }
+    }
+
+    private boolean saveMirrorFileSync(
+        String fileName,
+        byte[] data,
+        boolean markDirty
+    ) throws IOException {
         String safePath = sanitizeTransferPath(fileName, "typewrt.txt");
         File target = remoteFile(safePath);
 
@@ -3025,6 +3618,9 @@ public class MainActivity extends Activity {
             try {
                 byte[] existingData = readFileBytes(target);
                 if (bytesEqual(existingData, data)) {
+                    if (markDirty) {
+                        markManifestLocalWrite(safePath, data);
+                    }
                     mainHandler.post(() -> setLatestFile(safePath, data, null));
                     return false;
                 }
@@ -3032,11 +3628,17 @@ public class MainActivity extends Activity {
                 // If the local mirror is unreadable, overwrite it from GitHub.
             }
             writeFileBytes(target, data);
+            if (markDirty) {
+                markManifestLocalWrite(safePath, data);
+            }
             mainHandler.post(() -> setLatestFile(safePath, data, null));
             return true;
         }
 
         writeFileBytes(target, data);
+        if (markDirty) {
+            markManifestLocalWrite(safePath, data);
+        }
         mainHandler.post(() -> setLatestFile(safePath, data, null));
         return true;
     }
@@ -3068,7 +3670,7 @@ public class MainActivity extends Activity {
         String safePath = sanitizeTransferPath(fileName, "typewrt.txt");
 
         try {
-            saveMirrorFileSync(safePath, data);
+            saveMirrorFileSync(safePath, data, true);
             mainHandler.post(() -> {
                 setLatestFile(safePath, data, null);
                 setStatus("Saved " + safePath, "remote/");
@@ -3095,6 +3697,7 @@ public class MainActivity extends Activity {
             setStatus("Exported " + safePath, "output/");
             appendLog("Output saved: " + safePath);
             updateFileActions();
+            refreshPandocOutputs();
         });
     }
 
@@ -3326,6 +3929,7 @@ public class MainActivity extends Activity {
             return;
         }
         deleteRemoteFile(safePath);
+        markManifestDeleted(safePath);
         for (int i = pendingSendFiles.size() - 1; i >= 0; i--) {
             if (pendingSendFiles.get(i).name.equals(safePath)) {
                 pendingSendFiles.remove(i);
@@ -3411,6 +4015,11 @@ public class MainActivity extends Activity {
         String lower = path.toLowerCase(Locale.US);
         return lower.endsWith(".md") || lower.endsWith(".markdown") ||
             lower.endsWith("readme") || lower.endsWith("readme.txt");
+    }
+
+    private boolean isYamlFile(String path) {
+        String lower = path.toLowerCase(Locale.US);
+        return lower.endsWith(".yaml") || lower.endsWith(".yml");
     }
 
     private SpannableString highlightMarkdown(String text) {
@@ -3643,6 +4252,24 @@ public class MainActivity extends Activity {
         }
         if (lower.endsWith(".json")) {
             return "application/json";
+        }
+        if (lower.endsWith(".epub")) {
+            return "application/epub+zip";
+        }
+        if (lower.endsWith(".docx")) {
+            return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        }
+        if (lower.endsWith(".html") || lower.endsWith(".htm")) {
+            return "text/html";
+        }
+        if (lower.endsWith(".rst")) {
+            return "text/x-rst";
+        }
+        if (lower.endsWith(".tex")) {
+            return "application/x-tex";
+        }
+        if (lower.endsWith(".org")) {
+            return "text/org";
         }
         if (lower.endsWith(".txt") || !lower.contains(".")) {
             return "text/plain";

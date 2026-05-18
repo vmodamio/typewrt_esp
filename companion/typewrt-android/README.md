@@ -7,6 +7,8 @@ tab to see the actual phone path.
 
 - `remote/` is the phone mirror synchronized with GitHub and the typewriter.
 - `output/` is for Pandoc exports and is not sent back to GitHub or Typewrt.
+- `.typewrt-sync.json` tracks GitHub blob SHAs and local hashes so commits only send
+  known local changes instead of comparing the whole repository.
 
 ## Use
 
@@ -36,9 +38,12 @@ highlighting for Markdown files.
 
 ## Pandoc export
 
-After a file is received, enter the root URL of a reachable `pandoc-server`, choose input
-and output formats, then tap **Export**. The converted file is saved into the app's
-`output/` folder, separate from the synchronized `remote/` mirror.
+After files are received or pulled into `remote/`, enter the root URL of a reachable
+`pandoc-server`, choose the Pandoc inputs in export order, then tap **Export**. `.yaml`
+and `.yml` selections are treated as Pandoc metadata blocks for the exported document.
+The converted file is saved into the app's `output/` folder, separate from the
+synchronized `remote/` mirror. Tap an item under **Pandoc outputs** to open it in another
+Android app. The default conversion is Pandoc Markdown to EPUB.
 
 `https://pandoc.org/app/` is a browser-based Pandoc WASM app, not an upload API. For direct
 conversion from this native app, run a `pandoc-server` instance on a machine the phone can
@@ -65,10 +70,10 @@ differ from the local phone mirror are queued for **To Typewrt**. Files that dis
 from GitHub are removed from the phone mirror and queued as `TYPEWRT-DELETE` markers so
 the typewriter can mark them with `x`.
 
-Tap **Commit** to compare `remote/` against GitHub and commit all additions, edits, and
-deletions with the message in the commit field. Tap **Restore** to choose a recent commit
-and rewrite `remote/` to that point; the resulting file changes are queued for **To
-Typewrt**. Use **File commits** with a relative path to inspect the history of one file.
+Tap **Commit changes** to commit the files marked dirty in `.typewrt-sync.json` with the
+message in the commit field. Tap **Restore** to choose a recent commit and rewrite
+`remote/` to that point; the resulting file changes are queued for **To Typewrt**. Use
+**File commits** to pick a file from the repository mirror and inspect its history.
 
 ## Build
 
