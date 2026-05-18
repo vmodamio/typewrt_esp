@@ -96,6 +96,8 @@ static void typewrt_battery_monitor_check(bool force);
 static void typewrt_battery_monitor_start(void);
 static void typewrt_timer_wakeup_prepare(void);
 static void typewrt_usb_wakeup_prepare(void);
+static void typewrt_unused_board_pins_init(void);
+static void typewrt_unused_board_pins_poweroff(void);
 
 static int bcd_to_dec(uint8_t value)
 {
@@ -1102,6 +1104,56 @@ static void typewrt_usb_wakeup_prepare(void)
         typewrt_usb_power_present() ? GPIO_INTR_LOW_LEVEL : GPIO_INTR_HIGH_LEVEL);
 }
 
+static void typewrt_unused_board_pins_init(void)
+{
+    const uint64_t output_low_mask =
+        (1ULL << TYPEWRT_PIN_BLUE_LED) |
+        (1ULL << TYPEWRT_PIN_RGB_LED_DATA);
+
+    (void)gpio_hold_dis(TYPEWRT_PIN_BLUE_LED);
+    (void)gpio_hold_dis(TYPEWRT_PIN_RGB_LED_DATA);
+
+    gpio_config_t output_conf = {
+        .pin_bit_mask = output_low_mask,
+        .intr_type = GPIO_INTR_DISABLE,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+    };
+    gpio_config(&output_conf);
+    gpio_set_level(TYPEWRT_PIN_BLUE_LED, 0);
+    gpio_set_level(TYPEWRT_PIN_RGB_LED_DATA, 0);
+    gpio_hold_en(TYPEWRT_PIN_BLUE_LED);
+    gpio_hold_en(TYPEWRT_PIN_RGB_LED_DATA);
+
+    gpio_config_t input_conf = {
+        .pin_bit_mask = (1ULL << TYPEWRT_PIN_LIGHT_SENSOR),
+        .intr_type = GPIO_INTR_DISABLE,
+        .mode = GPIO_MODE_DISABLE,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+    };
+    gpio_config(&input_conf);
+}
+
+static void typewrt_unused_board_pins_poweroff(void)
+{
+    const uint64_t high_z_mask =
+        (1ULL << TYPEWRT_PIN_LIGHT_SENSOR) |
+        (1ULL << TYPEWRT_PIN_5V_EN);
+
+    typewrt_unused_board_pins_init();
+
+    gpio_config_t io_conf = {
+        .pin_bit_mask = high_z_mask,
+        .intr_type = GPIO_INTR_DISABLE,
+        .mode = GPIO_MODE_DISABLE,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+    };
+    gpio_config(&io_conf);
+}
+
 static void typewrt_power_domain_pins_high_z(void)
 {
     typewrt_rtc_i2c_power_pins_high_z();
@@ -1126,6 +1178,7 @@ bool typewrt_power_off(void)
     (void)esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
     (void)gpio_wakeup_disable(TYPEWRT_PIN_5V_EN);
     typewrt_keyboard_disable_wakeup();
+    typewrt_unused_board_pins_poweroff();
 
     (void)gpio_hold_dis(TYPEWRT_PIN_LEDN);
     gpio_set_level(TYPEWRT_PIN_LEDN, 1);
@@ -1149,6 +1202,8 @@ void typewrt_power_init(void)
     (void)gpio_hold_dis(TYPEWRT_PIN_LDO2_EN);
     (void)gpio_hold_dis(TYPEWRT_PIN_LEDN);
     (void)gpio_hold_dis(TYPEWRT_PIN_RST_EN);
+    (void)gpio_hold_dis(TYPEWRT_PIN_BLUE_LED);
+    (void)gpio_hold_dis(TYPEWRT_PIN_RGB_LED_DATA);
 
     gpio_config_t power_conf = {
         .pin_bit_mask = (1ULL << TYPEWRT_PIN_LDO2_EN),
@@ -1169,6 +1224,7 @@ void typewrt_power_init(void)
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
     };
     gpio_config(&usb_conf);
+    typewrt_unused_board_pins_init();
 
     gpio_config_t led_conf = {
         .pin_bit_mask = (1ULL << TYPEWRT_PIN_LEDN ) | (1ULL << TYPEWRT_PIN_RST_EN),
