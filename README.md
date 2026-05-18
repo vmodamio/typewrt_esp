@@ -119,7 +119,17 @@ Normal menu keys:
 | `P` | Power off |
 | `/` | Search the current listing by name |
 | `:` | Open menu command prompt |
+| `Ctrl-N` | Return to Nextvi and run normal-mode `Ctrl-N` buffer navigation |
+| `Ctrl-^` | Return to Nextvi and switch to the previous buffer |
+| `Ctrl-_` | Open the in-menu buffer picker |
 | `q` | Return to the current editor buffer |
+
+The buffer picker shows the same main-buffer indices used by Nextvi's `:b` command.
+Use `j`/`k`, `Ctrl-D`/`Ctrl-U`, `g`/`G`, or a single digit to choose a buffer;
+`Enter`, `l`, or `o` switches via Nextvi's existing `:bN` command. `q` or `Esc`
+returns to the file browser. From the menu command prompt, `:b` and `:buffer`
+without an argument open the same picker, while explicit buffer commands such as
+`:b2` or `:b 2` are passed through to Nextvi's ex parser.
 
 Each listing row reserves right-hand columns for word count and last modification time.
 Word counts use compact units such as `846` or `1.5 k`. Modification time is shown
@@ -127,7 +137,8 @@ as `HH:mm` for files changed today, and `Mon dd` for older files.
 
 Menu commands include `cd PATH`, `cd ..`, `cd -`, `ls`, `ls -s`, `ls -rt`,
 `ls *pattern*`, `mkdir PATH`, `open PATH`, `ble [send|recv|selected|PATH|status|off]`, `rtc [datetime]`,
-`battery`, `off`, `rename`, `copy`, and `delete`. The command prompt temporarily
+`battery`, `off`, `rename`, `copy`, `delete`, and forwarded Nextvi ex commands.
+The command prompt temporarily
 replaces the bottom status row. Directory listing state is remembered per directory,
 including cursor position, scroll position, sort mode, and filter.
 

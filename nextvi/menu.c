@@ -1296,6 +1296,119 @@ static int menu_forward_ex_command(const char *cmdline)
 	return 1;
 }
 
+static int menu_current_buffer_index(void)
+{
+	if (ex_buf >= bufs && ex_buf < bufs + xbufcur)
+		return ex_buf - bufs;
+	return 0;
+}
+
+static void menu_render_buffer(char line[NEXTVI_DISPLAY_COLS + 1], int idx)
+{
+	char text[160];
+	char current = ex_buf == bufs + idx ? '%' :
+		ex_pbuf == bufs + idx ? '#' : ' ';
+	char modified = bufs[idx].lb->modified ? '*' : ' ';
+	const char *path = bufs[idx].path[0] ? bufs[idx].path : "unnamed";
+
+	snprintf(text, sizeof(text), "%d %c%c %s", idx, current, modified, path);
+	menu_line(line, text);
+}
+
+static void menu_draw_buffer_picker(menu_state *m, int cursor, int top)
+{
+	char line[NEXTVI_DISPLAY_COLS + 1];
+
+	term_cursor(0);
+	term_commit();
+	menu_draw_top(m, 0);
+	for (int row = 0; row < MENU_VISIBLE_ROWS; row++) {
+		int idx = top + row;
+		if (idx < xbufcur)
+			menu_render_buffer(line, idx);
+		else if (!xbufcur && row == 0)
+			menu_line(line, "no buffers");
+		else
+			menu_line(line, "");
+		menu_draw_row(MENU_FIRST_ROW + row, line,
+			idx == cursor && idx < xbufcur);
+	}
+	menu_line(line, "buffers");
+	nextvi_display_refresh_line_inverted(MENU_BOTTOM_ROW, line,
+		NEXTVI_DISPLAY_COLS);
+}
+
+static int menu_buffer_picker(menu_state *m)
+{
+	int cursor, top;
+
+	if (xbufcur <= 0) {
+		menu_set_message(m, "no buffers");
+		return 0;
+	}
+	cursor = menu_current_buffer_index();
+	top = cursor;
+	if (top > xbufcur - MENU_VISIBLE_ROWS)
+		top = MAX(0, xbufcur - MENU_VISIBLE_ROWS);
+	for (;;) {
+		int c;
+		char cmd[32];
+		if (cursor < top)
+			top = cursor;
+		if (cursor >= top + MENU_VISIBLE_ROWS)
+			top = cursor - MENU_VISIBLE_ROWS + 1;
+		menu_draw_buffer_picker(m, cursor, top);
+		c = menu_read_key(m);
+		if (!c) {
+			menu_ble_poll(m);
+			continue;
+		}
+		if (c >= '0' && c <= '9') {
+			int idx = c - '0';
+			if (idx >= xbufcur) {
+				menu_set_message(m, "no such buffer");
+				return 0;
+			}
+			snprintf(cmd, sizeof(cmd), "b%d", idx);
+			return menu_forward_ex_command(cmd);
+		}
+		switch (c) {
+		case 'j':
+		case TK_CTL('n'):
+			if (cursor < xbufcur - 1)
+				cursor++;
+			break;
+		case 'k':
+		case TK_CTL('p'):
+			if (cursor > 0)
+				cursor--;
+			break;
+		case TK_CTL('d'):
+			cursor = MIN(xbufcur - 1, cursor + MENU_VISIBLE_ROWS);
+			break;
+		case TK_CTL('u'):
+			cursor = MAX(0, cursor - MENU_VISIBLE_ROWS);
+			break;
+		case 'g':
+			cursor = 0;
+			break;
+		case 'G':
+			cursor = xbufcur - 1;
+			break;
+		case '\n':
+		case 'l':
+		case 'o':
+			snprintf(cmd, sizeof(cmd), "b%d", cursor);
+			return menu_forward_ex_command(cmd);
+		case 'q':
+		case TK_ESC:
+			return 0;
+		default:
+			break;
+		}
+	}
+}
+
 static char *menu_token(char **p)
 {
 	char *s = *p;
@@ -1325,6 +1438,8 @@ static int menu_command(menu_state *m, char *cmdline)
 		return 0;
 	if (!strcmp(cmd, "q") || !strcmp(cmd, "quit"))
 		return 1;
+	if ((!strcmp(cmd, "b") || !strcmp(cmd, "buffer")) && !*menu_trim(p))
+		return menu_buffer_picker(m);
 	if (!strcmp(cmd, "open") || !strcmp(cmd, "e")) {
 		char *path;
 		int ret;
@@ -1564,8 +1679,9 @@ int nextvi_menu_run(void)
 			menu_forward_keys("\016", 1);
 			return menu_finish(&m, 1);
 		case TK_CTL('_'):
-			menu_forward_keys("\037", 1);
-			return menu_finish(&m, 1);
+			if (menu_buffer_picker(&m))
+				return menu_finish(&m, 1);
+			break;
 		case TK_CTL('^'):
 			menu_forward_keys("\036", 1);
 			return menu_finish(&m, 1);
