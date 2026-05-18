@@ -1278,6 +1278,24 @@ static void menu_ble_selected(menu_state *m)
 	menu_ble_path(m, e->name, e->path);
 }
 
+static int menu_forward_keys(const char *keys, int len)
+{
+	term_push((char *)keys, len);
+	return 1;
+}
+
+static int menu_forward_ex_command(const char *cmdline)
+{
+	int len = strlen(cmdline);
+	char *keys = emalloc(len + 2);
+	keys[0] = ':';
+	memcpy(keys + 1, cmdline, len);
+	keys[len + 1] = '\n';
+	menu_forward_keys(keys, len + 2);
+	free(keys);
+	return 1;
+}
+
 static char *menu_token(char **p)
 {
 	char *s = *p;
@@ -1298,7 +1316,11 @@ static char *menu_token(char **p)
 static int menu_command(menu_state *m, char *cmdline)
 {
 	char *p = menu_trim(cmdline);
-	char *cmd = menu_token(&p);
+	char exline[256];
+	char *cmd;
+
+	snprintf(exline, sizeof(exline), "%s", p);
+	cmd = menu_token(&p);
 	if (!cmd)
 		return 0;
 	if (!strcmp(cmd, "q") || !strcmp(cmd, "quit"))
@@ -1484,8 +1506,7 @@ static int menu_command(menu_state *m, char *cmdline)
 			menu_set_message(m, "power off failed: sd card busy");
 		return 0;
 	}
-	menu_set_message(m, "unknown menu command");
-	return 0;
+	return menu_forward_ex_command(exline);
 }
 
 static void menu_move(menu_state *m, int delta)
@@ -1533,13 +1554,21 @@ int nextvi_menu_run(void)
 			menu_change_dir(&m, "..");
 			break;
 		case 'j':
-		case TK_CTL('n'):
 			menu_move(&m, 1);
 			break;
 		case 'k':
 		case TK_CTL('p'):
 			menu_move(&m, -1);
 			break;
+		case TK_CTL('n'):
+			menu_forward_keys("\016", 1);
+			return menu_finish(&m, 1);
+		case TK_CTL('_'):
+			menu_forward_keys("\037", 1);
+			return menu_finish(&m, 1);
+		case TK_CTL('^'):
+			menu_forward_keys("\036", 1);
+			return menu_finish(&m, 1);
 		case TK_CTL('d'):
 			menu_move(&m, MENU_VISIBLE_ROWS);
 			break;
