@@ -8,6 +8,7 @@
 void typewrt_power_init(void);
 bool typewrt_rtc_init(void);
 bool typewrt_battery_init(void);
+void typewrt_rtc_i2c_power_pins_high_z(void);
 void typewrt_sleep_lock(void);
 void typewrt_sleep_unlock(void);
 void typewrt_sleep_clear_ui_wakeup(void);

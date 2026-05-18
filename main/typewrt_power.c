@@ -394,6 +394,20 @@ bool typewrt_rtc_init(void)
     return true;
 }
 
+void typewrt_rtc_i2c_power_pins_high_z(void)
+{
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << TYPEWRT_PIN_RTC_SDA) |
+            (1ULL << TYPEWRT_PIN_RTC_SCL),
+        .intr_type = GPIO_INTR_DISABLE,
+        .mode = GPIO_MODE_DISABLE,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+    };
+
+    gpio_config(&io_conf);
+}
+
 static esp_err_t battery_max17048_read_word(uint8_t reg, uint16_t *value)
 {
     uint8_t data[2];
@@ -1090,6 +1104,7 @@ static void typewrt_usb_wakeup_prepare(void)
 
 static void typewrt_power_domain_pins_high_z(void)
 {
+    typewrt_rtc_i2c_power_pins_high_z();
     typewrt_keyboard_power_pins_high_z();
     typewrt_display_power_pins_high_z();
 }
