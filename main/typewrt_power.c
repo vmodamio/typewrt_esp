@@ -410,6 +410,23 @@ void typewrt_rtc_i2c_power_pins_high_z(void)
     gpio_config(&io_conf);
 }
 
+void typewrt_shared_spi_power_pins_high_z(void)
+{
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << TYPEWRT_PIN_SPI_MOSI) |
+            (1ULL << TYPEWRT_PIN_SPI_MISO) |
+            (1ULL << TYPEWRT_PIN_SPI_CLK) |
+            (1ULL << TYPEWRT_PIN_DISPLAY_CS) |
+            (1ULL << TYPEWRT_PIN_SD_CS),
+        .intr_type = GPIO_INTR_DISABLE,
+        .mode = GPIO_MODE_DISABLE,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+    };
+
+    gpio_config(&io_conf);
+}
+
 static esp_err_t battery_max17048_read_word(uint8_t reg, uint16_t *value)
 {
     uint8_t data[2];
@@ -1157,8 +1174,8 @@ static void typewrt_unused_board_pins_poweroff(void)
 static void typewrt_power_domain_pins_high_z(void)
 {
     typewrt_rtc_i2c_power_pins_high_z();
+    typewrt_shared_spi_power_pins_high_z();
     typewrt_keyboard_power_pins_high_z();
-    typewrt_display_power_pins_high_z();
 }
 
 bool typewrt_power_off(void)
