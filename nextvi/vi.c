@@ -146,6 +146,64 @@ static void vi_msg_right(char *msg, int msg_len, const char *right)
 	snprintf(msg, msg_len, "%s", out);
 }
 
+static void vi_abbrev_path(char *out, int out_len, const char *path, int modified,
+	int max_cols)
+{
+	const char *name = path && path[0] ? path : "unnamed";
+	const char *tail = name;
+	int suffix = modified ? 1 : 0;
+	int name_len = strlen(name);
+	int path_cols;
+
+	if (out_len <= 0)
+		return;
+	out[0] = '\0';
+	if (max_cols <= 0)
+		return;
+	path_cols = max_cols - 2 - suffix;
+	if (path_cols <= 0) {
+		snprintf(out, out_len, "%.*s", max_cols, "\"");
+		return;
+	}
+	if (name_len <= path_cols) {
+		snprintf(out, out_len, "\"%s\"%s", name, modified ? "*" : "");
+		return;
+	}
+	if (path_cols > 2) {
+		tail = name + name_len - (path_cols - 2);
+		snprintf(out, out_len, "\"..%s\"%s", tail, modified ? "*" : "");
+	} else {
+		tail = name + name_len - path_cols;
+		snprintf(out, out_len, "\"%s\"%s", tail, modified ? "*" : "");
+	}
+}
+
+static void vi_status_path(char *msg, int msg_len, const char *path, int modified,
+	const char *right)
+{
+	char out[512], left[512];
+	int width = MIN(xcols > 0 ? xcols : 80, msg_len - 1);
+	int rlen, left_cols;
+
+	if (msg_len <= 0)
+		return;
+	msg[0] = '\0';
+	if (width <= 0)
+		return;
+	rlen = strlen(right);
+	if (rlen >= width) {
+		snprintf(msg, msg_len, "%.*s", width, right);
+		return;
+	}
+	left_cols = width - rlen - 1;
+	vi_abbrev_path(left, sizeof(left), path, modified, left_cols);
+	memset(out, ' ', width);
+	out[width] = '\0';
+	memcpy(out, left, MIN((int)strlen(left), left_cols));
+	memcpy(out + width - rlen, right, rlen);
+	snprintf(msg, msg_len, "%s", out);
+}
+
 static int vi_search_count_at(int row, int off, int *idx, int *total)
 {
 	if (!xkwdrs || !lbuf_len(xb))
@@ -962,15 +1020,16 @@ static void vc_status(int type)
 			cbuf, cp, cp, cp, l, rstate->wid[xoff], c - lbuf_get(xb, xrow),
 			xoff, col);
 	} else {
-		char counter[32];
-		snprintf(vi_msg, sizeof(vi_msg),
-			"\"%s\"%s%dL %d%% L%d C%d B%td",
-			xb_path[0] ? xb_path : "unnamed",
-			xb->modified ? "* " : " ", lbuf_len(xb),
-			xrow * 100 / MAX(1, lbuf_len(xb)-1), xrow+1, col,
-			istempbuf(ex_buf) ? tempbufs - ex_buf - 1 : ex_buf - bufs);
+		char counter[32], right[128];
 		vi_search_counter(counter, sizeof(counter), xrow, xoff);
-		vi_msg_right(vi_msg, sizeof(vi_msg), counter);
+		snprintf(right, sizeof(right), "%dL %d%% L%d C%d B%td%s%s",
+			lbuf_len(xb), xrow * 100 / MAX(1, lbuf_len(xb)-1),
+			xrow+1, col,
+			istempbuf(ex_buf) ? tempbufs - ex_buf - 1 : ex_buf - bufs,
+			counter[0] ? " " : "", counter);
+		if ((int)strlen(right) >= (xcols > 0 ? xcols : 80))
+			snprintf(right, sizeof(right), "L%d C%d", xrow+1, col);
+		vi_status_path(vi_msg, sizeof(vi_msg), xb_path, xb->modified, right);
 	}
 	vi_drawmsg_mpt(vi_msg)
 }
