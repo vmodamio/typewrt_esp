@@ -98,6 +98,7 @@ static void typewrt_timer_wakeup_prepare(void);
 static void typewrt_usb_wakeup_prepare(void);
 static void typewrt_unused_board_pins_init(void);
 static void typewrt_unused_board_pins_poweroff(void);
+static void typewrt_power_led_high_z(void);
 
 static int bcd_to_dec(uint8_t value)
 {
@@ -658,6 +659,20 @@ static void typewrt_led_set(bool on)
     gpio_set_level(TYPEWRT_PIN_LEDN, on ? 0 : 1);
 }
 
+static void typewrt_power_led_high_z(void)
+{
+    gpio_config_t led_conf = {
+        .pin_bit_mask = (1ULL << TYPEWRT_PIN_LEDN),
+        .intr_type = GPIO_INTR_DISABLE,
+        .mode = GPIO_MODE_DISABLE,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+    };
+
+    (void)gpio_hold_dis(TYPEWRT_PIN_LEDN);
+    gpio_config(&led_conf);
+}
+
 static void typewrt_power_led_update(void)
 {
     if (__atomic_load_n(&typewrt_sd_write_locks, __ATOMIC_RELAXED) != 0 ||
@@ -1197,9 +1212,7 @@ bool typewrt_power_off(void)
     typewrt_keyboard_disable_wakeup();
     typewrt_unused_board_pins_poweroff();
 
-    (void)gpio_hold_dis(TYPEWRT_PIN_LEDN);
-    gpio_set_level(TYPEWRT_PIN_LEDN, 1);
-    gpio_hold_en(TYPEWRT_PIN_LEDN);
+    typewrt_power_led_high_z();
 
     typewrt_reset_button_enable(true);
     typewrt_power_domain_pins_high_z();
