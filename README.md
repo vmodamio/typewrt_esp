@@ -26,6 +26,14 @@ The old `z1`, `z2`, `ze`, and `zf` keymap commands are no longer used. Layouts
 that place accents on dead keys compose in insert and prompt input before the text
 is written to the file.
 
+## Editor global marks
+
+Nextvi's `Ctrl-T` global mark slots persist on the SD card across reboot. Use
+`0`, `2`, `4`, `6`, or `8` before `Ctrl-T` to set a slot, and `1`, `3`, `5`,
+`7`, or `9` before `Ctrl-T` to jump back to the matching slot. In Nextvi ex
+mode, `:gmarks` prints the saved slots. In the menu command prompt, `:gmarks`
+opens a picker for the same slots.
+
 ## BLE file transfer
 
 The Typewrt backend exposes an on-demand BLE GATT service named `Typewrt` for sending
@@ -131,13 +139,18 @@ returns to the file browser. From the menu command prompt, `:b` and `:buffer`
 without an argument open the same picker, while explicit buffer commands such as
 `:b2` or `:b 2` are passed through to Nextvi's ex parser.
 
+The global mark picker opens from the menu command prompt with `:gmarks`. It shows
+the persistent `Ctrl-T` slots as `set/jump line;offset path`; use `j`/`k`,
+`Ctrl-D`/`Ctrl-U`, `g`/`G`, a digit, `Enter`, `l`, or `o` to choose a mark.
+
 Each listing row reserves right-hand columns for word count and last modification time.
 Word counts use compact units such as `846` or `1.5 k`. Modification time is shown
 as `HH:mm` for files changed today, and `Mon dd` for older files.
 
 Menu commands include `cd PATH`, `cd ..`, `cd -`, `ls`, `ls -s`, `ls -rt`,
-`ls *pattern*`, `mkdir PATH`, `open PATH`, `ble [send|recv|selected|PATH|status|off]`, `rtc [datetime]`,
-`battery`, `off`, `rename`, `copy`, `delete`, and forwarded Nextvi ex commands.
+`ls *pattern*`, `mkdir PATH`, `open PATH`, `gmarks`,
+`ble [send|recv|selected|PATH|status|off]`, `rtc [datetime]`, `battery`,
+`off`, `rename`, `copy`, `delete`, and forwarded Nextvi ex commands.
 The command prompt temporarily
 replaces the bottom status row. Directory listing state is remembered per directory,
 including cursor position, scroll position, sort mode, and filter.

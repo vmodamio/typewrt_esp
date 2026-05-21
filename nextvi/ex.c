@@ -1941,6 +1941,7 @@ static struct excmd {
 	{"i", ec_insert},
 	{"d", ec_delete},
 	EO(grp),
+	{"gmarks", ec_gmarks},
 	{"g!", ec_glob},
 	{"g", ec_glob},
 	EO(mpt),

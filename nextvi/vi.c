@@ -21,8 +21,129 @@
 #endif
 
 #include "conf.c"
+#ifdef NEXTVI_EMBEDDED
+#include "typewrt_power.h"
+#endif
+
+#define VI_GMARKS	5
+#ifdef NEXTVI_EMBEDDED
+#define VI_GMARKS_FILE	"/sdcard/.nextvi-gmarks"
+#else
+#define VI_GMARKS_FILE	".nextvi-gmarks"
+#endif
+
+static sbuf *vi_gmark_path[VI_GMARKS];
+static int vi_gmark_row[VI_GMARKS], vi_gmark_off[VI_GMARKS];
+static int vi_gmarks_loaded;
+
 static void vi_hardwrap_all(void);
 void led_prompt_width(int width);
+
+static int vi_gmark_slot(int mark)
+{
+	return mark >= 0 && mark < VI_GMARKS * 2 && mark % 2 == 0 ? mark / 2 : -1;
+}
+
+static void vi_gmark_set(int slot, const char *path, int row, int off, int save)
+{
+	if (slot < 0 || slot >= VI_GMARKS)
+		return;
+	if (!vi_gmark_path[slot])
+		sbuf_make(vi_gmark_path[slot], 128)
+	sbuf_cut(vi_gmark_path[slot], 0)
+	sbufn_str(vi_gmark_path[slot], path ? path : "")
+	vi_gmark_row[slot] = row;
+	vi_gmark_off[slot] = off;
+	if (save) {
+		FILE *f;
+#ifdef NEXTVI_EMBEDDED
+		typewrt_sd_write_begin();
+#endif
+		f = fopen(VI_GMARKS_FILE, "w");
+		if (f) {
+			fprintf(f, "nextvi-gmarks 1\n");
+			for (int i = 0; i < VI_GMARKS; i++)
+				if (vi_gmark_path[i])
+					fprintf(f, "%d\t%d\t%d\t%s\n", i * 2,
+						vi_gmark_row[i], vi_gmark_off[i],
+						vi_gmark_path[i]->s);
+			fclose(f);
+		}
+#ifdef NEXTVI_EMBEDDED
+		typewrt_sd_write_end();
+#endif
+	}
+}
+
+static void vi_gmarks_load(void)
+{
+	char line[4096];
+	FILE *f;
+	if (vi_gmarks_loaded)
+		return;
+	vi_gmarks_loaded = 1;
+	f = fopen(VI_GMARKS_FILE, "r");
+	if (!f)
+		return;
+	while (fgets(line, sizeof(line), f)) {
+		char *p = line, *end, *path;
+		long mark, row, off;
+		int slot;
+		if (!strncmp(line, "nextvi-gmarks", 13))
+			continue;
+		mark = strtol(p, &end, 10);
+		if (end == p || *end++ != '\t')
+			continue;
+		p = end;
+		row = strtol(p, &end, 10);
+		if (end == p || *end++ != '\t')
+			continue;
+		p = end;
+		off = strtol(p, &end, 10);
+		if (end == p || *end++ != '\t')
+			continue;
+		path = end;
+		path[strcspn(path, "\r\n")] = '\0';
+		slot = vi_gmark_slot(mark);
+		if (slot >= 0)
+			vi_gmark_set(slot, path, row, off, 0);
+	}
+	fclose(f);
+}
+
+static int vi_gmark_open(int slot, int *row, int *off)
+{
+	int target_row, target_off;
+	vi_gmarks_load();
+	if (slot < 0 || slot >= VI_GMARKS || !vi_gmark_path[slot])
+		return 0;
+	target_row = vi_gmark_row[slot];
+	target_off = vi_gmark_off[slot];
+	ex_edit(vi_gmark_path[slot]->s, vi_gmark_path[slot]->s_n);
+	*row = MIN(MAX(target_row, 0), lbuf_len(xb) ? lbuf_len(xb) - 1 : 0);
+	*off = MAX(target_off, 0);
+	return 1;
+}
+
+static void *ec_gmarks(char *loc, char *cmd, char *arg)
+{
+	char msg[512];
+	int any = 0;
+	vi_gmarks_load();
+	for (int i = 0; i < VI_GMARKS; i++) {
+		if (!vi_gmark_path[i])
+			continue;
+		snprintf(msg, sizeof(msg), "%d/%d %d;%d %s", i * 2, i * 2 + 1,
+			vi_gmark_row[i] + 1, vi_gmark_off[i] + 1,
+			vi_gmark_path[i]->s);
+		ex_print(msg)
+		any = 1;
+	}
+	if (!any)
+		ex_print("no global marks")
+	return NULL;
+}
+
 #include "ex.c"
 #include "lbuf.c"
 #include "led.c"
@@ -1042,9 +1163,8 @@ static void vc_status_defer(int type)
 /* read a motion */
 static int vi_motion(int vc, int *row, int *off)
 {
-	static sbuf *savepath[5];
 	static rset *bre;
-	static int srow[5], soff[5], lkwdcnt;
+	static int lkwdcnt;
 	static int cadir = 1;
 	char *cs;
 	int cnt = vi_arg ? vi_arg : 1;
@@ -1199,10 +1319,7 @@ static int vi_motion(int vc, int *row, int *off)
 	case TK_CTL(']'):	/* this is also ^5 on some systems */
 	case TK_CTL('p'):
 		#define open_saved(n) \
-		if (savepath[n]) { \
-			*row = srow[n]; *off = soff[n]; \
-			ex_edit(savepath[n]->s, savepath[n]->s_n); \
-		} \
+		vi_gmark_open(n, row, off); \
 
 		if (vi_arg && (cs = vi_curword(xb, *row, *off, cnt, 0))) {
 			ex_krsset(cs, +1);
@@ -1236,18 +1353,14 @@ static int vi_motion(int vc, int *row, int *off)
 		vi_mod |= 1;
 		break;
 	case TK_CTL('t'):
-		if (vi_arg >= LEN(savepath) * 2)
+		if (vi_arg >= VI_GMARKS * 2)
 			break;
 		if (vi_arg % 2 == 0) {
-			vi_arg /= 2;
-			if (!savepath[vi_arg])
-				sbuf_make(savepath[vi_arg], 128)
-			sbuf_cut(savepath[vi_arg], 0)
-			sbufn_str(savepath[vi_arg], xb_path)
-			srow[vi_arg] = *row; soff[vi_arg] = *off;
+			vi_gmarks_load();
+			vi_gmark_set(vi_arg / 2, xb_path, *row, *off, 1);
 			break;
 		}
-		open_saved(vi_arg / 2)
+		vi_gmark_open(vi_arg / 2, row, off);
 		goto bsync_ret;
 	case '0':
 		*off = 0;

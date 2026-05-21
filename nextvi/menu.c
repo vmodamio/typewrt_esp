@@ -1410,6 +1410,124 @@ static int menu_buffer_picker(menu_state *m)
 	}
 }
 
+static void menu_render_gmark(char line[NEXTVI_DISPLAY_COLS + 1], int slot)
+{
+	char text[256];
+
+	if (slot < 0 || slot >= VI_GMARKS || !vi_gmark_path[slot]) {
+		snprintf(text, sizeof(text), "%d/%d  empty", slot * 2, slot * 2 + 1);
+	} else {
+		snprintf(text, sizeof(text), "%d/%d  %d;%d %s",
+			slot * 2, slot * 2 + 1, vi_gmark_row[slot] + 1,
+			vi_gmark_off[slot] + 1, vi_gmark_path[slot]->s);
+	}
+	menu_line(line, text);
+}
+
+static void menu_draw_gmark_picker(menu_state *m, int cursor, int top)
+{
+	char line[NEXTVI_DISPLAY_COLS + 1];
+
+	term_cursor(0);
+	term_commit();
+	menu_draw_top(m, 0);
+	for (int row = 0; row < MENU_VISIBLE_ROWS; row++) {
+		int idx = top + row;
+		if (idx < VI_GMARKS)
+			menu_render_gmark(line, idx);
+		else
+			menu_line(line, "");
+		menu_draw_row(MENU_FIRST_ROW + row, line,
+			idx == cursor && idx < VI_GMARKS);
+	}
+	menu_line(line, "global marks");
+	nextvi_display_refresh_line_inverted(MENU_BOTTOM_ROW, line,
+		NEXTVI_DISPLAY_COLS);
+}
+
+static int menu_gmark_any(void)
+{
+	for (int i = 0; i < VI_GMARKS; i++)
+		if (vi_gmark_path[i])
+			return 1;
+	return 0;
+}
+
+static int menu_gmark_jump(menu_state *m, int slot)
+{
+	if (!vi_gmark_open(slot, &xrow, &xoff)) {
+		menu_set_message(m, "no such global mark");
+		return 0;
+	}
+	return 1;
+}
+
+static int menu_gmark_picker(menu_state *m)
+{
+	int cursor = 0, top = 0;
+
+	vi_gmarks_load();
+	if (!menu_gmark_any()) {
+		menu_set_message(m, "no global marks");
+		return 0;
+	}
+	for (;;) {
+		int c;
+		if (cursor < top)
+			top = cursor;
+		if (cursor >= top + MENU_VISIBLE_ROWS)
+			top = cursor - MENU_VISIBLE_ROWS + 1;
+		menu_draw_gmark_picker(m, cursor, top);
+		c = menu_read_key(m);
+		if (!c) {
+			menu_ble_poll(m);
+			continue;
+		}
+		if (c >= '0' && c <= '9') {
+			int slot = (c - '0') / 2;
+			if (slot >= VI_GMARKS) {
+				menu_set_message(m, "no such global mark");
+				return 0;
+			}
+			return menu_gmark_jump(m, slot);
+		}
+		switch (c) {
+		case 'j':
+		case TK_CTL('n'):
+			if (cursor < VI_GMARKS - 1)
+				cursor++;
+			break;
+		case 'k':
+		case TK_CTL('p'):
+			if (cursor > 0)
+				cursor--;
+			break;
+		case TK_CTL('d'):
+			cursor = MIN(VI_GMARKS - 1, cursor + MENU_VISIBLE_ROWS);
+			break;
+		case TK_CTL('u'):
+			cursor = MAX(0, cursor - MENU_VISIBLE_ROWS);
+			break;
+		case 'g':
+			cursor = 0;
+			break;
+		case 'G':
+			cursor = VI_GMARKS - 1;
+			break;
+		case '\n':
+		case 'l':
+		case 'o':
+			return menu_gmark_jump(m, cursor);
+		case 'q':
+		case TK_MENU:
+		case TK_ESC:
+			return 0;
+		default:
+			break;
+		}
+	}
+}
+
 static char *menu_token(char **p)
 {
 	char *s = *p;
@@ -1441,6 +1559,8 @@ static int menu_command(menu_state *m, char *cmdline)
 		return 1;
 	if ((!strcmp(cmd, "b") || !strcmp(cmd, "buffer")) && !*menu_trim(p))
 		return menu_buffer_picker(m);
+	if (!strcmp(cmd, "gmarks") && !*menu_trim(p))
+		return menu_gmark_picker(m);
 	if (!strcmp(cmd, "open") || !strcmp(cmd, "e")) {
 		char *path;
 		int ret;

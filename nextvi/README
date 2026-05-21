@@ -176,7 +176,7 @@ VI NORMAL
                    Set buffer local line mark
      <^T>          Set global line mark 0. Global marks are always valid
      {0 2 4 6 8}<^T>
-                   Set a global line mark #
+                   Set a persistent global line mark #
      {1 3 5 7 9}<^T>
                    Switch to a global line mark #
      [#]<^7>{0-9}
@@ -605,6 +605,11 @@ EX COMMANDS
 
              Example: store ranges in <a> and <s> for later reuse in :f>
              :>top>,#>bottom>m as:'a,'sf>middle
+
+     gmarks  Print persistent global marks
+
+             Global marks are the <^T> slots. The left number sets a mark;
+             the right number jumps to it.
 
      [range]ya[<reg>][*]
              Yank into a register
