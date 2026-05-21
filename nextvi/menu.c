@@ -893,7 +893,7 @@ static int menu_prompt(menu_state *m, const char *prefix, char *out, int out_len
 		if (!c)
 			continue;
 		nextvi_display_refresh_cursor(MENU_BOTTOM_ROW, cursor_col, 0);
-		if (c == TK_ESC || c == TK_CTL('c')) {
+		if (c == TK_MENU || c == TK_ESC || c == TK_CTL('c')) {
 			menu_draw(m);
 			return 0;
 		}
@@ -1401,6 +1401,7 @@ static int menu_buffer_picker(menu_state *m)
 			snprintf(cmd, sizeof(cmd), "b%d", cursor);
 			return menu_forward_ex_command(cmd);
 		case 'q':
+		case TK_MENU:
 		case TK_ESC:
 			return 0;
 		default:
@@ -1738,6 +1739,7 @@ int nextvi_menu_run(void)
 			menu_search(&m);
 			break;
 		case 'q':
+		case TK_MENU:
 			return menu_finish(&m, 1);
 		default:
 			break;

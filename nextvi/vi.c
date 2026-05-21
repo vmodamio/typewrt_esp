@@ -1781,6 +1781,9 @@ void vi(int init)
 			re_motion:
 			c = term_read(TK_CTL('l'));
 			switch (c) {
+			case TK_MENU:
+				xquit = !xquit ? 1 : xquit;
+				continue;
 			case TK_CTL('b'):
 				vi_scrollbackward(MAX(1, vi_arg) * (xrows - 1));
 				xoff = lbuf_indents(xb, xrow);

@@ -678,7 +678,6 @@ static void typewrt_power_led_high_z(void)
 static void typewrt_esp_domain_diagnostic_high_z(void)
 {
     const uint64_t high_z_mask =
-        (1ULL << TYPEWRT_PIN_RST_EN) |
         (1ULL << TYPEWRT_PIN_UART_TX) |
         (1ULL << TYPEWRT_PIN_UART_RX);
     gpio_config_t io_conf = {
@@ -690,7 +689,6 @@ static void typewrt_esp_domain_diagnostic_high_z(void)
     };
 
     (void)uart_wait_tx_done(UART_NUM_0, pdMS_TO_TICKS(20));
-    (void)gpio_hold_dis(TYPEWRT_PIN_RST_EN);
     gpio_config(&io_conf);
 }
 
@@ -1235,6 +1233,7 @@ bool typewrt_power_off(void)
 
     typewrt_power_led_high_z();
 
+    typewrt_reset_button_enable(true);
     typewrt_power_domain_pins_high_z();
     typewrt_esp_domain_diagnostic_high_z();
     (void)esp_sleep_pd_config(ESP_PD_DOMAIN_VDDSDIO, ESP_PD_OPTION_OFF);

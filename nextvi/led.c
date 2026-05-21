@@ -912,6 +912,8 @@ int led_prompt(sbuf *sb, char *insert, int *kmap, ins_state *is, int ps, int flg
 	preserve(int, xleft, xleft = 0;)
 	key = led_line(sb, ps, n, &post, &postn, &postref, -1,
 			&off, kmap, is, 0, xrow, xtop, flg);
+	if (key == TK_MENU)
+		xquit = !xquit ? 1 : xquit;
 	restore(xleft)
 	if (key == '\n' && flg & 1) {
 		lbuf_dedup(tempbufs[0].lb, sb->s + n, sb->s_n - n)
@@ -1007,6 +1009,8 @@ static int led_input_at(sbuf *sb, char *post, int postn, int row, int flg,
 			led_pcols = 0;
 			if (key != 127)
 				term_cursor(1);
+			if (key == TK_MENU)
+				xquit = !xquit ? 1 : xquit;
 			return key;
 		}
 		sbuf_chr(sb, key)

@@ -345,7 +345,8 @@ void term_back(int c);
 /* process management */
 #define TK_ESC		TK_CTL('[')
 #define TK_CTL(x)	(x & 037)
-#define TK_INT(c)	(!c || c == TK_ESC || c == TK_CTL('c'))
+#define TK_MENU		0xff
+#define TK_INT(c)	(!c || c == TK_ESC || c == TK_CTL('c') || c == TK_MENU)
 
 /* led.c: line-oriented input and output */
 void led_modeswap(void);

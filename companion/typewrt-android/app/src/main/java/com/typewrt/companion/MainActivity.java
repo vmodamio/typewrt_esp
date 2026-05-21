@@ -22,6 +22,7 @@ import android.bluetooth.le.ScanSettings;
 import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.graphics.Typeface;
@@ -35,6 +36,8 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.ParcelUuid;
+import android.security.keystore.KeyGenParameterSpec;
+import android.security.keystore.KeyProperties;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.Spannable;
@@ -62,9 +65,12 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.ProtocolException;
+import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.lang.reflect.Field;
+import java.security.GeneralSecurityException;
+import java.security.KeyStore;
 import java.security.MessageDigest;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -79,19 +85,28 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
+
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
 public class MainActivity extends Activity {
     private static final int REQUEST_BLE_PERMISSIONS = 7;
+    private static final int REQUEST_COPY_OUTPUT = 8;
     private static final long SCAN_TIMEOUT_MS = 15000;
     private static final long MAX_FILE_BYTES = 20L * 1024L * 1024L;
     private static final int HTTP_TIMEOUT_MS = 30000;
+    private static final int PANDOC_SERVER_CHECK_TIMEOUT_MS = 8000;
+    private static final int PANDOC_DEFAULT_PORT = 3030;
     private static final int DEFAULT_BLE_WRITE_CHUNK = 20;
     private static final int REQUESTED_BLE_MTU = 247;
     private static final int MAX_BLE_WRITE_CHUNK = REQUESTED_BLE_MTU - 3;
     private static final long GITHUB_ACCESS_CHECK_DELAY_MS = 900;
+    private static final long PANDOC_SERVER_CHECK_DELAY_MS = 900;
     private static final int COLOR_BACKGROUND = 0xFF21211F;
     private static final int COLOR_SURFACE = 0xFF2B2B29;
     private static final int COLOR_SURFACE_HIGH = 0xFF33383D;
@@ -100,13 +115,121 @@ public class MainActivity extends Activity {
     private static final int COLOR_TEXT_PRIMARY = 0xFFFFFFFF;
     private static final int COLOR_TEXT_SECONDARY = 0xFFC8D0D6;
     private static final int COLOR_TEXT_MUTED = 0xFF8E989F;
-    private static final int COLOR_BLUE = 0xFFA1BCC1;
-    private static final int COLOR_BLUE_DARK = 0xFF78979C;
-    private static final int COLOR_RIPPLE = 0x33A1BCC1;
+    private static final int COLOR_BLUE = 0xFFF7C84F;
+    private static final int COLOR_BLUE_DARK = 0xFFC79B2E;
+    private static final int COLOR_RIPPLE = 0x33F7C84F;
     private static final String GITHUB_API_VERSION = "2026-03-10";
     private static final String REMOTE_DIR_NAME = "remote";
     private static final String OUTPUT_DIR_NAME = "output";
     private static final String SYNC_MANIFEST_NAME = ".typewrt-sync.json";
+    private static final String SETTINGS_NAME = "typewrt_companion_settings";
+    private static final String SETTING_PANDOC_SERVER_URL = "pandoc_server_url";
+    private static final String SETTING_GITHUB_REPO = "github_repo";
+    private static final String SETTING_GITHUB_PATH = "github_path";
+    private static final String SETTING_GITHUB_BRANCH = "github_branch";
+    private static final String SETTING_GITHUB_COMMIT_MESSAGE = "github_commit_message";
+    private static final String SETTING_GITHUB_TOKEN_IV = "github_token_iv";
+    private static final String SETTING_GITHUB_TOKEN_DATA = "github_token_data";
+    private static final String KEYSTORE_PROVIDER = "AndroidKeyStore";
+    private static final String GITHUB_TOKEN_KEY_ALIAS = "typewrt_companion_github_token";
+    private static final String TOKEN_CIPHER = "AES/GCM/NoPadding";
+    private static final int TOKEN_GCM_TAG_BITS = 128;
+    private static final String PANDOC_EPUB_TEMPLATE_B64 =
+        "PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPCFET0NUWVBFIGh0bWw+CjxodG1sIHhtbG5zPSJodHRw" +
+        "Oi8vd3d3LnczLm9yZy8xOTk5L3hodG1sIiB4bWxuczplcHViPSJodHRwOi8vd3d3LmlkcGYub3JnLzIwMDcvb3BzIiRpZihs" +
+        "YW5nKSQgbGFuZz0iJGxhbmckIiB4bWw6bGFuZz0iJGxhbmckIiRlbmRpZiQ+CjxoZWFkPgogIDxtZXRhIGNoYXJzZXQ9InV0" +
+        "Zi04IiAvPgogIDxtZXRhIG5hbWU9ImdlbmVyYXRvciIgY29udGVudD0icGFuZG9jIiAvPgogIDx0aXRsZT4kcGFnZXRpdGxl" +
+        "JDwvdGl0bGU+CiAgPHN0eWxlPgokaWYoY3NsLWNzcykkCiAgICAkc3R5bGVzLmNpdGF0aW9ucy5odG1sKCkkCiRlbmRpZiQK" +
+        "JGlmKGhpZ2hsaWdodGluZy1jc3MpJAogICAgLyogQ1NTIGZvciBzeW50YXggaGlnaGxpZ2h0aW5nICovCiAgICAkaGlnaGxp" +
+        "Z2h0aW5nLWNzcyQKJGVuZGlmJAogIDwvc3R5bGU+CiRmb3IoY3NzKSQKICA8bGluayByZWw9InN0eWxlc2hlZXQiIHR5cGU9" +
+        "InRleHQvY3NzIiBocmVmPSIkY3NzJCIgLz4KJGVuZGZvciQKJGZvcihoZWFkZXItaW5jbHVkZXMpJAogICRoZWFkZXItaW5j" +
+        "bHVkZXMkCiRlbmRmb3IkCjwvaGVhZD4KPGJvZHkkaWYoY292ZXJwYWdlKSQgaWQ9ImNvdmVyIiRlbmRpZiQkaWYoYm9keS10" +
+        "eXBlKSQgZXB1Yjp0eXBlPSIkYm9keS10eXBlJCIkZW5kaWYkPgokaWYodGl0bGVwYWdlKSQKPHNlY3Rpb24gZXB1Yjp0eXBl" +
+        "PSJ0aXRsZXBhZ2UiIGNsYXNzPSJ0aXRsZXBhZ2UiPgokZm9yKHRpdGxlKSQKJGlmKHRpdGxlLnR5cGUpJAogIDxoMSBjbGFz" +
+        "cz0iJHRpdGxlLnR5cGUkIj4kdGl0bGUudGV4dCQ8L2gxPgokZWxzZSQKICA8aDEgY2xhc3M9InRpdGxlIj4kdGl0bGUkPC9o" +
+        "MT4KJGVuZGlmJAokZW5kZm9yJAokaWYoc3VidGl0bGUpJAogIDxwIGNsYXNzPSJzdWJ0aXRsZSI+JHN1YnRpdGxlJDwvcD4K" +
+        "JGVuZGlmJAokZm9yKGF1dGhvcikkCiAgPHAgY2xhc3M9ImF1dGhvciI+JGF1dGhvciQ8L3A+CiRlbmRmb3IkCiRmb3IoY3Jl" +
+        "YXRvcikkCiAgPHAgY2xhc3M9IiRjcmVhdG9yLnJvbGUkIj4kY3JlYXRvci50ZXh0JDwvcD4KJGVuZGZvciQKJGlmKHB1Ymxp" +
+        "c2hlcikkCiAgPHAgY2xhc3M9InB1Ymxpc2hlciI+JHB1Ymxpc2hlciQ8L3A+CiRlbmRpZiQKJGlmKGRhdGUpJAogIDxwIGNs" +
+        "YXNzPSJkYXRlIj4kZGF0ZSQ8L3A+CiRlbmRpZiQKJGlmKHJpZ2h0cykkCiAgPGRpdiBjbGFzcz0icmlnaHRzIj4kcmlnaHRz" +
+        "JDwvZGl2PgokZW5kaWYkCiRpZihhYnN0cmFjdCkkCjxkaXYgY2xhc3M9ImFic3RyYWN0Ij4KPGRpdiBjbGFzcz0iYWJzdHJh" +
+        "Y3QtdGl0bGUiPiRhYnN0cmFjdC10aXRsZSQ8L2Rpdj4KJGFic3RyYWN0JAo8L2Rpdj4KJGVuZGlmJAo8L3NlY3Rpb24+CiRl" +
+        "bHNlJAokaWYoY292ZXJwYWdlKSQKPGRpdiBpZD0iY292ZXItaW1hZ2UiPgo8c3ZnIHhtbG5zPSJodHRwOi8vd3d3LnczLm9y" +
+        "Zy8yMDAwL3N2ZyIgeG1sbnM6eGxpbms9Imh0dHA6Ly93d3cudzMub3JnLzE5OTkveGxpbmsiIHZlcnNpb249IjEuMSIgd2lk" +
+        "dGg9IjEwMCUiIGhlaWdodD0iMTAwJSIgdmlld0JveD0iMCAwICRjb3Zlci1pbWFnZS13aWR0aCQgJGNvdmVyLWltYWdlLWhl" +
+        "aWdodCQiIHByZXNlcnZlQXNwZWN0UmF0aW89InhNaWRZTWlkIj4KPGltYWdlIHdpZHRoPSIkY292ZXItaW1hZ2Utd2lkdGgk" +
+        "IiBoZWlnaHQ9IiRjb3Zlci1pbWFnZS1oZWlnaHQkIiB4bGluazpocmVmPSIuLi9tZWRpYS8kY292ZXItaW1hZ2UkIiAvPgo8" +
+        "L3N2Zz4KPC9kaXY+CiRlbHNlJAokZm9yKGluY2x1ZGUtYmVmb3JlKSQKJGluY2x1ZGUtYmVmb3JlJAokZW5kZm9yJAokYm9k" +
+        "eSQKJGZvcihpbmNsdWRlLWFmdGVyKSQKJGluY2x1ZGUtYWZ0ZXIkCiRlbmRmb3IkCiRlbmRpZiQKJGVuZGlmJAo8L2JvZHk+" +
+        "CjwvaHRtbD4KCg==";
+    private static final String PANDOC_STYLES_CITATIONS_HTML_B64 =
+        "LyogQ1NTIGZvciBjaXRhdGlvbnMgKi8KZGl2LmNzbC1iaWItYm9keSB7IH0KZGl2LmNzbC1lbnRyeSB7CiAgY2xlYXI6IGJv" +
+        "dGg7CiRpZihjc2wtZW50cnktc3BhY2luZykkCiAgbWFyZ2luLWJvdHRvbTogJGNzbC1lbnRyeS1zcGFjaW5nJDsKJGVuZGlm" +
+        "JAp9Ci5oYW5naW5nLWluZGVudCBkaXYuY3NsLWVudHJ5IHsKICBtYXJnaW4tbGVmdDoyZW07CiAgdGV4dC1pbmRlbnQ6LTJl" +
+        "bTsKfQpkaXYuY3NsLWxlZnQtbWFyZ2luIHsKICBtaW4td2lkdGg6MmVtOwogIGZsb2F0OmxlZnQ7Cn0KZGl2LmNzbC1yaWdo" +
+        "dC1pbmxpbmUgewogIG1hcmdpbi1sZWZ0OjJlbTsKICBwYWRkaW5nLWxlZnQ6MWVtOwp9CmRpdi5jc2wtaW5kZW50IHsKICBt" +
+        "YXJnaW4tbGVmdDogMmVtOwp9Cg==";
+    private static final String PANDOC_ABBREVIATIONS_B64 =
+        "YWV0LgphZXRhdC4KYWwuCkFwci4KQXVnLgpiay4KQnJvcy4KYy4KQ2FwdC4KY2YuCmNoLgpjaGFwLgpjaHMuCkNvLgpjb2wu" +
+        "CkNvcnAuCmNwLgpkLgpEZWMuCkRyLgplLmcuCmVkLgplZHMuCmVzcC4KZi4KZmFzYy4KRmViLgpmZi4KZmlnLgpmbC4KZm9s" +
+        "Lgpmb2xzLgpGci4KR2VuLgpHb3YuCkhvbi4KaS5lLgppbGwuCkluYy4KaW5jbC4KSmFuLgpKci4KSnVsLgpKdW4uCkx0ZC4K" +
+        "TS5BLgpNLkQuCk1hci4KTXIuCk1ycy4KTXMuCm4uCm4uYi4Kbm4uCk5vLgpOb3YuCk9jdC4KcC4KUGguRC4KcHAuClByZXMu" +
+        "ClByb2YuCnB0LgpxLnYuClJlcC4KUmV2LgpzLnYuCnMudnYuCnNhZWMuCnNlYy4KU2VuLgpTZXAuClNlcHQuClNndC4KU3Iu" +
+        "ClN0Lgp1bml2Lgp2aXouCnZvbC4KdnMuCg==";
+    private static final String PANDOC_EPUB_CSS_B64 =
+        "LyogVGhpcyBkZWZpbmVzIHN0eWxlcyBhbmQgY2xhc3NlcyB1c2VkIGluIHRoZSBib29rICovCkBwYWdlIHsKICBtYXJnaW46" +
+        "IDEwcHg7Cn0KaHRtbCwgYm9keSwgZGl2LCBzcGFuLCBhcHBsZXQsIG9iamVjdCwgaWZyYW1lLCBoMSwgaDIsIGgzLCBoNCwg" +
+        "aDUsIGg2LCBwLApibG9ja3F1b3RlLCBwcmUsIGEsIGFiYnIsIGFjcm9ueW0sIGFkZHJlc3MsIGJpZywgY2l0ZSwgY29kZSwg" +
+        "ZGVsLCBkZm4sIGVtLCBpbWcsCmlucywga2JkLCBxLCBzLCBzYW1wLCBzbWFsbCwgc3RyaWtlLCBzdHJvbmcsIHN1Yiwgc3Vw" +
+        "LCB0dCwgdmFyLCBiLCB1LCBpLCBjZW50ZXIsCmZpZWxkc2V0LCBmb3JtLCBsYWJlbCwgbGVnZW5kLCB0YWJsZSwgY2FwdGlv" +
+        "biwgdGJvZHksIHRmb290LCB0aGVhZCwgdHIsIHRoLCB0ZCwKYXJ0aWNsZSwgYXNpZGUsIGNhbnZhcywgZGV0YWlscywgZW1i" +
+        "ZWQsIGZpZ3VyZSwgZmlnY2FwdGlvbiwgZm9vdGVyLCBoZWFkZXIsCmhncm91cCwgbWVudSwgbmF2LCBvdXRwdXQsIHJ1Ynks" +
+        "IHNlY3Rpb24sIHN1bW1hcnksIHRpbWUsIG1hcmssIGF1ZGlvLCB2aWRlbywgb2wsCnVsLCBsaSwgZGwsIGR0LCBkZCB7CiAg" +
+        "bWFyZ2luOiAwOwogIHBhZGRpbmc6IDA7CiAgYm9yZGVyOiAwOwogIGZvbnQtc2l6ZTogMTAwJTsKICB2ZXJ0aWNhbC1hbGln" +
+        "bjogYmFzZWxpbmU7Cn0KaHRtbCB7CiAgbGluZS1oZWlnaHQ6IDEuMjsKICBmb250LWZhbWlseTogR2VvcmdpYSwgc2VyaWY7" +
+        "CiAgY29sb3I6ICMxYTFhMWE7Cn0KcCB7CiAgdGV4dC1pbmRlbnQ6IDA7CiAgbWFyZ2luOiAxZW0gMDsKICB3aWRvd3M6IDI7" +
+        "CiAgb3JwaGFuczogMjsKfQphLCBhOnZpc2l0ZWQgewogIGNvbG9yOiAjMWExYTFhOwp9CmltZyB7CiAgbWF4LXdpZHRoOiAx" +
+        "MDAlOwp9CnN1cCB7CiAgdmVydGljYWwtYWxpZ246IHN1cGVyOwogIGZvbnQtc2l6ZTogc21hbGxlcjsKfQpzdWIgewogIHZl" +
+        "cnRpY2FsLWFsaWduOiBzdWI7CiAgZm9udC1zaXplOiBzbWFsbGVyOwp9CmgxIHsKICBtYXJnaW46IDNlbSAwIDAgMDsKICBm" +
+        "b250LXNpemU6IDJlbTsKICBwYWdlLWJyZWFrLWJlZm9yZTogYWx3YXlzOwogIGxpbmUtaGVpZ2h0OiAxNTAlOwp9CmgyIHsK" +
+        "ICBtYXJnaW46IDEuNWVtIDAgMCAwOwogIGZvbnQtc2l6ZTogMS41ZW07CiAgbGluZS1oZWlnaHQ6IDEzNSU7Cn0KaDMgewog" +
+        "IG1hcmdpbjogMS4zZW0gMCAwIDA7CiAgZm9udC1zaXplOiAxLjNlbTsKfQpoNCB7CiAgbWFyZ2luOiAxLjJlbSAwIDAgMDsK" +
+        "ICBmb250LXNpemU6IDEuMmVtOwp9Cmg1IHsKICBtYXJnaW46IDEuMWVtIDAgMCAwOwogIGZvbnQtc2l6ZTogMS4xZW07Cn0K" +
+        "aDYgewogIGZvbnQtc2l6ZTogMWVtOwp9CmgxLCBoMiwgaDMsIGg0LCBoNSwgaDYgewogIHRleHQtaW5kZW50OiAwOwogIHRl" +
+        "eHQtYWxpZ246IGxlZnQ7CiAgZm9udC13ZWlnaHQ6IGJvbGQ7CiAgcGFnZS1icmVhay1hZnRlcjogYXZvaWQ7CiAgcGFnZS1i" +
+        "cmVhay1pbnNpZGU6IGF2b2lkOwp9CgpvbCwgdWwgewogIG1hcmdpbjogMWVtIDAgMCAxLjdlbTsKfQpsaSA+IG9sLCBsaSA+" +
+        "IHVsIHsKICBtYXJnaW4tdG9wOiAwOwp9CmJsb2NrcXVvdGUgewogIG1hcmdpbjogMWVtIDAgMWVtIDEuN2VtOwp9CmNvZGUg" +
+        "ewogIGZvbnQtZmFtaWx5OiBNZW5sbywgTW9uYWNvLCAnTHVjaWRhIENvbnNvbGUnLCBDb25zb2xhcywgbW9ub3NwYWNlOwog" +
+        "IGZvbnQtc2l6ZTogODUlOwogIG1hcmdpbjogMDsKICBoeXBoZW5zOiBtYW51YWw7Cn0KcHJlIHsKICBtYXJnaW46IDFlbSAw" +
+        "OwogIG92ZXJmbG93OiBhdXRvOwp9CnByZSBjb2RlIHsKICBwYWRkaW5nOiAwOwogIG92ZXJmbG93OiB2aXNpYmxlOwogIG92" +
+        "ZXJmbG93LXdyYXA6IG5vcm1hbDsKfQouc291cmNlQ29kZSB7CiAgYmFja2dyb3VuZC1jb2xvcjogdHJhbnNwYXJlbnQ7CiAg" +
+        "b3ZlcmZsb3c6IHZpc2libGU7Cn0KaHIgewogIGJhY2tncm91bmQtY29sb3I6ICMxYTFhMWE7CiAgYm9yZGVyOiBub25lOwog" +
+        "IGhlaWdodDogMXB4OwogIG1hcmdpbjogMWVtIDA7Cn0KdGFibGUgewogIG1hcmdpbjogMWVtIDA7CiAgYm9yZGVyLWNvbGxh" +
+        "cHNlOiBjb2xsYXBzZTsKICB3aWR0aDogMTAwJTsKICBvdmVyZmxvdy14OiBhdXRvOwogIGRpc3BsYXk6IGJsb2NrOwp9CnRh" +
+        "YmxlIGNhcHRpb24gewogIG1hcmdpbi1ib3R0b206IDAuNzVlbTsKfQp0Ym9keSB7CiAgbWFyZ2luLXRvcDogMC41ZW07CiAg" +
+        "Ym9yZGVyLXRvcDogMXB4IHNvbGlkICMxYTFhMWE7CiAgYm9yZGVyLWJvdHRvbTogMXB4IHNvbGlkICMxYTFhMWE7Cn0KdGgs" +
+        "IHRkIHsKICBwYWRkaW5nOiAwLjI1ZW0gMC41ZW0gMC4yNWVtIDAuNWVtOwp9CnRoIHsKICBib3JkZXItdG9wOiAxcHggc29s" +
+        "aWQgIzFhMWExYTsKfQpoZWFkZXIgewogIG1hcmdpbi1ib3R0b206IDRlbTsKICB0ZXh0LWFsaWduOiBjZW50ZXI7Cn0KI1RP" +
+        "QyBsaSB7CiAgbGlzdC1zdHlsZTogbm9uZTsKfQojVE9DIHVsIHsKICBwYWRkaW5nLWxlZnQ6IDEuM2VtOwp9CiNUT0MgPiB1" +
+        "bCB7CiAgcGFkZGluZy1sZWZ0OiAwOwp9CiNUT0MgYTpub3QoOmhvdmVyKSB7CiAgdGV4dC1kZWNvcmF0aW9uOiBub25lOwp9" +
+        "CmNvZGUgewogIHdoaXRlLXNwYWNlOiBwcmUtd3JhcDsKfQpzcGFuLnNtYWxsY2FwcyB7CiAgZm9udC12YXJpYW50OiBzbWFs" +
+        "bC1jYXBzOwp9CgovKiBUaGlzIGlzIHRoZSBtb3N0IGNvbXBhdGlibGUgQ1NTLCBidXQgaXQgb25seSBhbGxvd3MgdHdvIGNv" +
+        "bHVtbnM6ICovCmRpdi5jb2x1bW4gewogIGRpc3BsYXk6IGlubGluZS1ibG9jazsKICB2ZXJ0aWNhbC1hbGlnbjogdG9wOwog" +
+        "IHdpZHRoOiA1MCU7Cn0KLyogSWYgeW91IGNhbiByZWx5IG9uIENTUzMgc3VwcG9ydCwgdXNlIHRoaXMgaW5zdGVhZDogKi8K" +
+        "LyogZGl2LmNvbHVtbnMgewogIGRpc3BsYXk6IGZsZXg7CiAgZ2FwOiBtaW4oNHZ3LCAxLjVlbSk7Cn0KZGl2LmNvbHVtbiB7" +
+        "CiAgZmxleDogYXV0bzsKICBvdmVyZmxvdy14OiBhdXRvOwp9ICovCgpkaXYuaGFuZ2luZy1pbmRlbnQgewogIG1hcmdpbi1s" +
+        "ZWZ0OiAxLjVlbTsKICB0ZXh0LWluZGVudDogLTEuNWVtOwp9CnVsLnRhc2stbGlzdCB7CiAgbGlzdC1zdHlsZTogbm9uZTsK" +
+        "fQp1bC50YXNrLWxpc3QgbGkgaW5wdXRbdHlwZT0iY2hlY2tib3giXSB7CiAgd2lkdGg6IDAuOGVtOwogIG1hcmdpbjogMCAw" +
+        "LjhlbSAwLjJlbSAtMS42ZW07CiAgdmVydGljYWwtYWxpZ246IG1pZGRsZTsKfQouZGlzcGxheS5tYXRoIHsKICBkaXNwbGF5" +
+        "OiBibG9jazsKICB0ZXh0LWFsaWduOiBjZW50ZXI7CiAgbWFyZ2luOiAwLjVyZW0gYXV0bzsKfQoKLyogRm9yIHRpdGxlLCBh" +
+        "dXRob3IsIGFuZCBkYXRlIG9uIHRoZSBjb3ZlciBwYWdlICovCmgxLnRpdGxlIHsgfQpwLmF1dGhvciB7IH0KcC5kYXRlIHsg" +
+        "fQoKbmF2I3RvYyBvbCwgbmF2I2xhbmRtYXJrcyBvbCB7CiAgcGFkZGluZzogMDsKICBtYXJnaW4tbGVmdDogMWVtOwp9Cm5h" +
+        "diN0b2Mgb2wgbGksIG5hdiNsYW5kbWFya3Mgb2wgbGkgewogIGxpc3Qtc3R5bGUtdHlwZTogbm9uZTsKICBtYXJnaW46IDA7" +
+        "CiAgcGFkZGluZzogMDsKfQphLmZvb3Rub3RlLXJlZiB7CiAgdmVydGljYWwtYWxpZ246IHN1cGVyOwp9CmVtLCBlbSBlbSBl" +
+        "bSwgZW0gZW0gZW0gZW0gZW0gewogIGZvbnQtc3R5bGU6IGl0YWxpYzsKfQplbSBlbSwgZW0gZW0gZW0gZW0gewogIGZvbnQt" +
+        "c3R5bGU6IG5vcm1hbDsKfQpxIHsKICBxdW90ZXM6ICLigJwiICLigJ0iICLigJgiICLigJkiOwp9CkBtZWRpYSBzY3JlZW4g" +
+        "eyAvKiBXb3JrYXJvdW5kIGZvciBpQm9va3MgaXNzdWU7IHNlZSAjNjI0MiAqLwogIC5zb3VyY2VDb2RlIHsKICAgIG92ZXJm" +
+        "bG93OiB2aXNpYmxlICFpbXBvcnRhbnQ7CiAgICB3aGl0ZS1zcGFjZTogcHJlLXdyYXAgIWltcG9ydGFudDsKICB9Cn0K";
 
     private static final UUID SERVICE_UUID =
         UUID.fromString("0000ffe0-0000-1000-8000-00805f9b34fb");
@@ -144,6 +267,7 @@ public class MainActivity extends Activity {
     private TextView githubAccessView;
     private LinearLayout githubConfigPanel;
     private EditText pandocServerField;
+    private TextView pandocServerStatusView;
     private TextView pandocInputView;
     private EditText githubRepoField;
     private EditText githubPathField;
@@ -172,8 +296,10 @@ public class MainActivity extends Activity {
     private int bleWriteChunkSize = DEFAULT_BLE_WRITE_CHUNK;
     private int scanGeneration;
     private int githubAccessGeneration;
+    private int pandocServerCheckGeneration;
     private String remoteBrowserPath = "";
     private boolean githubConfigVisible;
+    private boolean pandocServerReady;
 
     private ByteArrayOutputStream headerBuffer = new ByteArrayOutputStream();
     private ByteArrayOutputStream fileBuffer = new ByteArrayOutputStream();
@@ -182,6 +308,7 @@ public class MainActivity extends Activity {
     private String currentFileName = "typewrt.txt";
     private final ArrayList<FileSnapshot> receivedFiles = new ArrayList<>();
     private final ArrayList<String> pandocInputPaths = new ArrayList<>();
+    private String pendingOutputCopyPath;
     private byte[] latestFileData;
     private String latestFileName;
     private Uri latestFileUri;
@@ -376,6 +503,15 @@ public class MainActivity extends Activity {
             "Pandoc server URL (http://host:3030/)",
             "");
         pandocServerField.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        pandocServerStatusView = new TextView(this);
+        pandocServerStatusView.setText("Enter a pandoc-server URL to check server.");
+        pandocServerStatusView.setTextSize(14);
+        pandocServerStatusView.setTextColor(COLOR_TEXT_MUTED);
+        LinearLayout.LayoutParams pandocStatusParams = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT);
+        pandocStatusParams.topMargin = dp(8);
+        pandocTabContent.addView(pandocServerStatusView, pandocStatusParams);
 
         LinearLayout pandocFormats = new LinearLayout(this);
         pandocFormats.setOrientation(LinearLayout.HORIZONTAL);
@@ -484,7 +620,6 @@ public class MainActivity extends Activity {
             LinearLayout.LayoutParams.WRAP_CONTENT);
         accessParams.topMargin = dp(8);
         githubConfigPanel.addView(githubAccessView, accessParams);
-        installGithubConfigWatchers();
 
         githubFetchButton = new Button(this);
         githubFetchButton.setText("Pull");
@@ -538,6 +673,11 @@ public class MainActivity extends Activity {
             LinearLayout.LayoutParams.WRAP_CONTENT);
         historyParams.topMargin = dp(8);
         githubTabContent.addView(githubFileHistoryButton, historyParams);
+
+        loadSavedSettings();
+        installPandocServerWatcher();
+        installGithubConfigWatchers();
+        installGithubCommitWatcher();
 
         setContentView(page);
         showTab(CompanionTab.TRANSFER);
@@ -644,6 +784,7 @@ public class MainActivity extends Activity {
 
             @Override
             public void afterTextChanged(Editable s) {
+                saveGithubSettings();
                 scheduleGithubAccessCheck();
             }
         };
@@ -653,6 +794,326 @@ public class MainActivity extends Activity {
         githubBranchField.addTextChangedListener(watcher);
         githubTokenField.addTextChangedListener(watcher);
         scheduleGithubAccessCheck();
+    }
+
+    private void installGithubCommitWatcher() {
+        githubCommitField.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {
+            }
+
+            @Override
+            public void afterTextChanged(Editable s) {
+                saveGithubCommitMessage();
+            }
+        });
+    }
+
+    private void installPandocServerWatcher() {
+        TextWatcher watcher = new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {
+            }
+
+            @Override
+            public void afterTextChanged(Editable s) {
+                savePandocSettings();
+                schedulePandocServerCheck();
+            }
+        };
+
+        pandocServerField.addTextChangedListener(watcher);
+        schedulePandocServerCheck();
+    }
+
+    private void loadSavedSettings() {
+        SharedPreferences prefs = settings();
+
+        pandocServerField.setText(prefs.getString(SETTING_PANDOC_SERVER_URL, ""));
+        githubRepoField.setText(prefs.getString(SETTING_GITHUB_REPO, ""));
+        githubPathField.setText(prefs.getString(SETTING_GITHUB_PATH, ""));
+        githubBranchField.setText(prefs.getString(SETTING_GITHUB_BRANCH, "main"));
+        githubCommitField.setText(prefs.getString(SETTING_GITHUB_COMMIT_MESSAGE, ""));
+
+        try {
+            githubTokenField.setText(decryptGithubToken(prefs));
+        } catch (GeneralSecurityException | IOException | RuntimeException e) {
+            clearSavedGithubToken(prefs);
+            githubTokenField.setText("");
+        }
+    }
+
+    private SharedPreferences settings() {
+        return getSharedPreferences(SETTINGS_NAME, MODE_PRIVATE);
+    }
+
+    private void savePandocSettings() {
+        settings().edit()
+            .putString(SETTING_PANDOC_SERVER_URL, pandocServerField.getText().toString().trim())
+            .apply();
+    }
+
+    private void saveGithubSettings() {
+        SharedPreferences prefs = settings();
+        SharedPreferences.Editor editor = prefs.edit()
+            .putString(SETTING_GITHUB_REPO, githubRepoField.getText().toString().trim())
+            .putString(SETTING_GITHUB_PATH, githubPathField.getText().toString().trim())
+            .putString(SETTING_GITHUB_BRANCH, githubBranchField.getText().toString().trim());
+        String token = githubTokenField.getText().toString().trim();
+
+        if (token.isEmpty()) {
+            editor.remove(SETTING_GITHUB_TOKEN_IV)
+                .remove(SETTING_GITHUB_TOKEN_DATA)
+                .apply();
+            return;
+        }
+
+        try {
+            EncryptedValue encrypted = encryptGithubToken(token);
+            editor.putString(SETTING_GITHUB_TOKEN_IV, encrypted.iv)
+                .putString(SETTING_GITHUB_TOKEN_DATA, encrypted.data)
+                .apply();
+        } catch (GeneralSecurityException | IOException | RuntimeException e) {
+            editor.apply();
+            setStatus("Token not saved", usefulMessage(e));
+            appendLog("GitHub token save failed: " + e);
+        }
+    }
+
+    private void saveGithubCommitMessage() {
+        settings().edit()
+            .putString(SETTING_GITHUB_COMMIT_MESSAGE, githubCommitField.getText().toString().trim())
+            .apply();
+    }
+
+    private void clearSavedGithubToken(SharedPreferences prefs) {
+        prefs.edit()
+            .remove(SETTING_GITHUB_TOKEN_IV)
+            .remove(SETTING_GITHUB_TOKEN_DATA)
+            .apply();
+    }
+
+    private EncryptedValue encryptGithubToken(String token)
+        throws GeneralSecurityException, IOException {
+        Cipher cipher = Cipher.getInstance(TOKEN_CIPHER);
+
+        cipher.init(Cipher.ENCRYPT_MODE, githubTokenKey());
+        byte[] encrypted = cipher.doFinal(token.getBytes(StandardCharsets.UTF_8));
+        return new EncryptedValue(
+            Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP),
+            Base64.encodeToString(encrypted, Base64.NO_WRAP));
+    }
+
+    private String decryptGithubToken(SharedPreferences prefs)
+        throws GeneralSecurityException, IOException {
+        String iv = prefs.getString(SETTING_GITHUB_TOKEN_IV, "");
+        String data = prefs.getString(SETTING_GITHUB_TOKEN_DATA, "");
+
+        if (iv.isEmpty() || data.isEmpty()) {
+            return "";
+        }
+
+        Cipher cipher = Cipher.getInstance(TOKEN_CIPHER);
+        cipher.init(
+            Cipher.DECRYPT_MODE,
+            githubTokenKey(),
+            new GCMParameterSpec(TOKEN_GCM_TAG_BITS, Base64.decode(iv, Base64.DEFAULT)));
+        byte[] decrypted = cipher.doFinal(Base64.decode(data, Base64.DEFAULT));
+        return new String(decrypted, StandardCharsets.UTF_8);
+    }
+
+    private SecretKey githubTokenKey() throws GeneralSecurityException, IOException {
+        KeyStore keyStore = KeyStore.getInstance(KEYSTORE_PROVIDER);
+
+        keyStore.load(null);
+        KeyStore.Entry entry = keyStore.getEntry(GITHUB_TOKEN_KEY_ALIAS, null);
+        if (entry instanceof KeyStore.SecretKeyEntry) {
+            return ((KeyStore.SecretKeyEntry) entry).getSecretKey();
+        }
+
+        KeyGenerator generator = KeyGenerator.getInstance(
+            KeyProperties.KEY_ALGORITHM_AES,
+            KEYSTORE_PROVIDER);
+        KeyGenParameterSpec spec = new KeyGenParameterSpec.Builder(
+            GITHUB_TOKEN_KEY_ALIAS,
+            KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
+            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+            .setRandomizedEncryptionRequired(true)
+            .build();
+
+        generator.init(spec);
+        return generator.generateKey();
+    }
+
+    private void schedulePandocServerCheck() {
+        int generation = ++pandocServerCheckGeneration;
+        pandocServerReady = false;
+
+        if (pandocServerStatusView == null || pandocServerField == null) {
+            updatePandocSelectionView();
+            return;
+        }
+
+        String serverUrl = pandocServerField.getText().toString().trim();
+        if (serverUrl.isEmpty()) {
+            pandocServerStatusView.setText("Enter a pandoc-server URL to check server.");
+            pandocServerStatusView.setTextColor(COLOR_TEXT_MUTED);
+            updatePandocSelectionView();
+            return;
+        }
+        if (serverUrl.contains("pandoc.org/app")) {
+            pandocServerStatusView.setText("Pandoc app is browser-only; use a pandoc-server URL.");
+            pandocServerStatusView.setTextColor(COLOR_TEXT_SECONDARY);
+            updatePandocSelectionView();
+            return;
+        }
+
+        String normalizedServerUrl;
+        try {
+            normalizedServerUrl = normalizePandocServerUrl(serverUrl);
+        } catch (IOException e) {
+            String validationError = "Pandoc server URL is invalid: " + usefulMessage(e);
+            pandocServerStatusView.setText(validationError);
+            pandocServerStatusView.setTextColor(COLOR_TEXT_SECONDARY);
+            updatePandocSelectionView();
+            return;
+        }
+
+        pandocServerStatusView.setText("Pandoc server check pending...");
+        pandocServerStatusView.setTextColor(COLOR_TEXT_SECONDARY);
+        updatePandocSelectionView();
+        mainHandler.postDelayed(() -> checkPandocServer(generation, normalizedServerUrl),
+            PANDOC_SERVER_CHECK_DELAY_MS);
+    }
+
+    private String normalizePandocServerUrl(String serverUrl) throws IOException {
+        String clean = serverUrl.trim();
+        if (!clean.contains("://")) {
+            clean = "http://" + clean;
+        }
+        URL url = new URL(clean);
+        String protocol = url.getProtocol();
+
+        if (!"http".equals(protocol) && !"https".equals(protocol)) {
+            throw new IOException("Use an http:// or https:// pandoc-server URL.");
+        }
+        if (url.getHost() == null || url.getHost().isEmpty()) {
+            throw new IOException("Pandoc server URL is missing a host.");
+        }
+        if (url.getPort() >= 0) {
+            return url.toString();
+        }
+
+        return new URL(protocol, url.getHost(), PANDOC_DEFAULT_PORT, url.getFile())
+            .toString();
+    }
+
+    private void checkPandocServer(int generation, String serverUrl) {
+        if (generation != pandocServerCheckGeneration) {
+            return;
+        }
+        if (pandocServerStatusView != null) {
+            pandocServerStatusView.setText("Checking Pandoc server...");
+        }
+
+        Thread thread = new Thread(() -> {
+            try {
+                performPandocServerCheck(serverUrl);
+                mainHandler.post(() -> {
+                    if (generation != pandocServerCheckGeneration) {
+                        return;
+                    }
+                    pandocServerReady = true;
+                    pandocServerStatusView.setText("Pandoc server reachable.");
+                    pandocServerStatusView.setTextColor(COLOR_BLUE);
+                    updatePandocSelectionView();
+                });
+            } catch (IOException | JSONException | RuntimeException e) {
+                mainHandler.post(() -> {
+                    if (generation != pandocServerCheckGeneration) {
+                        return;
+                    }
+                    pandocServerReady = false;
+                    pandocServerStatusView.setText("Pandoc server check failed: " + usefulMessage(e));
+                    pandocServerStatusView.setTextColor(COLOR_TEXT_SECONDARY);
+                    updatePandocSelectionView();
+                });
+            }
+        }, "typewrt-pandoc-check");
+        thread.start();
+    }
+
+    private void performPandocServerCheck(String serverUrl) throws IOException, JSONException {
+        HttpURLConnection connection = (HttpURLConnection)
+            new URL(normalizePandocServerUrl(serverUrl)).openConnection();
+        connection.setRequestMethod("POST");
+        connection.setConnectTimeout(PANDOC_SERVER_CHECK_TIMEOUT_MS);
+        connection.setReadTimeout(PANDOC_SERVER_CHECK_TIMEOUT_MS);
+        connection.setDoOutput(true);
+        connection.setRequestProperty("Accept", "application/octet-stream");
+        connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+        connection.setRequestProperty("Connection", "close");
+        connection.setUseCaches(false);
+
+        JSONObject request = new JSONObject();
+        request.put("text", "---\ntitle: Typewrt Pandoc Check\n---\n\n# Typewrt\n\nPandoc server check.\n");
+        request.put("from", "markdown");
+        request.put("to", "epub");
+        request.put("standalone", true);
+        addPandocBundledDefaults(request, "epub", true);
+
+        byte[] body = request.toString().getBytes(StandardCharsets.UTF_8);
+        connection.setFixedLengthStreamingMode(body.length);
+        try (OutputStream out = connection.getOutputStream()) {
+            out.write(body);
+        }
+
+        int status = connection.getResponseCode();
+        byte[] response = readResponse(connection);
+        if (status < 200 || status >= 300) {
+            connection.disconnect();
+            throw new IOException("HTTP " + status + ": " + preview(response));
+        }
+        connection.disconnect();
+    }
+
+    private static void addPandocBundledDefaults(
+        JSONObject request,
+        String to,
+        boolean standalone
+    ) throws JSONException {
+        if (!standalone || !isPandocEpubOutput(to)) {
+            return;
+        }
+
+        request.put("template", base64Utf8(PANDOC_EPUB_TEMPLATE_B64));
+
+        JSONObject files = request.optJSONObject("files");
+        if (files == null) {
+            files = new JSONObject();
+            request.put("files", files);
+        }
+        files.put("data/data/templates/styles.citations.html", PANDOC_STYLES_CITATIONS_HTML_B64);
+        files.put("data/data/abbreviations", PANDOC_ABBREVIATIONS_B64);
+        files.put("data/data/epub.css", PANDOC_EPUB_CSS_B64);
+    }
+
+    private static boolean isPandocEpubOutput(String to) {
+        String format = to == null ? "" : to.toLowerCase(Locale.ROOT);
+        return "epub".equals(format) || "epub2".equals(format) || "epub3".equals(format);
+    }
+
+    private static String base64Utf8(String text) {
+        return new String(Base64.decode(text, Base64.NO_WRAP), StandardCharsets.UTF_8);
     }
 
     private void scheduleGithubAccessCheck() {
@@ -933,6 +1394,27 @@ public class MainActivity extends Activity {
             setStatus("Bluetooth permission denied", "The app needs BLE permission to find Typewrt.");
             appendLog("Permission denied.");
         }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+
+        if (requestCode != REQUEST_COPY_OUTPUT) {
+            return;
+        }
+
+        String sourcePath = pendingOutputCopyPath;
+        pendingOutputCopyPath = null;
+        if (resultCode != RESULT_OK || data == null || data.getData() == null) {
+            setStatus("Copy canceled", "No output was copied.");
+            return;
+        }
+        if (sourcePath == null || sourcePath.isEmpty()) {
+            setStatus("Copy failed", "Output selection was lost.");
+            return;
+        }
+        copyPandocOutputToUri(sourcePath, data.getData());
     }
 
     private String[] requiredPermissions() {
@@ -1881,8 +2363,8 @@ public class MainActivity extends Activity {
         setStatus("Loading repository files", "Choose Pandoc inputs in export order.");
         Thread thread = new Thread(() -> {
             try {
-                ArrayList<LocalMirrorFile> files = listFolderFiles(remoteDir());
-                mainHandler.post(() -> showPandocFilePickerDialog(files));
+                File root = remoteDir().getCanonicalFile();
+                mainHandler.post(() -> showPandocFilePickerDialog(root));
             } catch (IOException | RuntimeException e) {
                 mainHandler.post(() -> {
                     setStatus("File picker failed", usefulMessage(e));
@@ -1893,50 +2375,137 @@ public class MainActivity extends Activity {
         thread.start();
     }
 
-    private void showPandocFilePickerDialog(ArrayList<LocalMirrorFile> files) {
-        if (files.isEmpty()) {
-            setStatus("No files found", "Pull or receive files into the repository first.");
+    private void showPandocFilePickerDialog(File root) {
+        ArrayList<String> selection = new ArrayList<>();
+        String[] currentPath = new String[] {""};
+        LinearLayout rows = new LinearLayout(this);
+        rows.setOrientation(LinearLayout.VERTICAL);
+        rows.setBackground(roundedDrawable(COLOR_SURFACE, dp(8), COLOR_STROKE, 1));
+        rows.setPadding(dp(8), dp(8), dp(8), dp(8));
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setBackgroundColor(COLOR_BACKGROUND);
+        scroll.addView(rows, new ScrollView.LayoutParams(
+            ScrollView.LayoutParams.MATCH_PARENT,
+            ScrollView.LayoutParams.WRAP_CONTENT));
+        scroll.setLayoutParams(new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            dp(360)));
+
+        try {
+            HashSet<String> availablePaths = new HashSet<>();
+            for (LocalMirrorFile file : listFolderFiles(root)) {
+                availablePaths.add(file.path);
+            }
+            if (availablePaths.isEmpty()) {
+                setStatus("No files found", "Pull or receive files into the repository first.");
+                return;
+            }
+            for (String path : pandocInputPaths) {
+                if (availablePaths.contains(path)) {
+                    selection.add(path);
+                }
+            }
+        } catch (IOException | RuntimeException e) {
+            setStatus("File picker failed", usefulMessage(e));
+            appendLog("Pandoc file picker failed: " + e);
             return;
         }
 
-        String[] labels = new String[files.size()];
-        boolean[] checked = new boolean[files.size()];
-        HashSet<String> availablePaths = new HashSet<>();
-        for (LocalMirrorFile file : files) {
-            availablePaths.add(file.path);
-        }
-        ArrayList<String> selection = new ArrayList<>();
-        for (String path : pandocInputPaths) {
-            if (availablePaths.contains(path)) {
-                selection.add(path);
-            }
-        }
-        for (int i = 0; i < files.size(); i++) {
-            String path = files.get(i).path;
-            labels[i] = path;
-            checked[i] = selection.contains(path);
-        }
+        Runnable[] render = new Runnable[1];
+        render[0] = () -> renderPandocFilePickerRows(root, currentPath, selection, rows, render[0]);
+        render[0].run();
 
-        new AlertDialog.Builder(this)
+        AlertDialog dialog = new AlertDialog.Builder(this)
             .setTitle("Pandoc inputs")
-            .setMultiChoiceItems(labels, checked, (dialog, which, isChecked) -> {
-                String path = files.get(which).path;
-                if (isChecked) {
-                    if (!selection.contains(path)) {
-                        selection.add(path);
-                    }
-                } else {
-                    selection.remove(path);
-                }
-            })
-            .setPositiveButton("Use order", (dialog, which) -> {
+            .setView(scroll)
+            .setPositiveButton("Use order", (d, which) -> {
                 pandocInputPaths.clear();
                 pandocInputPaths.addAll(selection);
                 setStatus("Pandoc inputs selected", pandocSelectionSummary());
                 updatePandocSelectionView();
             })
+            .setNeutralButton("Clear", null)
             .setNegativeButton("Cancel", null)
-            .show();
+            .create();
+        dialog.setOnShowListener(d ->
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
+                selection.clear();
+                render[0].run();
+            }));
+        dialog.show();
+    }
+
+    private void renderPandocFilePickerRows(
+        File root,
+        String[] currentPath,
+        ArrayList<String> selection,
+        LinearLayout rows,
+        Runnable render
+    ) {
+        rows.removeAllViews();
+        rows.addView(browserRow(
+            "remote/" + (currentPath[0].isEmpty() ? "" : currentPath[0]),
+            COLOR_BLUE,
+            null));
+        rows.addView(browserRow(
+            "selected " + selection.size() + " input" + plural(selection.size()),
+            selection.isEmpty() ? COLOR_TEXT_MUTED : COLOR_TEXT_SECONDARY,
+            null));
+
+        try {
+            File current = currentPath[0].isEmpty() ?
+                root : fileInside(root, currentPath[0]);
+
+            if (!current.isDirectory()) {
+                currentPath[0] = "";
+                current = root;
+            }
+            if (!currentPath[0].isEmpty()) {
+                rows.addView(browserRow("..", COLOR_TEXT_PRIMARY, () -> {
+                    int slash = currentPath[0].lastIndexOf('/');
+                    currentPath[0] = slash < 0 ? "" : currentPath[0].substring(0, slash);
+                    render.run();
+                }));
+            }
+
+            ArrayList<BrowserEntry> entries = listBrowserEntries(root, current);
+            int visibleRows = 0;
+            for (BrowserEntry entry : entries) {
+                String label;
+                int color = COLOR_TEXT_PRIMARY;
+
+                if (entry.directory) {
+                    label = "[+] " + entry.name;
+                } else {
+                    int selectedIndex = selection.indexOf(entry.path);
+                    boolean selected = selectedIndex >= 0;
+                    label = (selected ? "[x] " : "[ ] ") + entry.name +
+                        "  " + entry.file.length() + " b";
+                    if (selected) {
+                        label += "  #" + (selectedIndex + 1);
+                        color = COLOR_BLUE;
+                    }
+                }
+
+                rows.addView(browserRow(label, color, () -> {
+                    if (entry.directory) {
+                        currentPath[0] = entry.path;
+                    } else if (selection.contains(entry.path)) {
+                        selection.remove(entry.path);
+                    } else {
+                        selection.add(entry.path);
+                    }
+                    render.run();
+                }));
+                visibleRows++;
+            }
+            if (visibleRows == 0) {
+                rows.addView(browserRow("empty", COLOR_TEXT_MUTED, null));
+            }
+        } catch (IOException | RuntimeException e) {
+            rows.addView(browserRow(usefulMessage(e), COLOR_TEXT_SECONDARY, null));
+        }
     }
 
     private void clearPandocSelection() {
@@ -1982,8 +2551,32 @@ public class MainActivity extends Activity {
         for (LocalMirrorFile output : files) {
             String label = output.path + "  " + output.file.length() + " b";
             pandocOutputView.addView(browserRow(label, COLOR_TEXT_PRIMARY, () ->
-                openPandocOutput(output.path)));
+                showPandocOutputActions(output.path)));
         }
+    }
+
+    private void showPandocOutputActions(String path) {
+        String safePath = sanitizeTransferPath(path, "");
+
+        if (safePath.isEmpty()) {
+            setStatus("Output path missing", "No Pandoc output selected.");
+            return;
+        }
+
+        new AlertDialog.Builder(this)
+            .setTitle(fileNameFromPath(safePath))
+            .setItems(new String[] {"Open", "Share", "Copy", "Delete"}, (dialog, which) -> {
+                if (which == 0) {
+                    openPandocOutput(safePath);
+                } else if (which == 1) {
+                    sharePandocOutput(safePath);
+                } else if (which == 2) {
+                    choosePandocOutputCopyTarget(safePath);
+                } else {
+                    confirmDeletePandocOutput(safePath);
+                }
+            })
+            .show();
     }
 
     private void openPandocOutput(String path) {
@@ -2004,6 +2597,104 @@ public class MainActivity extends Activity {
             startActivity(Intent.createChooser(intent, "Open " + fileNameFromPath(safePath)));
         } catch (ActivityNotFoundException e) {
             setStatus("No app found", "Install an app that can open " + extensionForPath(safePath) + " files.");
+        }
+    }
+
+    private void sharePandocOutput(String path) {
+        String safePath = sanitizeTransferPath(path, "");
+
+        if (safePath.isEmpty()) {
+            setStatus("Output path missing", "No Pandoc output selected.");
+            return;
+        }
+
+        Uri uri = outputContentUri(safePath);
+        Intent intent = new Intent(Intent.ACTION_SEND);
+        intent.setType(guessMimeType(safePath));
+        intent.putExtra(Intent.EXTRA_STREAM, uri);
+        intent.putExtra(Intent.EXTRA_SUBJECT, fileNameFromPath(safePath));
+        intent.setClipData(ClipData.newUri(getContentResolver(), fileNameFromPath(safePath), uri));
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+        try {
+            startActivity(Intent.createChooser(intent, "Share " + fileNameFromPath(safePath)));
+        } catch (ActivityNotFoundException e) {
+            setStatus("No share target", "No app can share " + extensionForPath(safePath) + " files.");
+        }
+    }
+
+    private void choosePandocOutputCopyTarget(String path) {
+        String safePath = sanitizeTransferPath(path, "");
+
+        if (safePath.isEmpty()) {
+            setStatus("Output path missing", "No Pandoc output selected.");
+            return;
+        }
+
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType(guessMimeType(safePath));
+        intent.putExtra(Intent.EXTRA_TITLE, fileNameFromPath(safePath));
+        pendingOutputCopyPath = safePath;
+
+        try {
+            startActivityForResult(intent, REQUEST_COPY_OUTPUT);
+        } catch (ActivityNotFoundException e) {
+            pendingOutputCopyPath = null;
+            setStatus("No file picker", "No app can choose where to copy this output.");
+        }
+    }
+
+    private void confirmDeletePandocOutput(String path) {
+        String safePath = sanitizeTransferPath(path, "");
+
+        if (safePath.isEmpty()) {
+            setStatus("Output path missing", "No Pandoc output selected.");
+            return;
+        }
+
+        new AlertDialog.Builder(this)
+            .setTitle("Delete output?")
+            .setMessage(safePath)
+            .setPositiveButton("Delete", (dialog, which) -> deletePandocOutput(safePath))
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    private void deletePandocOutput(String path) {
+        String safePath = sanitizeTransferPath(path, "");
+
+        try {
+            File file = outputFile(safePath);
+            boolean deleted = deleteRecursive(file);
+            pruneEmptyParents(file.getParentFile(), outputDir());
+            if (deleted) {
+                setStatus("Deleted output", safePath);
+                appendLog("Output deleted: " + safePath);
+            } else {
+                setStatus("Delete failed", safePath + " was not found.");
+            }
+        } catch (IOException | RuntimeException e) {
+            setStatus("Delete failed", usefulMessage(e));
+            appendLog("Output delete failed: " + e);
+        }
+        refreshPandocOutputs();
+    }
+
+    private void copyPandocOutputToUri(String path, Uri destination) {
+        String safePath = sanitizeTransferPath(path, "");
+
+        try (InputStream in = new FileInputStream(outputFile(safePath));
+             OutputStream out = getContentResolver().openOutputStream(destination)) {
+            if (out == null) {
+                throw new IOException("Copy destination is not writable.");
+            }
+            copyStream(in, out);
+            setStatus("Copied output", fileNameFromPath(safePath));
+            appendLog("Output copied: " + safePath);
+        } catch (IOException | RuntimeException e) {
+            setStatus("Copy failed", usefulMessage(e));
+            appendLog("Output copy failed: " + e);
         }
     }
 
@@ -2031,7 +2722,7 @@ public class MainActivity extends Activity {
                 "No Pandoc inputs selected.");
         }
         if (pandocExportButton != null) {
-            pandocExportButton.setEnabled(hasSelection);
+            pandocExportButton.setEnabled(hasSelection && pandocServerReady);
         }
         if (pandocClearButton != null) {
             pandocClearButton.setEnabled(hasSelection);
@@ -2084,9 +2775,21 @@ public class MainActivity extends Activity {
             appendLog("pandoc.org/app runs in the browser and does not accept API uploads.");
             return;
         }
+        try {
+            serverUrl = normalizePandocServerUrl(serverUrl);
+        } catch (IOException e) {
+            setStatus("Pandoc server URL invalid", usefulMessage(e));
+            return;
+        }
+        if (!pandocServerReady) {
+            setStatus("Pandoc server not ready", "Wait for the server check to pass.");
+            schedulePandocServerCheck();
+            return;
+        }
 
         String from = selectedString(pandocFromSpinner);
         String to = selectedString(pandocToSpinner);
+        final String exportServerUrl = serverUrl;
         pandocExportButton.setEnabled(false);
         setStatus("Exporting with Pandoc", pandocSelectionSummary());
         appendLog("Pandoc export: " + from + " -> " + to);
@@ -2096,7 +2799,7 @@ public class MainActivity extends Activity {
             try {
                 PandocInput input = buildPandocInput(selectedPaths);
                 String outputName = convertedFileName(input.outputBasePath, to);
-                byte[] output = postPandoc(serverUrl, input.text, from, to);
+                byte[] output = postPandoc(exportServerUrl, input.text, from, to);
                 saveOutputFile(outputName, output);
             } catch (IOException | JSONException e) {
                 mainHandler.post(() -> {
@@ -2170,32 +2873,59 @@ public class MainActivity extends Activity {
         String from,
         String to
     ) throws IOException, JSONException {
-        URL url = new URL(serverUrl);
+        return postPandoc(serverUrl, text, from, to, HTTP_TIMEOUT_MS, true);
+    }
+
+    private byte[] postPandoc(
+        String serverUrl,
+        String text,
+        String from,
+        String to,
+        int timeoutMs
+    ) throws IOException, JSONException {
+        return postPandoc(serverUrl, text, from, to, timeoutMs, true);
+    }
+
+    private byte[] postPandoc(
+        String serverUrl,
+        String text,
+        String from,
+        String to,
+        int timeoutMs,
+        boolean standalone
+    ) throws IOException, JSONException {
+        URL url = new URL(normalizePandocServerUrl(serverUrl));
         HttpURLConnection connection = (HttpURLConnection) url.openConnection();
         connection.setRequestMethod("POST");
-        connection.setConnectTimeout(HTTP_TIMEOUT_MS);
-        connection.setReadTimeout(HTTP_TIMEOUT_MS);
+        connection.setConnectTimeout(timeoutMs);
+        connection.setReadTimeout(timeoutMs);
         connection.setDoOutput(true);
         connection.setRequestProperty("Accept", "application/octet-stream");
         connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+        connection.setRequestProperty("Connection", "close");
 
         JSONObject request = new JSONObject();
         request.put("text", text);
         request.put("from", from);
         request.put("to", to);
-        request.put("standalone", true);
+        request.put("standalone", standalone);
+        addPandocBundledDefaults(request, to, standalone);
 
         byte[] body = request.toString().getBytes(StandardCharsets.UTF_8);
+        mainHandler.post(() -> appendLog("Pandoc POST: " + url +
+            " (" + body.length + " bytes)"));
+        connection.setFixedLengthStreamingMode(body.length);
         try (OutputStream out = connection.getOutputStream()) {
             out.write(body);
         }
 
         int status = connection.getResponseCode();
         byte[] response = readResponse(connection);
-        connection.disconnect();
         if (status < 200 || status >= 300) {
-            throw new IOException("HTTP " + status + ": " + preview(response));
+            connection.disconnect();
+            throw new IOException("pandoc HTTP " + status + ": " + preview(response));
         }
+        connection.disconnect();
         return response;
     }
 
@@ -3284,6 +4014,9 @@ public class MainActivity extends Activity {
     }
 
     private String usefulMessage(Exception e) {
+        if (e instanceof SocketTimeoutException) {
+            return "Timed out waiting for server response.";
+        }
         String msg = e.getMessage();
         return msg == null || msg.isEmpty() ? e.toString() : msg;
     }
@@ -3331,6 +4064,16 @@ public class MainActivity extends Activity {
             this.size = size;
             this.downloadUrl = downloadUrl;
             this.sha = sha;
+        }
+    }
+
+    private static final class EncryptedValue {
+        final String iv;
+        final String data;
+
+        EncryptedValue(String iv, String data) {
+            this.iv = iv;
+            this.data = data;
         }
     }
 
@@ -3697,6 +4440,7 @@ public class MainActivity extends Activity {
             setStatus("Exported " + safePath, "output/");
             appendLog("Output saved: " + safePath);
             updateFileActions();
+            updatePandocSelectionView();
             refreshPandocOutputs();
         });
     }
@@ -3792,6 +4536,15 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void copyStream(InputStream in, OutputStream out) throws IOException {
+        byte[] buffer = new byte[8192];
+        int n;
+
+        while ((n = in.read(buffer)) != -1) {
+            out.write(buffer, 0, n);
+        }
+    }
+
     private ArrayList<LocalMirrorFile> listFolderFiles(File root) throws IOException {
         ArrayList<LocalMirrorFile> files = new ArrayList<>();
 
@@ -3832,6 +4585,32 @@ public class MainActivity extends Activity {
                 "");
         }
         throw new IOException("File is outside app storage.");
+    }
+
+    private ArrayList<BrowserEntry> listBrowserEntries(File root, File current) throws IOException {
+        ArrayList<BrowserEntry> entries = new ArrayList<>();
+        File[] children = current.listFiles();
+
+        if (children == null) {
+            return entries;
+        }
+        Arrays.sort(children, (a, b) -> {
+            if (a.isDirectory() != b.isDirectory()) {
+                return a.isDirectory() ? -1 : 1;
+            }
+            return a.getName().compareToIgnoreCase(b.getName());
+        });
+        for (File child : children) {
+            String path = relativeFilePath(root, child);
+            if (!path.isEmpty()) {
+                entries.add(new BrowserEntry(
+                    child.getName(),
+                    path,
+                    child,
+                    child.isDirectory()));
+            }
+        }
+        return entries;
     }
 
     private boolean deleteRecursive(File file) {

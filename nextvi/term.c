@@ -23,6 +23,8 @@ static unsigned char kq[128];
 static unsigned int kq_r, kq_w;
 static int key_shift, key_ctrl, key_alt, key_win, key_caps;
 
+#define NOTERM_KEY_MENU 55	/* KBDMAP[62], dedicated typewriter menu key */
+
 /* Aligned with the compact key codes produced by KBDMAP in typewrt_keymap.h. */
 static const unsigned char key_normal[64] = {
 	0, TK_ESC, '1', '2', '3', '4', '5', '6',
@@ -368,6 +370,8 @@ static int noterm_key_event_timeout(int timeout_ms)
 		if (!(ev & NEXTVI_KEY_PRESS))
 			continue;
 		code = ev & NEXTVI_KEY_CODE_MASK;
+		if (code == NOTERM_KEY_MENU)
+			return TK_MENU;
 		ch = (key_shift ^ (key_caps && key_normal[code] >= 'a' &&
 			key_normal[code] <= 'z')) ? key_shifted[code] : key_normal[code];
 		if (key_ctrl)
