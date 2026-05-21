@@ -1127,6 +1127,8 @@ static int vi_motion(int vc, int *row, int *off)
 		for (i = 0; i < cnt; i++)
 			if (lbuf_wordend(xb, var, -(vi_nlmode+1), row, off))
 				break;
+		if (!vi_nlmode)
+			vi_hardwrap_skip_marker(row, off);
 		break;
 	case 'e':
 	case 'E':
@@ -1134,6 +1136,8 @@ static int vi_motion(int vc, int *row, int *off)
 		for (i = 0; i < cnt; i++)
 			if (lbuf_wordend(xb, var, vi_nlmode+1, row, off))
 				break;
+		if (!vi_nlmode)
+			vi_hardwrap_skip_marker(row, off);
 		break;
 	case 'w':
 	case 'W':
@@ -1141,6 +1145,8 @@ static int vi_motion(int vc, int *row, int *off)
 		for (i = 0; i < cnt; i++)
 			if (lbuf_wordbeg(xb, var, vi_nlmode+1, row, off))
 				break;
+		if (!vi_nlmode)
+			vi_hardwrap_skip_marker(row, off);
 		break;
 	case '(':
 	case ')':
@@ -1447,16 +1453,30 @@ static void vi_shift(int r1, int r2, int dir, int count)
 	free(sb->s);
 }
 
+static int vi_backward_word_includes_cursor(int mv, int row, int off)
+{
+	char *ln = lbuf_get(xb, row);
+	ren_state *r = ln ? ren_position(ln) : NULL;
+
+	if (!r || off <= 0 || off >= r->n ||
+			uc_isspace(r->chrs[off]) || uc_isspace(r->chrs[off - 1]))
+		return 0;
+	return mv == 'B' || uc_kind(r->chrs[off]) == uc_kind(r->chrs[off - 1]);
+}
+
 static int vc_motion(int cmd)
 {
 	int r1 = xrow, r2 = xrow;	/* region rows */
 	int o1 = xoff, o2;		/* visual region columns */
+	int cr, co;
 	int lnmode = 0;			/* line-based region */
 	int mv = vi_prefix();
 	term_dec()
 	if (mv)
 		vi_arg = mv;
 	o1 = ren_noeol(lbuf_get(xb, r1), o1);
+	cr = r1;
+	co = o1;
 	o2 = o1;
 	if ((mv = vi_motionln(&r2, cmd, vi_arg ? vi_arg : 1)))
 		o2 = -1;
@@ -1480,6 +1500,11 @@ static int vc_motion(int cmd)
 	if (!lnmode && strchr("fFtTeE%", mv))
 		if (o2 < lbuf_eol(xb, r2, 2))
 			o2++;
+	if (!lnmode && (cmd == 'd' || cmd == 'c') && strchr("bB", mv) &&
+			r2 == cr && o2 == co &&
+			vi_backward_word_includes_cursor(mv, cr, co) &&
+			o2 < lbuf_eol(xb, r2, 2))
+		o2++;
 	if (cmd == 'y') {
 		vi_yank(r1, o1, r2, o2, lnmode);
 		return 0;

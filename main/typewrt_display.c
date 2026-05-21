@@ -245,43 +245,47 @@ static uint8_t displayGlyphForCodepoint(uint32_t cp)
     return fontmap[FONTMAP_REPLACEMENT_INDEX];
 }
 
+static bool displayCodepointIsZeroWidth(uint32_t cp)
+{
+    return cp == 0x200b || cp == 0x2060;
+}
+
 static uint8_t displayNextGlyph(const char **text)
 {
-    const unsigned char *s = (const unsigned char *)*text;
-    uint32_t cp;
+    while (**text) {
+        const unsigned char *s = (const unsigned char *)*text;
+        uint32_t cp;
 
-    if (!s[0]) {
-        return ' ';
+        if (s[0] < 0x80) {
+            (*text)++;
+            return displayGlyphForCodepoint(s[0]);
+        }
+        if ((s[0] & 0xe0) == 0xc0 && (s[1] & 0xc0) == 0x80) {
+            cp = ((uint32_t)(s[0] & 0x1f) << 6) |
+                (uint32_t)(s[1] & 0x3f);
+            *text += 2;
+        } else if ((s[0] & 0xf0) == 0xe0 && (s[1] & 0xc0) == 0x80 &&
+                (s[2] & 0xc0) == 0x80) {
+            cp = ((uint32_t)(s[0] & 0x0f) << 12) |
+                ((uint32_t)(s[1] & 0x3f) << 6) |
+                (uint32_t)(s[2] & 0x3f);
+            *text += 3;
+        } else if ((s[0] & 0xf8) == 0xf0 && (s[1] & 0xc0) == 0x80 &&
+                (s[2] & 0xc0) == 0x80 && (s[3] & 0xc0) == 0x80) {
+            cp = ((uint32_t)(s[0] & 0x07) << 18) |
+                ((uint32_t)(s[1] & 0x3f) << 12) |
+                ((uint32_t)(s[2] & 0x3f) << 6) |
+                (uint32_t)(s[3] & 0x3f);
+            *text += 4;
+        } else {
+            (*text)++;
+            return fontmap[FONTMAP_REPLACEMENT_INDEX];
+        }
+        if (!displayCodepointIsZeroWidth(cp)) {
+            return displayGlyphForCodepoint(cp);
+        }
     }
-    if (s[0] < 0x80) {
-        (*text)++;
-        return displayGlyphForCodepoint(s[0]);
-    }
-    if ((s[0] & 0xe0) == 0xc0 && (s[1] & 0xc0) == 0x80) {
-        cp = ((uint32_t)(s[0] & 0x1f) << 6) |
-            (uint32_t)(s[1] & 0x3f);
-        *text += 2;
-        return displayGlyphForCodepoint(cp);
-    }
-    if ((s[0] & 0xf0) == 0xe0 && (s[1] & 0xc0) == 0x80 &&
-            (s[2] & 0xc0) == 0x80) {
-        cp = ((uint32_t)(s[0] & 0x0f) << 12) |
-            ((uint32_t)(s[1] & 0x3f) << 6) |
-            (uint32_t)(s[2] & 0x3f);
-        *text += 3;
-        return displayGlyphForCodepoint(cp);
-    }
-    if ((s[0] & 0xf8) == 0xf0 && (s[1] & 0xc0) == 0x80 &&
-            (s[2] & 0xc0) == 0x80 && (s[3] & 0xc0) == 0x80) {
-        cp = ((uint32_t)(s[0] & 0x07) << 18) |
-            ((uint32_t)(s[1] & 0x3f) << 12) |
-            ((uint32_t)(s[2] & 0x3f) << 6) |
-            (uint32_t)(s[3] & 0x3f);
-        *text += 4;
-        return displayGlyphForCodepoint(cp);
-    }
-    (*text)++;
-    return fontmap[FONTMAP_REPLACEMENT_INDEX];
+    return ' ';
 }
 
 static void markPhysicalRowRedrawn(int row)
