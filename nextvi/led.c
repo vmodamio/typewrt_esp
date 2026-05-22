@@ -1027,6 +1027,7 @@ static int led_input_at(sbuf *sb, char *post, int postn, int row, int flg,
 		sbuf_chr(sb, key)
 		led_wrap_sep_pending = 0;
 		led_wrap_sep_ps = -1;
+		term_cursor_suspend(1);
 		led_printparts(sb, -1, ps, "", 0, &xoff);
 		led_open_next_row(&crow, &ctop);
 		n = ps;
@@ -1041,6 +1042,8 @@ static int led_input_at(sbuf *sb, char *post, int postn, int row, int flg,
 			ai_new = ai_max > ai_new - n ? ai_new - n : ai_max;
 			sbuf_mem(sb, sb->s+n, ai_new)
 		}
+		term_cursor_suspend(0);
+		term_cursor(1);
 	}
 }
 
