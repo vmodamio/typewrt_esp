@@ -166,6 +166,8 @@ static void *ec_gmarks(char *loc, char *cmd, char *arg)
 int vi_hidch;			/* show hidden chars */
 /* screen redraw - bit 1: whole screen, bit 2: current line, bit 3: update vi_col */
 static int vi_mod;
+static int vi_smart_insert;
+static int vi_smart_insert_reenter = 'a';
 static char vi_word_m[] = "\0leEwW";	/* line word navigation */
 static char *vi_word = vi_word_m;
 static char *_vi_word = vi_word_m;
@@ -1913,6 +1915,10 @@ void vi(int init)
 		term_commit();
 	}
 	while (!xquit) {
+		if (vi_smart_insert == 2) {
+			vi_smart_insert = 1;
+			vi_smart_insert_reenter = 'a';
+		}
 		int nrow = xrow;
 		int noff = xoff;
 		int ooff = noff;
@@ -2294,6 +2300,14 @@ void vi(int init)
 				k = vc_insert(c);
 				ins:
 				vi_mod |= !xpac && xrow == orow ? 8 : 1;
+				if (k == LED_SMARTKEY) {
+					if (c != 'A' && c != 'C' && xoff > 0)
+						xoff--;
+					vi_smart_insert = 2;
+					xleft = 0;
+					vi_mod |= 1;
+					break;
+				}
 				if (k == LED_REFLOW) {
 					xleft = 0;
 					vi_mod |= 1;
@@ -2322,6 +2336,8 @@ void vi(int init)
 					xleft = 0;
 					vi_mod |= 1;
 				}
+				if (vi_smart_insert == 1)
+					vi_smart_insert = 0;
 				break;
 			case 'J':
 				vc_join(1, vi_arg <= 1 ? 2 : vi_arg);
@@ -2491,8 +2507,12 @@ void vi(int init)
 				*/
 				break;
 			default:
+				if (vi_smart_insert == 1)
+					break;
 				continue;
 			}
+			if (vi_smart_insert == 1 && strchr("dDxX", c))
+				vi_smart_insert_reenter = 'i';
 			if (vi_visual)
 				vi_mod |= 1;
 			if (strchr("!<>AIJKOPRacdiopry", c)) {
@@ -2500,6 +2520,11 @@ void vi(int init)
 				memcpy(rep_cmd, icmd, icmd_pos);
 				rep_len = icmd_pos;
 			}
+			}
+			if (vi_smart_insert == 1) {
+				vi_smart_insert = 0;
+				if (!xquit)
+					term_back(vi_smart_insert_reenter);
 			}
 			topfix()
 		ln = lbuf_get(xb, xrow);

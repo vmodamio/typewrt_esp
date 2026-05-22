@@ -307,6 +307,7 @@ void nextvi_display_move_cursor(int old_row, int old_col,
 void nextvi_display_note_insert(void);
 #else
 #define term_write(s, n) if (xled) write(1, s, n);
+#define nextvi_display_note_insert()
 #endif
 void nextvi_main(int argc, char *argv[]);
 void term_init(void);
@@ -323,6 +324,7 @@ void term_room(int n);
 int term_read(int winch);
 int term_read_timeout(int winch, int timeout_ms);
 void term_commit(void);
+int term_smart_key_active(void);
 void term_push(char *s, unsigned int n);
 void term_back(int c);
 #define term_dec() ibuf_pos--; icmd_pos--;

@@ -34,9 +34,9 @@
  *
  *  CAPSLOCK isnt a modifier too. Its a special key that latch.
  *
- *  SYS: Is a normal key. Pressed alone pops a bottom status bar with some info 
- *       (Battery, Date-time, memory, saved*, synch). With the CMD modifier enters in the system menu
- *       to access the filesystem, the bluetooth, etc...
+ *  SYS: Is a normal key. Pressed alone opens the system menu.
+ *
+ *  CMD: In insert mode, holding CMD lets keys run normal-mode commands.
  *
  *  The bottom KEYBOARD ROW AS FOLLOW
  *    [ LCTRL |  CMD  |  LALT  |          SPACE          |  RALT  |  SYS  |  LANG  | RCTRL  ]
