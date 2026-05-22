@@ -332,6 +332,7 @@ static int noterm_alt_keymap(int ch)
 	case 'g': return conf_kmapfind("de");
 	case 'f': return conf_kmapfind("fr");
 	case 't': return conf_kmapfind("tr");
+	case 'k': return conf_kmapfind("colemak");
 	default: return -1;
 	}
 }

@@ -217,7 +217,48 @@ static char *kmap_tr[256] = {
 	['?'] = ":",
 };
 
-static char **kmaps[] = {kmap_en, kmap_es, kmap_it, kmap_no, kmap_de, kmap_fr, kmap_tr};
+static char *kmap_colemak[256] = {
+	[0] = "colemak",
+	['e'] = "f",
+	['E'] = "F",
+	['r'] = "p",
+	['R'] = "P",
+	['t'] = "g",
+	['T'] = "G",
+	['y'] = "j",
+	['Y'] = "J",
+	['u'] = "l",
+	['U'] = "L",
+	['i'] = "u",
+	['I'] = "U",
+	['o'] = "y",
+	['O'] = "Y",
+	['p'] = ";",
+	['P'] = ":",
+	['s'] = "r",
+	['S'] = "R",
+	['d'] = "s",
+	['D'] = "S",
+	['f'] = "t",
+	['F'] = "T",
+	['g'] = "d",
+	['G'] = "D",
+	['j'] = "n",
+	['J'] = "N",
+	['k'] = "e",
+	['K'] = "E",
+	['l'] = "i",
+	['L'] = "I",
+	[';'] = "o",
+	[':'] = "O",
+	['n'] = "k",
+	['N'] = "K",
+};
+
+static char **kmaps[] = {
+	kmap_en, kmap_es, kmap_it, kmap_no, kmap_de, kmap_fr, kmap_tr,
+	kmap_colemak
+};
 
 static char *digraphs[][2] = {
 	/* digraphs */

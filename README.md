@@ -21,6 +21,7 @@ and press one of the layout letters to switch:
 | `Alt-g` | German |
 | `Alt-f` | French |
 | `Alt-t` | Turkish |
+| `Alt-k` | Colemak |
 
 The old `z1`, `z2`, `ze`, and `zf` keymap commands are no longer used. Layouts
 that place accents on dead keys compose in insert and prompt input before the text
