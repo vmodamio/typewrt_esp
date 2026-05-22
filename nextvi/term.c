@@ -381,6 +381,7 @@ static int noterm_key_event_timeout(int timeout_ms)
 			xkmap = kmap;
 			if (kmap)
 				xkmap_alt = kmap;
+			vi_keyboard_layout_changed(conf_kmap(kmap)[0]);
 			continue;
 		}
 		(void)key_win;
