@@ -318,6 +318,7 @@ static void led_printparts(sbuf *sb, int pre, int ps,
 #define LED_HARDUNWRAP	-3
 #define LED_REFLOW	-4
 #define LED_HARDSEP	-5
+#define LED_SMARTKEY	-6
 
 static int led_wrap_ps;
 static int led_wrap_hidden_sep;
@@ -650,7 +651,17 @@ static int led_line(sbuf *sb, int ps, int pre, char **post, int *postn, char **p
 	do {
 		led_printparts(sb, pre, ps, *post, *postn, poff);
 		len = sb->s_n;
+		int queued = ibuf_pos < ibuf_cnt;
 		c = term_read(TK_CTL('l'));
+		if (!queued && ai_max >= 0 && term_smart_key_active() && !TK_INT(c)) {
+			if (icmd_pos)
+				icmd_pos--;
+			if (icmd_pos < sizeof(icmd))
+				icmd[icmd_pos++] = TK_ESC;
+			term_back(c);
+			term_cursor(0);
+			return LED_SMARTKEY;
+		}
 		noredraw:
 		switch (c) {
 		case TK_CTL('h'):
