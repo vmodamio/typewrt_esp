@@ -3,7 +3,17 @@
 #include <ctype.h>
 #include <errno.h>
 #include <time.h>
+#include "esp_app_desc.h"
+#include "esp_flash.h"
+#include "esp_image_format.h"
+#include "esp_ota_ops.h"
+#include "esp_partition.h"
+#include "esp_psram.h"
+#include "esp_vfs_fat.h"
 #include "typewrt_ble.h"
+#include "typewrt_sdcard.h"
+
+#define TYPEWRT_FIRMWARE_VERSION	"2.0"
 
 #define MENU_TOP_ROW		0
 #define MENU_SPACER_ROW		1
@@ -102,6 +112,100 @@ static void menu_draw_row(int row, const char *text, int inverted)
 		nextvi_display_refresh_line_inverted(row, line, NEXTVI_DISPLAY_COLS);
 	else
 		nextvi_display_refresh_line(row, line, NEXTVI_DISPLAY_COLS);
+}
+
+static void menu_format_size(char *out, int out_len, uint64_t bytes)
+{
+	const uint64_t gb = 1024ULL * 1024ULL * 1024ULL;
+	const uint64_t mb = 1024ULL * 1024ULL;
+	uint64_t tenths;
+	const char *unit;
+
+	if (bytes >= gb) {
+		tenths = bytes * 10ULL / gb;
+		unit = "GB";
+	} else {
+		tenths = bytes * 10ULL / mb;
+		unit = "MB";
+	}
+	if (tenths % 10ULL)
+		snprintf(out, out_len, "%llu.%llu %s",
+			(unsigned long long)(tenths / 10ULL),
+			(unsigned long long)(tenths % 10ULL), unit);
+	else
+		snprintf(out, out_len, "%llu %s",
+			(unsigned long long)(tenths / 10ULL), unit);
+}
+
+static uint32_t menu_firmware_image_size(void)
+{
+	const esp_partition_t *running = esp_ota_get_running_partition();
+	esp_image_metadata_t metadata;
+	esp_partition_pos_t pos;
+
+	if (!running)
+		return 0;
+	pos.offset = running->address;
+	pos.size = running->size;
+	if (esp_image_verify(ESP_IMAGE_VERIFY, &pos, &metadata) != ESP_OK)
+		return 0;
+	return metadata.image_len;
+}
+
+static void menu_about_line(char lines[][NEXTVI_DISPLAY_COLS + 1],
+	int *line_count, const char *text)
+{
+	if (*line_count >= NEXTVI_DISPLAY_ROWS)
+		return;
+	menu_line(lines[(*line_count)++], text);
+}
+
+void nextvi_about_show(void)
+{
+	char lines[NEXTVI_DISPLAY_ROWS][NEXTVI_DISPLAY_COLS + 1];
+	char text[96], used[24], total[24], psram[24];
+	const esp_app_desc_t *app = esp_app_get_description();
+	uint32_t flash_total = 0;
+	uint64_t sd_total = 0, sd_free = 0;
+	int line_count = 0;
+
+	snprintf(text, sizeof(text), "Date: %s %s", app->date, app->time);
+	menu_about_line(lines, &line_count, text);
+	menu_about_line(lines, &line_count, "Firmware: " TYPEWRT_FIRMWARE_VERSION);
+	menu_about_line(lines, &line_count, "Main board: ESP32s3  feather s3[d] p1");
+	menu_about_line(lines, &line_count, "Disp: Sharp.  LS044Q7DH01");
+	menu_about_line(lines, &line_count, "Keyboard: SN74HC573A");
+
+	menu_format_size(used, sizeof(used), menu_firmware_image_size());
+	if (esp_flash_get_size(NULL, &flash_total) != ESP_OK)
+		flash_total = 16U * 1024U * 1024U;
+	menu_format_size(total, sizeof(total), flash_total);
+#ifdef CONFIG_SPIRAM
+	menu_format_size(psram, sizeof(psram), esp_psram_get_size());
+#else
+	menu_format_size(psram, sizeof(psram), 0);
+#endif
+	snprintf(text, sizeof(text), "FLASH: %s / %s  PSRAM: %s",
+		used, total, psram);
+	menu_about_line(lines, &line_count, text);
+
+	if (typewrt_sdcard_is_mounted() &&
+			esp_vfs_fat_info(MENU_FS_ROOT, &sd_total, &sd_free) == ESP_OK) {
+		menu_format_size(used, sizeof(used), sd_total - sd_free);
+		menu_format_size(total, sizeof(total), sd_total);
+		snprintf(text, sizeof(text), "SD card: %s / %s", used, total);
+	} else
+		snprintf(text, sizeof(text), "SD card: unavailable");
+	menu_about_line(lines, &line_count, text);
+
+	term_cursor(0);
+	term_commit();
+	for (int row = 0; row < NEXTVI_DISPLAY_ROWS; row++)
+		menu_draw_row(row, row < line_count ? lines[row] : "", 0);
+	menu_line(text, "press any key");
+	nextvi_display_refresh_line_inverted(NEXTVI_DISPLAY_ROWS, text,
+		NEXTVI_DISPLAY_COLS);
+	term_read(0);
 }
 
 static char *menu_path_join(const char *dir, const char *name)
@@ -1557,6 +1661,11 @@ static int menu_command(menu_state *m, char *cmdline)
 		return 0;
 	if (!strcmp(cmd, "q") || !strcmp(cmd, "quit"))
 		return 1;
+	if (!strcmp(cmd, "about") || !strcmp(cmd, "ver") ||
+			!strcmp(cmd, "version")) {
+		nextvi_about_show();
+		return 0;
+	}
 	if ((!strcmp(cmd, "b") || !strcmp(cmd, "buffer")) && !*menu_trim(p))
 		return menu_buffer_picker(m);
 	if (!strcmp(cmd, "gmarks") && !*menu_trim(p))

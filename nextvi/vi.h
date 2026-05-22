@@ -471,6 +471,7 @@ void ex_regput(unsigned char c, const char *s, int append);
 char *ex_pathresolve(const char *path);
 #ifdef NEXTVI_EMBEDDED
 int nextvi_menu_run(void);
+void nextvi_about_show(void);
 void nextvi_menu_mark_synced(const char *path);
 void nextvi_menu_mark_remote_deleted(const char *path);
 void nextvi_menu_mark_local_edited(const char *path);

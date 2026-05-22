@@ -1792,6 +1792,20 @@ static void *ec_menu(char *loc, char *cmd, char *arg)
 #endif
 }
 
+static void *ec_about(char *loc, char *cmd, char *arg)
+{
+#ifdef NEXTVI_EMBEDDED
+	(void)loc;
+	(void)cmd;
+	(void)arg;
+	nextvi_about_show();
+	xredraw = 1;
+	return NULL;
+#else
+	return "unsupported command";
+#endif
+}
+
 static void *ec_battery(char *loc, char *cmd, char *arg)
 {
 #ifdef NEXTVI_EMBEDDED
@@ -1906,6 +1920,7 @@ static struct excmd {
 	{"??", ec_while},
 	{"?!", ec_while},
 	{"?", ec_while},
+	{"about", ec_about},
 	{"bp", ec_setpath},
 	{"bs", ec_bufsave},
 	{"bw!", ec_bufwipe},
@@ -1964,6 +1979,8 @@ static struct excmd {
 	{"uz", ec_setenc},
 	{"ub", ec_setenc},
 	{"ud", ec_undoredo},
+	{"version", ec_about},
+	{"ver", ec_about},
 	EO(seq),
 	{"sc!", ec_specials},
 	{"sc", ec_specials},
