@@ -618,6 +618,18 @@ static void vi_drawagain(int i)
 		vi_drawrow(i);
 }
 
+static void vi_draweof(int old_len)
+{
+	int row = MAX(lbuf_len(xb), xtop);
+
+	if (old_len <= lbuf_len(xb) || lbuf_len(xb) >= xtop + xrows)
+		return;
+	for (; row < xtop + xrows; row++) {
+		RS(2, led_crender(row ? "~" : "", row - xtop, 0,
+			xleft, xleft + xcols))
+	}
+}
+
 /* update the screen */
 static void vi_drawupdate(int i)
 {
@@ -1938,6 +1950,7 @@ void vi(int init)
 			int otop = xtop;
 			int oleft = xleft;
 			int orow = xrow;
+			int olen = lbuf_len(xb);
 		icmd_pos = 0;
 		vi_mod = 0;
 		vi_ybuf = vi_yankbuf();
@@ -2570,6 +2583,7 @@ void vi(int init)
 			vi_drawrow(xrow+1);
 		else if (xtop != otop)
 			vi_drawupdate(otop - xtop);
+		vi_draweof(olen);
 		if (vi_mod & 2 && !(vi_mod & 1))
 			vi_drawrow(xrow);
 		if (vi_defer_status >= 0) {
