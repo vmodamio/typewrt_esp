@@ -546,7 +546,7 @@ EX COMMANDS
              Example: join all lines with space padding
              :%-1j x
 
-     [vrange]s{<*>}[regex]{<*>}{str}[<*>][<g>]
+     [vrange]s{<*>}[regex]{<*>}{str}[<*>][<gcipn>]
              Substitute
 
              Find and replace text in a range of lines that matches an
@@ -554,6 +554,19 @@ EX COMMANDS
 
              Example: global replacement
              :%s/term1/term2/g
+
+             Flags:
+             g       Replace all matches on each addressed line
+             c       Confirm each replacement with y/n/a/q
+             i       Ignore case for this substitution
+             p       Print changed lines
+             n       Count matches without changing the buffer
+
+             Example: count all matches without changing the buffer
+             :%s/term1//gn
+
+             Example: confirm each replacement
+             :%s/term1/term2/gc
 
              Example: replace matching previously set regex
              :%s//term2/g

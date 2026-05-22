@@ -1306,40 +1306,79 @@ static void *ec_mark(char *loc, char *cmd, char *arg)
 	return NULL;
 }
 
+static int ec_sub_confirm(int row)
+{
+	char msg[64];
+
+	snprintf(msg, sizeof(msg), "replace on line %d? y/n/a/q", row + 1);
+	ex_print(msg)
+	return term_read(0);
+}
+
 static void *ec_substitute(char *loc, char *cmd, char *arg)
 {
 	int beg, end, grp;
 	char *pat, *rep = NULL, *_rep;
 	char *s = arg;
 	rset *rs = xkwdrs;
-	int i, first = -1, last;
+	int flags, i, first = -1, last, nmatch = 0, nlines = 0;
+	int ask, ask_all = 0, quit = 0;
 	struct lopt *lo;
 	if (ex_vregion(loc, &beg, &end))
 		return xrerr;
 	pat = re_read(&s, 0);
-	if (pat && (*pat || !rs))
-		rs = rset_smake(pat, xic ? REG_ICASE : 0);
-	if (!rs) {
-		free(pat);
-		return xserr;
-	}
 	if (pat && *s) {
 		s--;
 		rep = re_read(&s, 0);
 	}
+	flags = (xic || strchr(s, 'i')) ? REG_ICASE : 0;
+	if (pat && (*pat || !rs))
+		rs = rset_smake(*pat ? pat : xregs['/'] ? xregs['/']->s : "",
+			flags);
+	else if (strchr(s, 'i') && xregs['/'])
+		rs = rset_smake(xregs['/']->s, flags);
+	if (!rs) {
+		free(pat);
+		free(rep);
+		return xserr;
+	}
 	free(pat);
+	ask = strchr(s, 'c') != NULL;
 	int offs[rs->nsubc];
-	for (i = beg; i < end; i++) {
+	for (i = beg; i < end && !quit; i++) {
 		char *ln = lbuf_get(xb, i);
 		sbuf *r = NULL;
+		int line_match = 0, line_change = 0;
 		while (rset_find(rs, ln, offs, REG_NEWLINE) >= 0) {
+			int sub = 1;
 			if (offs[xgrp] < 0) {
 				ln += offs[1] > 0 ? offs[1] : 1;
 				continue;
-			} else if (!r)
+			}
+			line_match++;
+			nmatch++;
+			if (strchr(s, 'n')) {
+				ln += offs[xgrp + 1];
+				if (!offs[xgrp + 1] && *ln)
+					ln++;
+				if (*ln == '\n' || !*ln || !strchr(s, 'g'))
+					break;
+				continue;
+			}
+			if (ask && !ask_all) {
+				int c = ec_sub_confirm(i);
+				if (c == 'a' || c == 'A')
+					ask_all = 1;
+				else if (c == 'q' || c == 'Q' || TK_INT(c)) {
+					quit = 1;
+					sub = 0;
+				} else if (c != 'y' && c != 'Y' && c != ' ')
+					sub = 0;
+			}
+			if (!r)
 				sbuf_make(r, 256)
 			sbuf_mem(r, ln, offs[xgrp])
-			if (rep) {
+			if (sub && rep) {
 				for (_rep = rep; *_rep; _rep++) {
 					if (*_rep != '\\' || !_rep[1]) {
 						sbuf_chr(r, (unsigned char)*_rep)
@@ -1352,14 +1391,17 @@ static void *ec_substitute(char *loc, char *cmd, char *arg)
 					else if (offs[grp] >= 0)
 						sbuf_mem(r, ln + offs[grp], offs[grp + 1] - offs[grp])
 				}
-			}
+			} else if (!sub)
+				sbuf_mem(r, ln + offs[xgrp], offs[xgrp + 1] - offs[xgrp])
+			line_change |= sub;
 			ln += offs[xgrp + 1];
 			if (!offs[xgrp + 1])	/* zero-length match */
 				sbuf_chr(r, (unsigned char)*ln++)
-			if (*ln == '\n' || !*ln || !strchr(s, 'g'))
+			if (*ln == '\n' || !*ln || !strchr(s, 'g') || quit)
 				break;
 		}
-		if (r) {
+		nlines += !!line_match;
+		if (r && line_change) {
 			if (first < 0) {
 				first = i;
 				lo = lbuf_opt(xb, xrow, xoff, 0);
@@ -1368,9 +1410,21 @@ static void *ec_substitute(char *loc, char *cmd, char *arg)
 			}
 			sbufn_str(r, ln)
 			lbuf_edit(xb, r->s, i, i + 1, 0, 0);
-			sbuf_free(r)
 			last = i;
-		}
+			if (strchr(s, 'p'))
+				ex_print(lbuf_get(xb, i))
+			sbuf_free(r)
+		} else if (r)
+			sbuf_free(r)
+	}
+	if (strchr(s, 'n')) {
+		char msg[64];
+		snprintf(msg, sizeof(msg), "%d matches on %d lines", nmatch, nlines);
+		ex_print(msg)
+		if (rs != xkwdrs)
+			rset_free(rs);
+		free(rep);
+		return NULL;
 	}
 	if (first >= 0) {
 		lo = lbuf_opt(xb, xrow, xoff, 0);
