@@ -22,6 +22,7 @@ static int term_reverse;
 static unsigned char kq[128];
 static unsigned int kq_r, kq_w;
 static int key_shift, key_ctrl, key_alt, key_win, key_caps;
+static int noterm_overlay_row = -1;
 
 #define NOTERM_KEY_MENU 55	/* KBDMAP[62], dedicated typewriter menu key */
 
@@ -112,6 +113,28 @@ static void noterm_refresh_dirty(void)
 		term_cursor_col = term_col;
 		term_cursor_drawn = 1;
 	}
+}
+
+static void noterm_overlay_restore(void)
+{
+	if (noterm_overlay_row < 0)
+		return;
+	noterm_dirty(noterm_overlay_row);
+	noterm_overlay_row = -1;
+	noterm_refresh_dirty();
+}
+
+static void noterm_overlay_status(const char *msg)
+{
+	char line[NEXTVI_DISPLAY_COLS + 1];
+	int len = MIN((int)strlen(msg), NEXTVI_DISPLAY_COLS);
+
+	memset(line, ' ', NEXTVI_DISPLAY_COLS);
+	memcpy(line, msg, len);
+	line[NEXTVI_DISPLAY_COLS] = '\0';
+	noterm_overlay_row = NEXTVI_DISPLAY_ROWS;
+	nextvi_display_refresh_line(NEXTVI_DISPLAY_ROWS, line,
+		NEXTVI_DISPLAY_COLS);
 }
 
 static void noterm_refresh_cursor(void)
@@ -371,23 +394,31 @@ static int noterm_key_event_timeout(int timeout_ms)
 		if (!(ev & NEXTVI_KEY_PRESS))
 			continue;
 		code = ev & NEXTVI_KEY_CODE_MASK;
-		if (code == NOTERM_KEY_MENU)
+		if (code == NOTERM_KEY_MENU) {
+			noterm_overlay_restore();
 			return TK_MENU;
+		}
 		ch = (key_shift ^ (key_caps && key_normal[code] >= 'a' &&
 			key_normal[code] <= 'z')) ? key_shifted[code] : key_normal[code];
 		if (key_ctrl)
 			ch = noterm_ctrl_key(ch);
 		if (key_alt && (kmap = noterm_alt_keymap(ch)) >= 0) {
+			char msg[64];
 			xkmap = kmap;
 			if (kmap)
 				xkmap_alt = kmap;
-			vi_keyboard_layout_changed(conf_kmap(kmap)[0]);
+			snprintf(msg, sizeof(msg), "Keyboard [%s]",
+				conf_kmap(kmap)[0]);
+			noterm_overlay_status(msg);
 			continue;
 		}
 		(void)key_win;
-		if (ch)
+		if (ch) {
+			noterm_overlay_restore();
 			return ch;
+		}
 	}
+	noterm_overlay_restore();
 	return 0;
 }
 

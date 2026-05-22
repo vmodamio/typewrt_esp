@@ -37,9 +37,6 @@ static int vi_gmark_row[VI_GMARKS], vi_gmark_off[VI_GMARKS];
 static int vi_gmarks_loaded;
 
 static void vi_hardwrap_all(void);
-#ifdef NEXTVI_NOTERM
-static void vi_keyboard_layout_changed(const char *layout);
-#endif
 void led_prompt_width(int width);
 
 static int vi_gmark_slot(int mark, int version)
@@ -247,17 +244,6 @@ static void vi_drawmsg(char *msg)
 	RS(2, led_crender(msg, xrows, 0, 0, xcols))
 }
 #define vi_drawmsg_mpt(msg) { vi_drawmsg(msg); if (!xmpt) xmpt = 1; }
-
-#ifdef NEXTVI_NOTERM
-static void vi_keyboard_layout_changed(const char *layout)
-{
-	char msg[64];
-
-	snprintf(msg, sizeof(msg), "Keyboard [%s]", layout);
-	vi_drawmsg_mpt(msg)
-	term_commit();
-}
-#endif
 
 static int vi_scycle_valid;
 static int vi_scycle_done;
