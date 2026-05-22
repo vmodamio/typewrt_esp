@@ -23,6 +23,7 @@ static unsigned char kq[128];
 static unsigned int kq_r, kq_w;
 static int key_shift, key_ctrl, key_alt, key_win, key_caps;
 static int noterm_overlay_row = -1;
+static void noterm_modifier(unsigned char ev);
 
 #define NOTERM_KEY_MENU 55	/* KBDMAP[62], dedicated typewriter menu key */
 
@@ -135,6 +136,135 @@ static void noterm_overlay_status(const char *msg)
 	noterm_overlay_row = NEXTVI_DISPLAY_ROWS;
 	nextvi_display_refresh_line(NEXTVI_DISPLAY_ROWS, line,
 		NEXTVI_DISPLAY_COLS);
+}
+
+static void noterm_restore_screen(void)
+{
+	for (int r = 0; r <= NEXTVI_DISPLAY_ROWS; r++)
+		noterm_dirty(r);
+	noterm_overlay_row = -1;
+	noterm_refresh_dirty();
+}
+
+static const char *noterm_dead_label(int dead)
+{
+	switch (dead) {
+	case '\'': return "´";
+	case '`': return "`";
+	case '^': return "^";
+	case '"': return "¨";
+	case '~': return "~";
+	case ',': return "¸";
+	default: return "";
+	}
+}
+
+static const char *noterm_key_label(int kmap, int ch, char *buf, int buflen)
+{
+	char **keymap = conf_kmap(kmap);
+	char *cs = keymap[ch] ? keymap[ch] : NULL;
+
+	if (cs && cs[0] == '\001')
+		return noterm_dead_label((unsigned char)cs[1]);
+	if (cs)
+		return cs;
+	if (ch == ' ')
+		return "sp";
+	if (ch == '\t')
+		return "tab";
+	if (ch == '\n')
+		return "ret";
+	if (ch == 127)
+		return "del";
+	if (ch > 0 && ch < 128) {
+		buf[0] = ch;
+		buf[1] = '\0';
+		return buf;
+	}
+	return " ";
+}
+
+static void noterm_append_key(char *line, int *pos, int line_len,
+	int kmap, int ch)
+{
+	char buf[8];
+	const char *label = noterm_key_label(kmap, ch, buf, sizeof(buf));
+
+	if (*pos >= line_len)
+		return;
+	*pos += snprintf(line + *pos, MAX(0, line_len - *pos), "[%s]", label);
+}
+
+static void noterm_draw_key_row(int row, const char *left_label,
+	const unsigned char *keys, int first, int last, int split_after, int kmap)
+{
+	char line[160];
+	int pos = snprintf(line, sizeof(line), "%s", left_label);
+
+	for (int i = first; i <= last; i++) {
+		noterm_append_key(line, &pos, sizeof(line), kmap, keys[i]);
+		if (i == split_after && pos < (int)sizeof(line))
+			pos += snprintf(line + pos, sizeof(line) - pos, "  ");
+	}
+	nextvi_display_refresh_line(row, line, NEXTVI_DISPLAY_COLS);
+}
+
+static void noterm_refresh_centered_line(int row, const char *text)
+{
+	char line[NEXTVI_DISPLAY_COLS + 1];
+	int len = MIN((int)strlen(text), NEXTVI_DISPLAY_COLS);
+	int off = (NEXTVI_DISPLAY_COLS - len) / 2;
+
+	memset(line, ' ', NEXTVI_DISPLAY_COLS);
+	memcpy(line + off, text, len);
+	line[NEXTVI_DISPLAY_COLS] = '\0';
+	nextvi_display_refresh_line(row, line, NEXTVI_DISPLAY_COLS);
+}
+
+static void noterm_keyboard_help_draw(void)
+{
+	char title[64];
+
+	if (term_cursor_drawn) {
+		nextvi_display_refresh_cursor(term_cursor_row, term_cursor_col, 0);
+		term_cursor_drawn = 0;
+	}
+	snprintf(title, sizeof(title), "Keyboard [%s]",
+		conf_kmap(xkmap)[0]);
+	noterm_refresh_centered_line(0, title);
+	nextvi_display_refresh_line(1, "normal", NEXTVI_DISPLAY_COLS);
+	noterm_draw_key_row(2, "", key_normal, 2, 13, -1, xkmap);
+	noterm_draw_key_row(3, "", key_normal, 16, 27, 20, xkmap);
+	noterm_draw_key_row(4, "", key_normal, 30, 41, 34, xkmap);
+	noterm_draw_key_row(5, "", key_normal, 42, 52, 47, xkmap);
+	nextvi_display_refresh_line(6, "", NEXTVI_DISPLAY_COLS);
+	nextvi_display_refresh_line(7, "shift", NEXTVI_DISPLAY_COLS);
+	noterm_draw_key_row(8, "", key_shifted, 2, 13, -1, xkmap);
+	noterm_draw_key_row(9, "", key_shifted, 16, 27, 20, xkmap);
+	noterm_draw_key_row(10, "", key_shifted, 30, 41, 34, xkmap);
+	noterm_draw_key_row(11, "", key_shifted, 42, 52, 47, xkmap);
+	nextvi_display_refresh_line(12,
+		"Dead: ¨+u=ü  ´+e=é  `+a=à  ^+o=ô",
+		NEXTVI_DISPLAY_COLS);
+	nextvi_display_refresh_line(13, "", NEXTVI_DISPLAY_COLS);
+	noterm_refresh_centered_line(NEXTVI_DISPLAY_ROWS, "press any key");
+}
+
+static void noterm_keyboard_help_show(void)
+{
+	unsigned char ev;
+
+	noterm_overlay_row = -1;
+	noterm_keyboard_help_draw();
+	while (nextvi_keyboard_read(&ev) > 0) {
+		if (ev & NEXTVI_KEY_MODIFIER) {
+			noterm_modifier(ev);
+			continue;
+		}
+		if (ev & NEXTVI_KEY_PRESS)
+			break;
+	}
+	noterm_restore_screen();
 }
 
 static void noterm_refresh_cursor(void)
@@ -402,6 +532,10 @@ static int noterm_key_event_timeout(int timeout_ms)
 			key_normal[code] <= 'z')) ? key_shifted[code] : key_normal[code];
 		if (key_ctrl)
 			ch = noterm_ctrl_key(ch);
+		if (key_alt && ch == ' ') {
+			noterm_keyboard_help_show();
+			continue;
+		}
 		if (key_alt && (kmap = noterm_alt_keymap(ch)) >= 0) {
 			char msg[64];
 			xkmap = kmap;

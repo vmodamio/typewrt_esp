@@ -27,6 +27,12 @@ The old `z1`, `z2`, `ze`, and `zf` keymap commands are no longer used. Layouts
 that place accents on dead keys compose in insert and prompt input before the text
 is written to the file.
 
+After a layout switch, the status row briefly shows the active layout, for example
+`Keyboard [es]`. Press `Alt-Space` to open the keyboard layout helper for the
+current layout. The helper shows the normal and shifted key layers, including the
+top row and left/right letter blocks, and a short dead-key reminder such as
+`¨+u=ü`. Press any key to close it and return to the editor.
+
 ## Editor global marks
 
 Nextvi's `Ctrl-T` global mark slots persist on the SD card across reboot. Use
