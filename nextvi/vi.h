@@ -324,7 +324,6 @@ void term_room(int n);
 int term_read(int winch);
 int term_read_timeout(int winch, int timeout_ms);
 void term_commit(void);
-int term_smart_key_active(void);
 void term_push(char *s, unsigned int n);
 void term_back(int c);
 #define term_dec() ibuf_pos--; icmd_pos--;

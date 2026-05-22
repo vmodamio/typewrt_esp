@@ -395,11 +395,6 @@ static int noterm_key_event(void)
 	return noterm_key_event_timeout(-1);
 }
 
-int term_smart_key_active(void)
-{
-	return key_win;
-}
-
 __attribute__((weak)) void nextvi_display_refresh_line(int row, const char *text, int cols)
 {
 	(void)row;
@@ -466,11 +461,6 @@ int nextvi_keyboard_queue_pop(unsigned char *event)
 __attribute__((weak)) int nextvi_keyboard_read(unsigned char *event)
 {
 	return nextvi_keyboard_queue_pop(event);
-}
-#else
-int term_smart_key_active(void)
-{
-	return 0;
 }
 #endif
 
