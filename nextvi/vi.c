@@ -25,7 +25,7 @@
 #include "typewrt_power.h"
 #endif
 
-#define VI_GMARKS	5
+#define VI_GMARKS	10
 #ifdef NEXTVI_EMBEDDED
 #define VI_GMARKS_FILE	"/sdcard/.nextvi-gmarks"
 #else
@@ -39,9 +39,12 @@ static int vi_gmarks_loaded;
 static void vi_hardwrap_all(void);
 void led_prompt_width(int width);
 
-static int vi_gmark_slot(int mark)
+static int vi_gmark_slot(int mark, int version)
 {
-	return mark >= 0 && mark < VI_GMARKS * 2 && mark % 2 == 0 ? mark / 2 : -1;
+	if (version < 2)
+		return mark >= 0 && mark < VI_GMARKS * 2 && mark % 2 == 0
+			? mark / 2 : -1;
+	return mark >= 0 && mark < VI_GMARKS ? mark : -1;
 }
 
 static void vi_gmark_set(int slot, const char *path, int row, int off, int save)
@@ -61,10 +64,10 @@ static void vi_gmark_set(int slot, const char *path, int row, int off, int save)
 #endif
 		f = fopen(VI_GMARKS_FILE, "w");
 		if (f) {
-			fprintf(f, "nextvi-gmarks 1\n");
+			fprintf(f, "nextvi-gmarks 2\n");
 			for (int i = 0; i < VI_GMARKS; i++)
 				if (vi_gmark_path[i])
-					fprintf(f, "%d\t%d\t%d\t%s\n", i * 2,
+					fprintf(f, "%d\t%d\t%d\t%s\n", i,
 						vi_gmark_row[i], vi_gmark_off[i],
 						vi_gmark_path[i]->s);
 			fclose(f);
@@ -79,6 +82,7 @@ static void vi_gmarks_load(void)
 {
 	char line[4096];
 	FILE *f;
+	int version = 1;
 	if (vi_gmarks_loaded)
 		return;
 	vi_gmarks_loaded = 1;
@@ -89,8 +93,14 @@ static void vi_gmarks_load(void)
 		char *p = line, *end, *path;
 		long mark, row, off;
 		int slot;
-		if (!strncmp(line, "nextvi-gmarks", 13))
+		if (!strncmp(line, "nextvi-gmarks", 13)) {
+			p += 13;
+			while (*p && isspace((unsigned char)*p))
+				p++;
+			if (isdigit((unsigned char)*p))
+				version = strtol(p, NULL, 10);
 			continue;
+		}
 		mark = strtol(p, &end, 10);
 		if (end == p || *end++ != '\t')
 			continue;
@@ -104,7 +114,7 @@ static void vi_gmarks_load(void)
 			continue;
 		path = end;
 		path[strcspn(path, "\r\n")] = '\0';
-		slot = vi_gmark_slot(mark);
+		slot = vi_gmark_slot(mark, version);
 		if (slot >= 0)
 			vi_gmark_set(slot, path, row, off, 0);
 	}
@@ -133,7 +143,7 @@ static void *ec_gmarks(char *loc, char *cmd, char *arg)
 	for (int i = 0; i < VI_GMARKS; i++) {
 		if (!vi_gmark_path[i])
 			continue;
-		snprintf(msg, sizeof(msg), "%d/%d %d;%d %s", i * 2, i * 2 + 1,
+		snprintf(msg, sizeof(msg), "%d %d;%d %s", i,
 			vi_gmark_row[i] + 1, vi_gmark_off[i] + 1,
 			vi_gmark_path[i]->s);
 		ex_print(msg)
@@ -935,10 +945,12 @@ static int vi_search(int cmd, int cnt, int *row, int *off, int msg)
 	return 0;
 }
 
+static int vi_gmark_key(int key, int *row, int *off);
+
 /* read a line motion */
 static int vi_motionln(int *row, int cmd, int cnt)
 {
-	int var, c = term_read(TK_CTL('l'));
+	int var, off, ret, c = term_read(TK_CTL('l'));
 	switch (c) {
 	case '\n':
 	case '+':
@@ -950,7 +962,10 @@ static int vi_motionln(int *row, int cmd, int cnt)
 		*row = MAX(*row - cnt, 0);
 		break;
 	case '\'':
-		if (lbuf_jump(xb, term_read(0), row, &var))
+		var = term_read(0);
+		if ((ret = vi_gmark_key(var, row, &off)))
+			return ret < 0 ? -1 : c;
+		if (lbuf_jump(xb, var, row, &off))
 			return -1;
 		break;
 	case 'G':
@@ -1160,6 +1175,25 @@ static void vc_status_defer(int type)
 	vi_defer_status = type;
 }
 
+static void vi_gmark_sync_after_open(int row)
+{
+	for (int i = xbufcur - 1; i >= 0 && bufs[i].mtime == -1; i--)
+		ex_bufpostfix(&bufs[i], 1);
+	vc_status_defer(0);
+	xtop = MAX(0, row - xrows / 2);
+	vi_mod |= 1;
+}
+
+static int vi_gmark_key(int key, int *row, int *off)
+{
+	if (!isdigit((unsigned char)key))
+		return 0;
+	if (!vi_gmark_open(key - '0', row, off))
+		return -1;
+	vi_gmark_sync_after_open(*row);
+	return 1;
+}
+
 /* read a motion */
 static int vi_motion(int vc, int *row, int *off)
 {
@@ -1345,7 +1379,6 @@ static int vi_motion(int vc, int *row, int *off)
 		}
 		if (tmpex_buf != ex_buf)
 			ex_pbuf = tmpex_buf;
-		bsync_ret:
 		for (i = xbufcur-1; i >= 0 && bufs[i].mtime == -1; i--)
 			ex_bufpostfix(&bufs[i], 1);
 		vc_status_defer(0);
@@ -1353,15 +1386,11 @@ static int vi_motion(int vc, int *row, int *off)
 		vi_mod |= 1;
 		break;
 	case TK_CTL('t'):
-		if (vi_arg >= VI_GMARKS * 2)
+		if (vi_arg >= VI_GMARKS)
 			break;
-		if (vi_arg % 2 == 0) {
-			vi_gmarks_load();
-			vi_gmark_set(vi_arg / 2, xb_path, *row, *off, 1);
-			break;
-		}
-		vi_gmark_open(vi_arg / 2, row, off);
-		goto bsync_ret;
+		vi_gmarks_load();
+		vi_gmark_set(vi_arg, xb_path, *row, *off, 1);
+		break;
 	case '0':
 		*off = 0;
 		break;
@@ -1397,7 +1426,10 @@ static int vi_motion(int vc, int *row, int *off)
 			xtop = MAX(0, *row - xrows / 2);
 		break;
 	case '`':
-		if (lbuf_jump(xb, term_read(0), row, off))
+		var = term_read(0);
+		if ((dir = vi_gmark_key(var, row, off)))
+			return dir < 0 ? -1 : mv;
+		if (lbuf_jump(xb, var, row, off))
 			return -1;
 		break;
 	case '%':

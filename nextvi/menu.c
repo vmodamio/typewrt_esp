@@ -1415,10 +1415,10 @@ static void menu_render_gmark(char line[NEXTVI_DISPLAY_COLS + 1], int slot)
 	char text[256];
 
 	if (slot < 0 || slot >= VI_GMARKS || !vi_gmark_path[slot]) {
-		snprintf(text, sizeof(text), "%d/%d  empty", slot * 2, slot * 2 + 1);
+		snprintf(text, sizeof(text), "%d  empty", slot);
 	} else {
-		snprintf(text, sizeof(text), "%d/%d  %d;%d %s",
-			slot * 2, slot * 2 + 1, vi_gmark_row[slot] + 1,
+		snprintf(text, sizeof(text), "%d  %d;%d %s",
+			slot, vi_gmark_row[slot] + 1,
 			vi_gmark_off[slot] + 1, vi_gmark_path[slot]->s);
 	}
 	menu_line(line, text);
@@ -1484,7 +1484,7 @@ static int menu_gmark_picker(menu_state *m)
 			continue;
 		}
 		if (c >= '0' && c <= '9') {
-			int slot = (c - '0') / 2;
+			int slot = c - '0';
 			if (slot >= VI_GMARKS) {
 				menu_set_message(m, "no such global mark");
 				return 0;

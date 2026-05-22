@@ -68,10 +68,12 @@ VI NORMAL
                    Move # characters backward, multi-line
      %             Move to closest <] ) } [ ( {> pair
      {#}%          Move to # percent line number
-     '{a-z ` ' [] * ^}
+     '{a-z 0-9 ` ' [] * ^}
                    Move to a line mark
-     `{a-z ` ' [] * ^}
+                   Digits are persistent global marks
+     `{a-z 0-9 ` ' [] * ^}
                    Move to a line mark with cursor position
+                   Digits are persistent global marks
      gg            Goto first line in buffer
      gi            Goto last insert position and enter insert mode
      [#]G          Move to last line in buffer or # line
@@ -175,10 +177,8 @@ VI NORMAL
      m{a-z ` ' [] *}
                    Set buffer local line mark
      <^T>          Set global line mark 0. Global marks are always valid
-     {0 2 4 6 8}<^T>
+     {1-9}<^T>
                    Set a persistent global line mark #
-     {1 3 5 7 9}<^T>
-                   Switch to a global line mark #
      [#]<^7>{0-9}
      [#]<^_>{0-9}
      [#]<^/>{0-9}
@@ -608,8 +608,8 @@ EX COMMANDS
 
      gmarks  Print persistent global marks
 
-             Global marks are the <^T> slots. The left number sets a mark;
-             the right number jumps to it.
+             Global marks are the <^T> slots. Use #<^T> to set a mark;
+             use '# or `# to jump to it.
 
      [range]ya[<reg>][*]
              Yank into a register

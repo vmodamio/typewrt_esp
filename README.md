@@ -29,10 +29,10 @@ is written to the file.
 ## Editor global marks
 
 Nextvi's `Ctrl-T` global mark slots persist on the SD card across reboot. Use
-`0`, `2`, `4`, `6`, or `8` before `Ctrl-T` to set a slot, and `1`, `3`, `5`,
-`7`, or `9` before `Ctrl-T` to jump back to the matching slot. In Nextvi ex
-mode, `:gmarks` prints the saved slots. In the menu command prompt, `:gmarks`
-opens a picker for the same slots.
+`Ctrl-T` to set slot `0`, or `1` through `9` before `Ctrl-T` to set that
+numbered slot. Jump back to a slot with the normal mark motions, such as `'3`
+or `` `3``. In Nextvi ex mode, `:gmarks` prints the saved slots. In the menu
+command prompt, `:gmarks` opens a picker for the same slots.
 
 ## BLE file transfer
 
@@ -140,7 +140,7 @@ without an argument open the same picker, while explicit buffer commands such as
 `:b2` or `:b 2` are passed through to Nextvi's ex parser.
 
 The global mark picker opens from the menu command prompt with `:gmarks`. It shows
-the persistent `Ctrl-T` slots as `set/jump line;offset path`; use `j`/`k`,
+the persistent `Ctrl-T` slots as `slot line;offset path`; use `j`/`k`,
 `Ctrl-D`/`Ctrl-U`, `g`/`G`, a digit, `Enter`, `l`, or `o` to choose a mark.
 
 Each listing row reserves right-hand columns for word count and last modification time.
