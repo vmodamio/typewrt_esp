@@ -44,7 +44,6 @@ static uint8_t *sharpmem_buffer;
 static char display_shadow[NEXTVI_DISPLAY_ROWS + 1][NEXTVI_DISPLAY_COLS + 1];
 static bool splash_active = true;
 static bool splash_drawn;
-static bool splash_disable_pending;
 static bool display_cursor_drawn;
 static int display_cursor_row = -1;
 static int display_cursor_col = -1;
@@ -307,19 +306,6 @@ static void copyDisplayShadow(int row, const char *text, int cols)
         display_shadow[row][col] = col < cols ? displayNextGlyph(&p) : ' ';
     }
     display_shadow[row][NEXTVI_DISPLAY_COLS] = '\0';
-}
-
-static bool displayShadowRowHasVisibleText(int row)
-{
-    if (row < 0 || row > NEXTVI_DISPLAY_ROWS) {
-        return false;
-    }
-    for (int col = 0; col < NEXTVI_DISPLAY_COLS; col++) {
-        if (display_shadow[row][col] != ' ') {
-            return true;
-        }
-    }
-    return false;
 }
 
 static void renderTextRowMode(int physical_row, const char *text, bool inverted)
@@ -595,7 +581,6 @@ static void disableSplash(void)
     }
     splash_active = false;
     splash_drawn = false;
-    splash_disable_pending = false;
     display_cursor_drawn = false;
     display_cursor_row = -1;
     display_cursor_col = -1;
@@ -613,11 +598,6 @@ void nextvi_display_refresh_line(int row, const char *text, int cols)
 
     displayLock();
     copyDisplayShadow(row, text, cols);
-    if (splash_active && splash_disable_pending && row == 0 &&
-            displayShadowRowHasVisibleText(row)) {
-        disableSplash();
-        goto done;
-    }
     if (splash_active) {
         drawSplashLayout();
         if (row == 0) {
@@ -659,11 +639,6 @@ void nextvi_display_refresh_line_attrs(int row, const char *text,
 
     displayLock();
     copyDisplayShadow(row, text, cols);
-    if (splash_active && splash_disable_pending && row == 0 &&
-            displayShadowRowHasVisibleText(row)) {
-        disableSplash();
-        goto done;
-    }
     if (splash_active) {
         drawSplashLayout();
         if (row == 0) {
@@ -811,11 +786,7 @@ done:
 void nextvi_display_note_insert(void)
 {
     displayLock();
-    if (displayShadowRowHasVisibleText(0)) {
-        disableSplash();
-    } else {
-        splash_disable_pending = true;
-    }
+    disableSplash();
     displayUnlock();
 }
 
