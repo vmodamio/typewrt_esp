@@ -506,6 +506,47 @@ static int led_hardwrap_backspace(sbuf *sb, int ps, char *post)
 	return led_hardwrap_join_at(sb, prev, ps, post, cut);
 }
 
+static int led_hardwrap_reflow_after_delete(sbuf *sb, int ps, char *post,
+	int crow)
+{
+	char *cur = lbuf_get(xb, crow);
+	char *prev = lbuf_get(xb, crow - 1);
+	int prev_body, prev_n, cur_n, sep, width, cur_width, prev_last_space;
+	ren_state *r;
+
+	if (!led_hardwrap_forced(cur))
+		return 1;
+	if (!prev)
+		return 1;
+	if (ps < 0 || ps > sb->s_n)
+		return 1;
+	prev_body = led_hardwrap_forced(prev) ? HWBRK_LEN : 0;
+	rstate += 2;
+	rstate->s = NULL;
+	r = ren_position(prev + prev_body);
+	prev_n = r->n && *r->chrs[r->n - 1] == '\n' ? r->n - 1 : r->n;
+	width = r->pos[prev_n];
+	prev_last_space = prev_n && uc_isspace(r->chrs[prev_n - 1]);
+	sbuf_smake(tmp, sb->s_n - ps + strlen(post) + 1)
+	sbuf_mem(tmp, sb->s + ps, sb->s_n - ps)
+	sbufn_str(tmp, post)
+	rstate->s = NULL;
+	r = ren_position(tmp->s);
+	cur_n = r->n && *r->chrs[r->n - 1] == '\n' ? r->n - 1 : r->n;
+	cur_width = r->pos[cur_n];
+	if (!cur_n && HWBRK_SEP(cur)) {
+		free(tmp->s);
+		rstate -= 2;
+		return 0;
+	}
+	sep = HWBRK_SEP(cur) && prev_n && cur_n &&
+		!uc_isspace(r->chrs[0]) && !prev_last_space;
+	width += sep + cur_width;
+	free(tmp->s);
+	rstate -= 2;
+	return !cur_n || width <= conf_hwwidth;
+}
+
 static int led_hardwrap_after_delete(sbuf *sb, int ps, int pre, char *post,
 	int postn, int *poff, int ai_max, int crow)
 {
@@ -513,6 +554,12 @@ static int led_hardwrap_after_delete(sbuf *sb, int ps, int pre, char *post,
 		return 0;
 	if (sb->s_n == ps) {
 		sbuf_null(sb)
+		if (ps == HWBRK_LEN && led_hardwrap_forced(lbuf_get(xb, crow))) {
+			if (HWBRK_SEP(sb->s))
+				return 0;
+			led_printparts(sb, pre, ps, post, postn, poff);
+			return LED_REFLOW;
+		}
 		if (led_wrap_sep_pending && ps == led_wrap_sep_ps) {
 			memcpy(sb->s + ps - HWBRK_LEN, HWBRK_NOSPACE, HWBRK_LEN);
 			led_wrap_sep_pending = 0;
@@ -523,6 +570,8 @@ static int led_hardwrap_after_delete(sbuf *sb, int ps, int pre, char *post,
 			return LED_HARDUNWRAP;
 	}
 	if (led_hardwrap_existing(crow)) {
+		if (!led_hardwrap_reflow_after_delete(sb, ps, post, crow))
+			return 0;
 		led_printparts(sb, pre, ps, post, postn, poff);
 		return LED_REFLOW;
 	}

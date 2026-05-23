@@ -829,7 +829,8 @@ static int vi_hardwrap_reflow(int row)
 		while (force_sep && skip < n && uc_isspace(r->chrs[skip]))
 			skip++;
 		int sep = force_sep && i > beg && txt->s_n &&
-			txt->s[txt->s_n - 1] != ' ' && skip < n;
+			txt->s[txt->s_n - 1] != ' ' &&
+			(skip < n || !n);
 		if (i == xrow) {
 			has_cursor = 1;
 			cursor = cur + sep + MAX(0, xoff - mark - skip);
@@ -1509,6 +1510,16 @@ static int vi_hardwrap_backspace_boundary(void)
 		return 1;
 	}
 	return 0;
+}
+
+static int vi_insert_reenter_cmd(void)
+{
+	char *ln = lbuf_get(xb, xrow);
+	int eol = lbuf_eol(xb, xrow, 1);
+
+	if (xoff == eol || (vi_forced_line(ln) && xoff + 1 == eol))
+		return 'a';
+	return 'i';
 }
 
 static void vi_indents(char *ln, int *l)
@@ -2337,7 +2348,7 @@ void vi(int init)
 				if (k == LED_REFLOW) {
 					xleft = 0;
 					vi_mod |= 1;
-					term_back(xoff != lbuf_eol(xb, xrow, 1) ? 'i' : 'a');
+					term_back(vi_insert_reenter_cmd());
 					vi_insert_screen_enter();
 					break;
 				}
@@ -2351,7 +2362,7 @@ void vi(int init)
 						} else if (xoff)
 							vi_delete(xrow, xoff - 1, xrow, xoff, 0);
 					}
-					term_back(xoff != lbuf_eol(xb, xrow, 1) ? 'i' : 'a');
+					term_back(vi_insert_reenter_cmd());
 					vi_insert_screen_enter();
 					vi_backspace_reenter = 1;
 					break;
