@@ -152,11 +152,10 @@ the persistent `Ctrl-T` slots as `slot line;offset path`; use `j`/`k`,
 
 Each listing row reserves right-hand columns for word count and last modification time.
 Word counts use compact units such as `846` or `1.5 k`. Modification time is shown
-as `HH:mm` for files changed today, and `Mon dd` for older files. Listings default
-to last-modified first.
+as `HH:mm` for files changed today, and `Mon dd` for older files.
 
 Menu commands include `cd PATH`, `cd ..`, `cd -`, `ls`, `ls -s`, `ls -rt`,
-`ls -n`, `ls -rn`, `ls *pattern*`, `mkdir PATH`, `open PATH`, `gmarks`,
+`ls *pattern*`, `mkdir PATH`, `open PATH`, `gmarks`,
 `ble [send|recv|selected|PATH|status|off]`, `rtc [datetime]`, `battery`,
 `off`, `rename`, `copy`, `delete`, and forwarded Nextvi ex commands.
 The command prompt temporarily
