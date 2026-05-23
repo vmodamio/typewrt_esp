@@ -34,6 +34,9 @@ typedef enum {
 	MENU_SORT_MTIME,
 } menu_sort;
 
+#define MENU_DEFAULT_SORT	MENU_SORT_MTIME
+#define MENU_DEFAULT_REVERSE	0
+
 typedef enum {
 	MENU_SYNC_UNMARKED = 0,
 	MENU_SYNC_SYNCED,
@@ -1115,8 +1118,8 @@ static int menu_change_dir(menu_state *m, const char *path)
 	m->prev_path = old_path;
 	m->cursor = 0;
 	m->top = 0;
-	m->sort = MENU_SORT_NAME;
-	m->reverse = 0;
+	m->sort = MENU_DEFAULT_SORT;
+	m->reverse = MENU_DEFAULT_REVERSE;
 	m->filter[0] = '\0';
 	restored = menu_dir_state_restore(m, ex_vcwd);
 	menu_load(m);
@@ -1692,8 +1695,8 @@ static int menu_command(menu_state *m, char *cmdline)
 	}
 	if (!strcmp(cmd, "ls")) {
 		char *tok;
-		m->sort = MENU_SORT_NAME;
-		m->reverse = 0;
+		m->sort = MENU_DEFAULT_SORT;
+		m->reverse = MENU_DEFAULT_REVERSE;
 		m->filter[0] = '\0';
 		while ((tok = menu_token(&p))) {
 			if (tok[0] == '-') {
@@ -1702,6 +1705,8 @@ static int menu_command(menu_state *m, char *cmdline)
 						m->sort = MENU_SORT_SIZE;
 					else if (tok[i] == 't')
 						m->sort = MENU_SORT_MTIME;
+					else if (tok[i] == 'n')
+						m->sort = MENU_SORT_NAME;
 					else if (tok[i] == 'r')
 						m->reverse = 1;
 				}
@@ -1879,6 +1884,8 @@ int nextvi_menu_run(void)
 {
 	menu_state m;
 	memset(&m, 0, sizeof(m));
+	m.sort = MENU_DEFAULT_SORT;
+	m.reverse = MENU_DEFAULT_REVERSE;
 	menu_dir_state_restore(&m, ex_vcwd);
 	m.ble_status_generation = typewrt_ble_status_generation();
 	menu_load(&m);
