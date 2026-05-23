@@ -33,6 +33,9 @@ current layout. The helper shows the normal and shifted key layers, including th
 top row and left/right letter blocks, and a short dead-key reminder such as
 `¨+u=ü`. Press any key to close it and return to the editor.
 
+On the embedded keyboard, `Ctrl-Tab` is an alias for `Ctrl-N` in every editor
+context, and `Ctrl-Shift-Tab` is an alias for `Ctrl-R`.
+
 ## Editor global marks
 
 Nextvi's `Ctrl-T` global mark slots persist on the SD card across reboot. Use

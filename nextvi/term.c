@@ -531,7 +531,8 @@ static int noterm_key_event_timeout(int timeout_ms)
 		ch = (key_shift ^ (key_caps && key_normal[code] >= 'a' &&
 			key_normal[code] <= 'z')) ? key_shifted[code] : key_normal[code];
 		if (key_ctrl)
-			ch = noterm_ctrl_key(ch);
+			ch = ch == '\t' ? TK_CTL(key_shift ? 'r' : 'n') :
+				noterm_ctrl_key(ch);
 		if (key_alt && ch == ' ') {
 			noterm_keyboard_help_show();
 			continue;
