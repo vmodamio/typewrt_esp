@@ -518,7 +518,12 @@ static int noterm_key_event_timeout(int timeout_ms)
 			nextvi_keyboard_read_timeout(&ev, timeout_ms) :
 			nextvi_keyboard_read(&ev)) > 0) {
 		if (ev & NEXTVI_KEY_MODIFIER) {
+			int old_win = key_win;
+			int bit = noterm_modifier_bit(ev);
 			noterm_modifier(ev);
+			if (bit == NEXTVI_MOD_WIN && (ev & NEXTVI_KEY_PRESS) &&
+					!old_win)
+				return TK_SMART;
 			continue;
 		}
 		if (!(ev & NEXTVI_KEY_PRESS))
@@ -547,7 +552,6 @@ static int noterm_key_event_timeout(int timeout_ms)
 			noterm_overlay_status(msg);
 			continue;
 		}
-		(void)key_win;
 		if (ch) {
 			noterm_overlay_restore();
 			return ch;
@@ -560,11 +564,6 @@ static int noterm_key_event_timeout(int timeout_ms)
 static int noterm_key_event(void)
 {
 	return noterm_key_event_timeout(-1);
-}
-
-int term_smart_key_active(void)
-{
-	return key_win;
 }
 
 __attribute__((weak)) void nextvi_display_refresh_line(int row, const char *text, int cols)
@@ -633,11 +632,6 @@ int nextvi_keyboard_queue_pop(unsigned char *event)
 __attribute__((weak)) int nextvi_keyboard_read(unsigned char *event)
 {
 	return nextvi_keyboard_queue_pop(event);
-}
-#else
-int term_smart_key_active(void)
-{
-	return 0;
 }
 #endif
 

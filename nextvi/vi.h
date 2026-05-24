@@ -324,7 +324,6 @@ void term_room(int n);
 int term_read(int winch);
 int term_read_timeout(int winch, int timeout_ms);
 void term_commit(void);
-int term_smart_key_active(void);
 void term_push(char *s, unsigned int n);
 void term_back(int c);
 #define term_dec() ibuf_pos--; icmd_pos--;
@@ -348,6 +347,7 @@ void term_back(int c);
 #define TK_ESC		TK_CTL('[')
 #define TK_CTL(x)	(x & 037)
 #define TK_MENU		0xff
+#define TK_SMART	0xfe
 #define TK_INT(c)	(!c || c == TK_ESC || c == TK_CTL('c') || c == TK_MENU)
 
 /* led.c: line-oriented input and output */

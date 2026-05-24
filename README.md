@@ -36,6 +36,10 @@ top row and left/right letter blocks, and a short dead-key reminder such as
 On the embedded keyboard, `Ctrl-Tab` is an alias for `Ctrl-N` in every editor
 context, and `Ctrl-Shift-Tab` is an alias for `Ctrl-R`.
 
+In insert mode, pressing `Cmd` temporarily returns to normal-mode command parsing
+for one instruction, then returns to insert mode. For example, `Cmd` followed by
+`dw` deletes the next word and resumes inserting text.
+
 ## Editor global marks
 
 Nextvi's `Ctrl-T` global mark slots persist on the SD card across reboot. Use

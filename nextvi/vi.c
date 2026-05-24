@@ -168,6 +168,8 @@ int vi_hidch;			/* show hidden chars */
 static int vi_mod;
 static int vi_smart_insert;
 static int vi_smart_insert_reenter = 'a';
+static int vi_smart_insert_row;
+static int vi_smart_insert_off;
 static char vi_word_m[] = "\0leEwW";	/* line word navigation */
 static char *vi_word = vi_word_m;
 static char *_vi_word = vi_word_m;
@@ -1910,6 +1912,9 @@ static void vi_smart_insert_return(void)
 {
 	char c = vi_smart_insert_reenter;
 
+	if (c == 'a' && (xrow != vi_smart_insert_row ||
+				xoff != vi_smart_insert_off))
+		c = vi_insert_reenter_cmd();
 	vi_smart_insert = 0;
 	if (xquit)
 		return;
@@ -2341,6 +2346,8 @@ void vi(int init)
 					if (c != 'A' && c != 'C' && xoff > 0)
 						xoff--;
 					vi_smart_insert = 2;
+					vi_smart_insert_row = xrow;
+					vi_smart_insert_off = xoff;
 					xleft = 0;
 					vi_mod |= 1;
 					break;
@@ -2348,6 +2355,8 @@ void vi(int init)
 				if (k == LED_REFLOW) {
 					xleft = 0;
 					vi_mod |= 1;
+					if (vi_smart_insert == 1)
+						vi_smart_insert = 0;
 					term_back(vi_insert_reenter_cmd());
 					vi_insert_screen_enter();
 					break;
@@ -2362,6 +2371,8 @@ void vi(int init)
 						} else if (xoff)
 							vi_delete(xrow, xoff - 1, xrow, xoff, 0);
 					}
+					if (vi_smart_insert == 1)
+						vi_smart_insert = 0;
 					term_back(vi_insert_reenter_cmd());
 					vi_insert_screen_enter();
 					vi_backspace_reenter = 1;

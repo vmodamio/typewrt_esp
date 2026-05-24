@@ -38,7 +38,8 @@
  *       (Battery, Date-time, memory, saved*, synch). With the CMD modifier enters in the system menu
  *       to access the filesystem, the bluetooth, etc...
  *
- *  CMD: In insert mode, holding CMD lets keys run normal-mode commands.
+ *  CMD: In insert mode, pressing CMD lets the next normal-mode command run,
+ *       then returns to insert mode.
  *
  *  The bottom KEYBOARD ROW AS FOLLOW
  *    [ LCTRL |  CMD  |  LALT  |          SPACE          |  RALT  |  SYS  |  LANG  | RCTRL  ]
