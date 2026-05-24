@@ -1519,8 +1519,13 @@ static int vi_insert_reenter_cmd(void)
 	char *ln = lbuf_get(xb, xrow);
 	int eol = lbuf_eol(xb, xrow, 1);
 
-	if (xoff == eol || (vi_forced_line(ln) && xoff + 1 == eol))
+	if (xoff == eol)
 		return 'a';
+	if (vi_forced_line(ln) && xoff + 1 == eol) {
+		ren_state *r = ren_position(ln);
+		if (xoff >= 0 && xoff < r->n && !uc_isspace(r->chrs[xoff]))
+			return 'a';
+	}
 	return 'i';
 }
 
