@@ -773,24 +773,25 @@ static void vi_hardwrap_emit(sbuf *out, char *txt, int cursor,
 {
 	int first = 1, chars = 0, marker_sep = 0, seg = 0;
 	while (*txt) {
-		int end, next, len;
+		int end, next, len, atend;
 		ren_state *r = ren_position(txt);
 		if (!vi_hardwrap_break(txt, conf_hwwidth, &end, &next)) {
 			end = next = r->n;
 			if (end && *r->chrs[end - 1] == '\n')
 				end = next = end - 1;
 		}
+		atend = !*r->chrs[next];
 		if (!first)
 			sbuf_str(out, marker_sep ? HWBRK : HWBRK_NOSPACE)
 		sbuf_mem(out, txt, r->chrs[end] - txt)
 		sbuf_chr(out, '\n')
 		len = end;
 		if (*nrow < 0 && (cursor < chars + len ||
-					(!txt[next] && cursor <= chars + len))) {
+					(atend && cursor <= chars + len))) {
 			*nrow = row + seg;
 			*noff = (first ? 0 : 1) + MAX(0, cursor - chars);
 		}
-		if (!txt[next])
+		if (atend)
 			break;
 		chars += next;
 		marker_sep = next > end;
