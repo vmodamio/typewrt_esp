@@ -1576,7 +1576,7 @@ static int vi_change(int r1, int o1, int r2, int o2, int lnmode)
 {
 	char *post, *ln = lbuf_get(xb, r1);
 	sbuf rsb;
-	int key, old_len = lbuf_len(xb), tlen, l1, l2 = 1, postn = 1;
+	int ips = 0, key, old_len = lbuf_len(xb), tlen, l1, l2 = 1, postn = 1;
 	sbuf_smake(sb, xcols)
 	if (lnmode || !ln) {
 		vi_indents(ln, &l1);
@@ -1590,6 +1590,8 @@ static int vi_change(int r1, int o1, int r2, int o2, int lnmode)
 		l2 = uc_chrn(post, -1, &postn) - post;
 		tlen = lbuf_s(ln)->len+1;
 		lbuf_region(xb, &rsb, r1, o1, r2, o2);
+		if (vi_forced_line(ln))
+			ips = MIN(l1, HWBRK_LEN);
 	}
 	vi_regput(vi_ybuf, rsb.s, lnmode);
 	free(rsb.s);
@@ -1603,7 +1605,8 @@ static int vi_change(int r1, int o1, int r2, int o2, int lnmode)
 	vi_draweof_at(old_len, old_len - (r2 - r1));
 	term_pos(xrow - xtop, 0);
 	sbuf_mem(sb, ln, l1)
-	key = led_input(sb, post, postn, r1 - (r1 - r2), 0, &postn);
+	key = led_input_at(sb, post, postn, r1 - (r1 - r2), 0, &postn,
+		ips, xrow, -1);
 	if (postn + l2 != tlen || memcmp(ln + l1, sb->s + l1, tlen - l2 - l1))
 		lbuf_edit(xb, sb->s, r1, r2 + 1, o1, xoff);
 	free(sb->s);
