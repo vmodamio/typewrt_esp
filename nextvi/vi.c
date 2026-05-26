@@ -761,6 +761,26 @@ static int vi_forced_line(char *ln)
 	return HWBRK_IS(ln);
 }
 
+static int vi_hardwrap_mark(ren_state *r, int off)
+{
+	return off < r->n && HWBRK_IS(r->chrs[off]);
+}
+
+static int vi_hardwrap_clean_count(ren_state *r, int beg, int end)
+{
+	int n = 0;
+	for (int i = beg; i < end; i++)
+		n += !vi_hardwrap_mark(r, i);
+	return n;
+}
+
+static void vi_hardwrap_clean_mem(sbuf *sb, ren_state *r, int beg, int end)
+{
+	for (int i = beg; i < end; i++)
+		if (!vi_hardwrap_mark(r, i))
+			sbuf_mem(sb, r->chrs[i], r->chrs[i + 1] - r->chrs[i])
+}
+
 static void vi_hardwrap_skip_marker(int *row, int *off)
 {
 	if (!vi_forced_line(lbuf_get(xb, *row)) || *off > 0)
@@ -826,25 +846,27 @@ static int vi_hardwrap_reflow(int row)
 		ln = lbuf_get(xb, i);
 		int body = vi_forced_line(ln) ? HWBRK_LEN : 0;
 		int force_sep = HWBRK_SEP(ln);
-		int mark = !!body, skip = 0;
+		int mark = !!body, skip = 0, clean;
 		ren_state *r = ren_position(ln + body);
 		int n = r->n && *r->chrs[r->n - 1] == '\n' ? r->n - 1 : r->n;
 		while (force_sep && skip < n && uc_isspace(r->chrs[skip]))
 			skip++;
+		clean = vi_hardwrap_clean_count(r, skip, n);
 		int sep = force_sep && i > beg && txt->s_n &&
 			txt->s[txt->s_n - 1] != ' ' &&
-			(skip < n || !n);
+			(clean > 0 || !n);
 		if (i == xrow) {
+			int coff = MAX(skip, MIN(n, xoff - mark));
 			has_cursor = 1;
-			cursor = cur + sep + MAX(0, xoff - mark - skip);
-			cursor = MIN(cursor, cur + sep + n - skip);
+			cursor = cur + sep + vi_hardwrap_clean_count(r, skip, coff);
+			cursor = MIN(cursor, cur + sep + clean);
 		}
 		if (sep) {
 			sbuf_chr(txt, ' ')
 			cur++;
 		}
-		sbuf_mem(txt, r->chrs[skip], r->chrs[n] - r->chrs[skip])
-		cur += n - skip;
+		vi_hardwrap_clean_mem(txt, r, skip, n);
+		cur += clean;
 	}
 	sbufn_null(txt)
 	sbuf_smake(out, txt->s_n + 8)
@@ -863,6 +885,12 @@ static int vi_hardwrap_reflow(int row)
 	free(out->s);
 	free(txt->s);
 	return 1;
+}
+
+static void vi_ren_invalidate(void)
+{
+	for (int i = 0; i < LEN(rstates); i++)
+		rstates[i].s = NULL;
 }
 
 static void vi_hardwrap_range(int row, int lines)
@@ -1841,6 +1869,8 @@ static void vc_join(int spc, int cnt)
 	xoff = o2;
 	if (forced && xoff > 0)
 		xoff--;
+	vi_ren_invalidate();
+	vi_hardwrap_reflow(xrow);
 	vi_mod |= 1;
 }
 
