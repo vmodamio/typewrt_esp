@@ -620,16 +620,21 @@ static void vi_drawagain(int i)
 		vi_drawrow(i);
 }
 
-static void vi_draweof(int old_len)
+static void vi_draweof_at(int old_len, int new_len)
 {
-	int row = MAX(lbuf_len(xb), xtop);
+	int row = MAX(new_len, xtop);
 
-	if (old_len <= lbuf_len(xb) || lbuf_len(xb) >= xtop + xrows)
+	if (old_len <= new_len || new_len >= xtop + xrows)
 		return;
 	for (; row < xtop + xrows; row++) {
 		RS(2, led_crender(row ? "~" : "", row - xtop, 0,
 			xleft, xleft + xcols))
 	}
+}
+
+static void vi_draweof(int old_len)
+{
+	vi_draweof_at(old_len, lbuf_len(xb));
 }
 
 /* update the screen */
@@ -1571,7 +1576,7 @@ static int vi_change(int r1, int o1, int r2, int o2, int lnmode)
 {
 	char *post, *ln = lbuf_get(xb, r1);
 	sbuf rsb;
-	int key, tlen, l1, l2 = 1, postn = 1;
+	int key, old_len = lbuf_len(xb), tlen, l1, l2 = 1, postn = 1;
 	sbuf_smake(sb, xcols)
 	if (lnmode || !ln) {
 		vi_indents(ln, &l1);
@@ -1595,6 +1600,7 @@ static int vi_change(int r1, int o1, int r2, int o2, int lnmode)
 	xrow = r1;
 	if (r1 < xtop)
 		xtop = r1;
+	vi_draweof_at(old_len, old_len - (r2 - r1));
 	sbuf_mem(sb, ln, l1)
 	key = led_input(sb, post, postn, r1 - (r1 - r2), 0, &postn);
 	if (postn + l2 != tlen || memcmp(ln + l1, sb->s + l1, tlen - l2 - l1))
