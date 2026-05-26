@@ -1601,6 +1601,7 @@ static int vi_change(int r1, int o1, int r2, int o2, int lnmode)
 	if (r1 < xtop)
 		xtop = r1;
 	vi_draweof_at(old_len, old_len - (r2 - r1));
+	term_pos(xrow - xtop, 0);
 	sbuf_mem(sb, ln, l1)
 	key = led_input(sb, post, postn, r1 - (r1 - r2), 0, &postn);
 	if (postn + l2 != tlen || memcmp(ln + l1, sb->s + l1, tlen - l2 - l1))
