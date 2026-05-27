@@ -53,6 +53,17 @@ static char splash_status_last[NEXTVI_DISPLAY_COLS + 1];
 static StaticSemaphore_t display_lock_storage;
 static SemaphoreHandle_t display_lock;
 
+static uint64_t splash_status_wakeup_delay_us(void)
+{
+    time_t now = time(NULL);
+    int seconds = 60 - (int)(now % 60);
+
+    if (seconds <= 0 || seconds > 60) {
+        seconds = 60;
+    }
+    return (uint64_t)seconds * 1000000ULL;
+}
+
 void typewrt_display_init(void)
 {
     // VCOM inversion is handled externally by the display hardware.
@@ -467,16 +478,10 @@ static void splashStatusLine(char line[NEXTVI_DISPLAY_COLS + 1])
 
 static void splash_schedule_status_wakeup(void)
 {
-    time_t now = time(NULL);
-    int seconds = 60 - (int)(now % 60);
-
     if (!splash_active || !splash_drawn) {
         return;
     }
-    if (seconds <= 0 || seconds > 60) {
-        seconds = 60;
-    }
-    typewrt_sleep_set_ui_wakeup_us((uint64_t)seconds * 1000000ULL);
+    typewrt_sleep_set_ui_wakeup_us(splash_status_wakeup_delay_us());
 }
 
 static void refreshSplashStatusClock(void)
@@ -517,6 +522,10 @@ static void splashClockTimerCallback(void *arg)
 {
     (void)arg;
     refreshSplashStatusClock();
+    if (splash_clock_timer && splash_active) {
+        (void)esp_timer_start_once(splash_clock_timer,
+            splash_status_wakeup_delay_us());
+    }
 }
 
 static void renderSplashBitmapRow(int text_row)
@@ -565,6 +574,11 @@ static void drawSplashLayout(void)
     typewrt_rtc_get_datetime(splash_clock_last, sizeof(splash_clock_last));
     splash_drawn = true;
     splash_schedule_status_wakeup();
+    if (splash_clock_timer) {
+        (void)esp_timer_stop(splash_clock_timer);
+        (void)esp_timer_start_once(splash_clock_timer,
+            splash_status_wakeup_delay_us());
+    }
 }
 
 static void disableSplash(void)
@@ -802,7 +816,8 @@ void typewrt_display_splash_clock_start(void)
         return;
     }
     ESP_ERROR_CHECK(esp_timer_create(&timer_args, &splash_clock_timer));
-    ESP_ERROR_CHECK(esp_timer_start_periodic(splash_clock_timer, 1000000));
+    ESP_ERROR_CHECK(esp_timer_start_once(splash_clock_timer,
+        splash_status_wakeup_delay_us()));
 }
 
 

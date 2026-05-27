@@ -1118,13 +1118,18 @@ static void typewrt_timer_wakeup_prepare(void)
     }
     ui_deadline = __atomic_load_n(&typewrt_ui_wakeup_deadline_us,
         __ATOMIC_RELAXED);
-    if (ui_deadline > 0) {
-        uint64_t ui_delay_us = ui_deadline > now ?
-            (uint64_t)(ui_deadline - now) : 1;
+    if (ui_deadline > now) {
+        uint64_t ui_delay_us = (uint64_t)(ui_deadline - now);
         if (!have_timer || ui_delay_us < delay_us) {
             delay_us = ui_delay_us;
         }
         have_timer = true;
+    } else if (ui_deadline > 0) {
+        int64_t expected = ui_deadline;
+
+        /* UI wakeups are one-shot; an expired stale deadline would wake forever. */
+        (void)__atomic_compare_exchange_n(&typewrt_ui_wakeup_deadline_us,
+            &expected, 0, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
     }
     if (!have_timer) {
         (void)esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
