@@ -3,7 +3,7 @@ int xvis;			/* startup flags */
 int xai = 1;			/* autoindent option */
 int xic = 1;			/* ignorecase option */
 int xled = 1;			/* use the line editor */
-int xts = 8;			/* number of spaces for tab */
+int xts = 3;			/* number of spaces for tab */
 int xgrp;			/* regex search group */
 int xpac;			/* print autocomplete options */
 int xmpt;			/* whether to prompt after printing > 1 lines in vi */

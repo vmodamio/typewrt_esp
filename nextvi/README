@@ -1039,7 +1039,7 @@ EX OPTIONS
 
      pac[val=0]
              Print autocomplete suggestions on the fly
-     ts[val=8]
+     ts[val=3]
              Number of spaces used to represent a tab
      pr[val=0]
              Print register

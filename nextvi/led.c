@@ -346,13 +346,24 @@ static int led_hardwrap_saved_sep(sbuf *sb, int ps, int crow)
 	return 1;
 }
 
+static int led_hardwrap_indent_len(sbuf *sb, int ps)
+{
+	int len = 0;
+
+	while (ps + len < sb->s_n &&
+			(sb->s[ps + len] == ' ' || sb->s[ps + len] == '\t'))
+		len++;
+	return len;
+}
+
 static int led_hardwrap_insert(sbuf *sb, int ps, char **post, int *postn)
 {
-	int cur, n, cut = 0, br = -1, end, next, prebytes, skip;
-	char *tail;
+	int cur, n, cut = 0, br = -1, end, next, prebytes, skip, indent_len;
+	char *tail, *indent = NULL;
 	led_wrap_hidden_sep = 0;
 	sbuf_null(sb)
 	prebytes = sb->s_n - ps;
+	indent_len = led_hardwrap_indent_len(sb, ps);
 	sbuf_smake(tmp, prebytes + strlen(*post) + 1)
 	sbuf_mem(tmp, sb->s + ps, prebytes)
 	sbufn_str(tmp, *post)
@@ -408,11 +419,18 @@ static int led_hardwrap_insert(sbuf *sb, int ps, char **post, int *postn)
 		*post += skip;
 	}
 	end = MIN(end, prebytes);
+	if (indent_len) {
+		indent = emalloc(indent_len);
+		memcpy(indent, sb->s + ps, indent_len);
+	}
 	tail = next < prebytes ? uc_dup(sb->s + ps + next) : uc_dup("");
 	sbuf_cut(sb, ps + end)
 	sbuf_chr(sb, '\n')
 	sbuf_str(sb, led_wrap_hidden_sep ? HWBRK : HWBRK_NOSPACE)
+	if (indent_len)
+		sbuf_mem(sb, indent, indent_len)
 	sbuf_str(sb, tail)
+	free(indent);
 	free(tail);
 	free(tmp->s);
 	rstate -= 2;

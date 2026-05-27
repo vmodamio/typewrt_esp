@@ -452,7 +452,12 @@ int lbuf_indents(struct lbuf *lb, int r)
 	int o;
 	if (!ln)
 		return 0;
-	for (o = 0; uc_isspace(ln); o++)
+	if (HWBRK_IS(ln)) {
+		ln += HWBRK_LEN;
+		o = 1;
+	} else
+		o = 0;
+	for (; uc_isspace(ln); o++)
 		ln += uc_len(ln);
 	return *ln ? o : o - 2;
 }

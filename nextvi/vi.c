@@ -788,33 +788,52 @@ static void vi_hardwrap_clean_mem(sbuf *sb, ren_state *r, int beg, int end)
 
 static void vi_hardwrap_skip_marker(int *row, int *off)
 {
+	int indent;
+
 	if (!vi_forced_line(lbuf_get(xb, *row)) || *off > 0)
 		return;
-	*off = MIN(1, lbuf_eol(xb, *row, 1));
+	indent = MAX(1, lbuf_indents(xb, *row));
+	*off = MIN(indent, lbuf_eol(xb, *row, 1));
+}
+
+static int vi_hardwrap_indent_chars(ren_state *r, int start)
+{
+	int i = start;
+
+	while (i < r->n && (*r->chrs[i] == ' ' || *r->chrs[i] == '\t'))
+		i++;
+	return i - start;
 }
 
 static void vi_hardwrap_emit(sbuf *out, char *txt, int cursor,
-	int row, int *nrow, int *noff)
+	int row, int *nrow, int *noff, char *indent, int indent_len,
+	int indent_chars, int indent_cols)
 {
 	int first = 1, chars = 0, marker_sep = 0, seg = 0;
 	while (*txt) {
-		int end, next, len, atend;
+		int end, next, len, atend, width = conf_hwwidth;
 		ren_state *r = ren_position(txt);
-		if (!vi_hardwrap_break(txt, conf_hwwidth, &end, &next)) {
+		if (!first)
+			width = MAX(1, conf_hwwidth - indent_cols);
+		if (!vi_hardwrap_break(txt, width, &end, &next)) {
 			end = next = r->n;
 			if (end && *r->chrs[end - 1] == '\n')
 				end = next = end - 1;
 		}
 		atend = !*r->chrs[next];
-		if (!first)
+		if (!first) {
 			sbuf_str(out, marker_sep ? HWBRK : HWBRK_NOSPACE)
+			if (indent_len)
+				sbuf_mem(out, indent, indent_len)
+		}
 		sbuf_mem(out, txt, r->chrs[end] - txt)
 		sbuf_chr(out, '\n')
 		len = end;
 		if (*nrow < 0 && (cursor < chars + len ||
 					(atend && cursor <= chars + len))) {
 			*nrow = row + seg;
-			*noff = (first ? 0 : 1) + MAX(0, cursor - chars);
+			*noff = (first ? 0 : 1 + indent_chars) +
+				MAX(0, cursor - chars);
 		}
 		if (atend)
 			break;
@@ -826,7 +845,8 @@ static void vi_hardwrap_emit(sbuf *out, char *txt, int cursor,
 	}
 	if (*nrow < 0) {
 		*nrow = row + seg;
-		*noff = (first ? 0 : 1) + MAX(0, cursor - chars);
+		*noff = (first ? 0 : 1 + indent_chars) +
+			MAX(0, cursor - chars);
 	}
 	sbuf_null(out)
 }
@@ -834,7 +854,8 @@ static void vi_hardwrap_emit(sbuf *out, char *txt, int cursor,
 static int vi_hardwrap_reflow(int row)
 {
 	int beg = row, end, cur = 0, cursor = 0, nrow = -1, noff = 0;
-	int has_cursor = 0;
+	int has_cursor = 0, indent_chars = 0, indent_len = 0, indent_cols = 0;
+	char *indent = "";
 	char *ln;
 	if (conf_hwwidth <= 0 || !lbuf_get(xb, row))
 		return 0;
@@ -846,6 +867,15 @@ static int vi_hardwrap_reflow(int row)
 	if (end == beg + 1 && vi_off2col(xb, beg, lbuf_eol(xb, beg, 1)) <=
 			conf_hwwidth)
 		return 0;
+	{
+		int body = vi_forced_line(ln) ? HWBRK_LEN : 0;
+		ren_state *r = ren_position(ln + body);
+
+		indent_chars = vi_hardwrap_indent_chars(r, 0);
+		indent_len = r->chrs[indent_chars] - r->chrs[0];
+		indent_cols = r->pos[indent_chars];
+		indent = ln + body;
+	}
 	sbuf_smake(txt, lbuf_s(ln)->len + 1)
 	for (int i = beg; i < end; i++) {
 		ln = lbuf_get(xb, i);
@@ -854,6 +884,9 @@ static int vi_hardwrap_reflow(int row)
 		int mark = !!body, skip = 0, clean;
 		ren_state *r = ren_position(ln + body);
 		int n = r->n && *r->chrs[r->n - 1] == '\n' ? r->n - 1 : r->n;
+		if (body && indent_len && r->chrs[n] - r->chrs[0] >= indent_len &&
+				!memcmp(r->chrs[0], indent, indent_len))
+			skip = indent_chars;
 		while (force_sep && skip < n && uc_isspace(r->chrs[skip]))
 			skip++;
 		clean = vi_hardwrap_clean_count(r, skip, n);
@@ -875,7 +908,8 @@ static int vi_hardwrap_reflow(int row)
 	}
 	sbufn_null(txt)
 	sbuf_smake(out, txt->s_n + 8)
-	vi_hardwrap_emit(out, txt->s, cursor, beg, &nrow, &noff);
+	vi_hardwrap_emit(out, txt->s, cursor, beg, &nrow, &noff,
+		indent, indent_len, indent_chars, indent_cols);
 	int old_lines = end - beg, new_lines = 0;
 	for (char *s = out->s; *s;)
 		if (*s++ == '\n')
