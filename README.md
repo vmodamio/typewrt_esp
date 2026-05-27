@@ -66,13 +66,16 @@ Bluetooth stays off until a transfer command is used.
 
 Connect from a BLE client such as nRF Connect or LightBlue, open service `0xffe0`,
 and subscribe to characteristic `0xffe1`. The transfer is sent as notifications with
-a `TYPEWRT-FILE` header, the raw file bytes, and a `TYPEWRT-END` footer. While a BLE
+a `TYPEWRT-FILE2` header carrying byte count and modification time, the raw file bytes,
+and a `TYPEWRT-END` footer. Receivers still accept the older `TYPEWRT-FILE` header.
+While a BLE
 transfer is pending or active, the firmware keeps light sleep locked; after a transfer
 finishes, BLE disconnects and light sleep is allowed again.
 
 For receive mode, open the menu, run `ble recv`, connect from the phone, and write
-one or more `TYPEWRT-FILE <bytes> <name>\n` streams to characteristic `0xffe2`.
-The firmware writes each file directly into the menu's current directory; an optional
+one or more `TYPEWRT-FILE2 <bytes> <mtime> <name>\n` streams to characteristic `0xffe2`.
+The firmware writes each file directly into the menu's current directory and preserves
+the transferred FATFS modification time; an optional
 `TYPEWRT-END <bytes> <name>\n` line after the raw bytes is accepted and ignored.
 The phone may also send `TYPEWRT-DELETE <path>\n`; Typewrt keeps the local copy and
 marks it as deleted remotely.
@@ -89,7 +92,7 @@ in the target directory, run `ble recv`, then tap **To Typewrt** after a GitHub 
 restore, or file-viewer delete request has queued updates. The Transfer tab includes a
 small repository browser; queued updates are marked with `*`, and queued deletes with
 `x`. The app uses service `0xffe0`, TX notifications on `0xffe1` for phone receive, RX
-writes on `0xffe2` for Typewrt receive, and the `TYPEWRT-FILE` / `TYPEWRT-DELETE` stream
+writes on `0xffe2` for Typewrt receive, and the `TYPEWRT-FILE2` / `TYPEWRT-DELETE` stream
 format described above.
 
 The companion can also export selected `remote/` files through a reachable

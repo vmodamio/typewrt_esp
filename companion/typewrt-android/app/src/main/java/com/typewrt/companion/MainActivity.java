@@ -69,6 +69,7 @@ import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.lang.reflect.Field;
+import java.time.Instant;
 import java.security.GeneralSecurityException;
 import java.security.KeyStore;
 import java.security.MessageDigest;
@@ -105,6 +106,7 @@ public class MainActivity extends Activity {
     private static final int DEFAULT_BLE_WRITE_CHUNK = 20;
     private static final int REQUESTED_BLE_MTU = 247;
     private static final int MAX_BLE_WRITE_CHUNK = REQUESTED_BLE_MTU - 3;
+    private static final long UNKNOWN_MTIME_SECONDS = -1L;
     private static final long GITHUB_ACCESS_CHECK_DELAY_MS = 900;
     private static final long PANDOC_SERVER_CHECK_DELAY_MS = 900;
     private static final int COLOR_BACKGROUND = 0xFF21211F;
@@ -306,12 +308,14 @@ public class MainActivity extends Activity {
     private long expectedSize = -1;
     private long receivedSize;
     private String currentFileName = "typewrt.txt";
+    private long currentFileMtimeSeconds = UNKNOWN_MTIME_SECONDS;
     private final ArrayList<FileSnapshot> receivedFiles = new ArrayList<>();
     private final ArrayList<String> pandocInputPaths = new ArrayList<>();
     private String pendingOutputCopyPath;
     private byte[] latestFileData;
     private String latestFileName;
     private Uri latestFileUri;
+    private long latestFileMtimeSeconds = UNKNOWN_MTIME_SECONDS;
     private final ArrayList<FileSnapshot> pendingSendFiles = new ArrayList<>();
     private boolean restorePending;
     private FileSnapshot activeSendFile;
@@ -1905,8 +1909,11 @@ public class MainActivity extends Activity {
                 .getBytes(StandardCharsets.UTF_8);
             outgoingParts = new byte[][] {marker};
         } else {
-            byte[] header = ("TYPEWRT-FILE " + snapshot.data.length + " " + name + "\n")
-                .getBytes(StandardCharsets.UTF_8);
+            String headerText = snapshot.mtimeSeconds >= 0 ?
+                "TYPEWRT-FILE2 " + snapshot.data.length + " " +
+                    snapshot.mtimeSeconds + " " + name + "\n" :
+                "TYPEWRT-FILE " + snapshot.data.length + " " + name + "\n";
+            byte[] header = headerText.getBytes(StandardCharsets.UTF_8);
             byte[] footer = ("\nTYPEWRT-END " + snapshot.data.length + " " + name + "\n")
                 .getBytes(StandardCharsets.UTF_8);
             outgoingParts = new byte[][] {header, snapshot.data, footer};
@@ -2100,6 +2107,7 @@ public class MainActivity extends Activity {
             expectedSize = -1;
             receivedSize = 0;
             currentFileName = "typewrt.txt";
+            currentFileMtimeSeconds = UNKNOWN_MTIME_SECONDS;
             receivedFiles.clear();
             receiverComplete = false;
             receiverFailed = false;
@@ -2158,18 +2166,33 @@ public class MainActivity extends Activity {
         if (header.isEmpty() || header.startsWith("TYPEWRT-END ")) {
             return true;
         }
-        if (!header.startsWith("TYPEWRT-FILE ")) {
+        boolean hasMtime = header.startsWith("TYPEWRT-FILE2 ");
+        if (!hasMtime && !header.startsWith("TYPEWRT-FILE ")) {
             return false;
         }
-        String rest = header.substring("TYPEWRT-FILE ".length());
+        String rest = header.substring(hasMtime ?
+            "TYPEWRT-FILE2 ".length() : "TYPEWRT-FILE ".length());
         int space = rest.indexOf(' ');
         if (space <= 0 || space >= rest.length() - 1) {
             return false;
         }
 
         long size;
+        long mtime = UNKNOWN_MTIME_SECONDS;
         try {
             size = Long.parseLong(rest.substring(0, space));
+            if (hasMtime) {
+                int mtimeStart = space + 1;
+                int mtimeEnd = rest.indexOf(' ', mtimeStart);
+                if (mtimeEnd <= mtimeStart || mtimeEnd >= rest.length() - 1) {
+                    return false;
+                }
+                mtime = Long.parseLong(rest.substring(mtimeStart, mtimeEnd));
+                if (mtime < 0) {
+                    return false;
+                }
+                space = mtimeEnd;
+            }
         } catch (NumberFormatException e) {
             return false;
         }
@@ -2179,6 +2202,7 @@ public class MainActivity extends Activity {
 
         expectedSize = size;
         receivedSize = 0;
+        currentFileMtimeSeconds = mtime;
         currentFileName = sanitizeTransferPath(rest.substring(space + 1).trim(), "typewrt.txt");
         fileBuffer = new ByteArrayOutputStream((int) Math.min(size, 1024 * 1024));
 
@@ -2214,9 +2238,11 @@ public class MainActivity extends Activity {
     private void finishReceiveLocked() {
         byte[] data = fileBuffer.toByteArray();
         String name = currentFileName;
-        receivedFiles.add(FileSnapshot.file(name, data, null));
+        long mtime = currentFileMtimeSeconds;
+        receivedFiles.add(FileSnapshot.file(name, data, null, mtime));
         expectedSize = -1;
         receivedSize = 0;
+        currentFileMtimeSeconds = UNKNOWN_MTIME_SECONDS;
         currentFileName = "typewrt.txt";
         fileBuffer = new ByteArrayOutputStream();
         mainHandler.post(() -> {
@@ -2255,7 +2281,7 @@ public class MainActivity extends Activity {
         Thread saveThread = new Thread(() -> {
             for (FileSnapshot snapshot : snapshots) {
                 if (!snapshot.deleteMarker) {
-                    saveFile(snapshot.name, snapshot.data);
+                    saveFile(snapshot.name, snapshot.data, snapshot.mtimeSeconds);
                 }
             }
         }, "typewrt-save-batch");
@@ -2326,11 +2352,12 @@ public class MainActivity extends Activity {
         return slash >= 0 ? safe.substring(slash + 1) : safe;
     }
 
-    private void setLatestFile(String fileName, byte[] data, Uri uri) {
+    private void setLatestFile(String fileName, byte[] data, Uri uri, long mtimeSeconds) {
         synchronized (latestFileLock) {
             latestFileName = fileName;
             latestFileData = data;
             latestFileUri = uri;
+            latestFileMtimeSeconds = mtimeSeconds;
         }
         updateFileActions();
     }
@@ -2355,7 +2382,11 @@ public class MainActivity extends Activity {
             if (latestFileData == null || latestFileName == null) {
                 return null;
             }
-            return FileSnapshot.file(latestFileName, latestFileData, latestFileUri);
+            return FileSnapshot.file(
+                latestFileName,
+                latestFileData,
+                latestFileUri,
+                latestFileMtimeSeconds);
         }
     }
 
@@ -3088,6 +3119,7 @@ public class MainActivity extends Activity {
         ArrayList<FileSnapshot> updates = new ArrayList<>();
         GitHubFetchResult result = new GitHubFetchResult(updates);
         SyncManifest manifest = loadSyncManifest();
+        Map<String, Long> repoMtimes = fetchGithubRepoMtimes(owner, repo, branch, root, token);
 
         try {
             collectGithubContents(owner, repo, branch, root, root, token, remoteFiles);
@@ -3110,13 +3142,19 @@ public class MainActivity extends Activity {
                 result.skipped++;
                 continue;
             }
-            if (saveMirrorFileSync(localPath, data, false)) {
-                updates.add(FileSnapshot.file(localPath, data, null));
+            long mtime = repoMtimes.containsKey(localPath) ?
+                repoMtimes.get(localPath) :
+                fetchGithubLatestFileMtime(owner, repo, branch, root, localPath, token);
+            if (mtime < 0) {
+                mtime = System.currentTimeMillis() / 1000L;
+            }
+            if (saveMirrorFileSync(localPath, data, mtime, false)) {
+                updates.add(FileSnapshot.file(localPath, data, null, mtime));
                 result.changed++;
             } else {
                 result.unchanged++;
             }
-            updateManifestRemoteClean(manifest, localPath, data, remote.sha);
+            updateManifestRemoteClean(manifest, localPath, data, remote.sha, mtime);
         }
 
         for (LocalMirrorFile local : listLocalMirrorFiles()) {
@@ -3194,6 +3232,8 @@ public class MainActivity extends Activity {
             entry.localHash = sha256Hex(data);
             entry.syncedHash = entry.localHash;
             entry.size = data.length;
+            entry.mtimeSeconds = fileMtimeSeconds(localFile);
+            entry.syncedMtimeSeconds = entry.mtimeSeconds;
             entry.dirty = false;
             entry.deleted = false;
             result.changed++;
@@ -3204,6 +3244,15 @@ public class MainActivity extends Activity {
             saveSyncManifest(manifest);
             return result;
         }
+
+        byte[] metadata = buildGithubRepoManifest(manifest);
+        String metadataSha = createGithubBlob(owner, repo, token, metadata);
+        JSONObject metadataItem = new JSONObject();
+        metadataItem.put("path", githubMetadataPath(root));
+        metadataItem.put("mode", "100644");
+        metadataItem.put("type", "blob");
+        metadataItem.put("sha", metadataSha);
+        treeItems.put(metadataItem);
 
         String headSha = fetchGithubRefSha(owner, repo, branch, token);
         String baseTreeSha = fetchGithubCommitTreeSha(owner, repo, headSha, token);
@@ -3492,6 +3541,9 @@ public class MainActivity extends Activity {
         if (!"file".equals(type)) {
             return;
         }
+        if (sanitizeOptionalRepoPath(path).equals(githubMetadataPath(rootPath))) {
+            return;
+        }
         out.add(new GitHubRemoteFile(
             path,
             entry.optLong("size", 0),
@@ -3512,6 +3564,79 @@ public class MainActivity extends Activity {
             }
         }
         return sanitizeTransferPath(remote, "typewrt.txt");
+    }
+
+    private Map<String, Long> fetchGithubRepoMtimes(
+        String owner,
+        String repo,
+        String ref,
+        String rootPath,
+        String token
+    ) throws IOException, JSONException {
+        HashMap<String, Long> mtimes = new HashMap<>();
+        String metadataPath = githubMetadataPath(rootPath);
+        String endpoint = "https://api.github.com/repos/" + encodePathPart(owner)
+            + "/" + encodePathPart(repo)
+            + "/contents/" + encodeRepoPath(metadataPath)
+            + "?ref=" + encodePathPart(ref);
+        HttpURLConnection connection = openGithubConnection(endpoint, "GET", token);
+        int status = connection.getResponseCode();
+        byte[] response = readResponse(connection);
+        connection.disconnect();
+
+        if (status == 404) {
+            return mtimes;
+        }
+        if (status < 200 || status >= 300) {
+            throw new IOException("metadata HTTP " + status + ": " + preview(response));
+        }
+
+        JSONObject content = new JSONObject(new String(response, StandardCharsets.UTF_8));
+        String encoded = content.optString("content", "").replace("\n", "").replace("\r", "");
+        if (encoded.isEmpty()) {
+            return mtimes;
+        }
+        JSONObject metadata = new JSONObject(
+            new String(Base64.decode(encoded, Base64.DEFAULT), StandardCharsets.UTF_8));
+        JSONObject files = metadata.optJSONObject("files");
+        if (files == null) {
+            files = metadata.optJSONObject("entries");
+        }
+        if (files == null) {
+            return mtimes;
+        }
+
+        Iterator<String> keys = files.keys();
+        while (keys.hasNext()) {
+            String rawPath = keys.next();
+            String path = sanitizeTransferPath(rawPath, "");
+            JSONObject entry = files.optJSONObject(rawPath);
+            long mtime = entry == null ?
+                UNKNOWN_MTIME_SECONDS :
+                entry.optLong("mtime", UNKNOWN_MTIME_SECONDS);
+
+            if (!path.isEmpty() && mtime >= 0) {
+                mtimes.put(path, mtime);
+            }
+        }
+        return mtimes;
+    }
+
+    private long fetchGithubLatestFileMtime(
+        String owner,
+        String repo,
+        String ref,
+        String rootPath,
+        String filePath,
+        String token
+    ) throws IOException, JSONException {
+        ArrayList<GitHubCommitItem> commits =
+            fetchGithubCommits(owner, repo, ref, rootPath, token, filePath, 1);
+
+        if (commits.isEmpty()) {
+            return UNKNOWN_MTIME_SECONDS;
+        }
+        return parseGithubIsoTime(commits.get(0).date);
     }
 
     private byte[] downloadGithubFile(
@@ -3559,10 +3684,22 @@ public class MainActivity extends Activity {
         String token,
         String filePath
     ) throws IOException, JSONException {
+        return fetchGithubCommits(owner, repo, branch, rootPath, token, filePath, 30);
+    }
+
+    private ArrayList<GitHubCommitItem> fetchGithubCommits(
+        String owner,
+        String repo,
+        String branch,
+        String rootPath,
+        String token,
+        String filePath,
+        int perPage
+    ) throws IOException, JSONException {
         String endpoint = "https://api.github.com/repos/" + encodePathPart(owner)
             + "/" + encodePathPart(repo)
             + "/commits?sha=" + encodePathPart(branch)
-            + "&per_page=30";
+            + "&per_page=" + Math.max(1, Math.min(100, perPage));
         String path = sanitizeOptionalRepoPath(filePath);
         String root = sanitizeOptionalRepoPath(rootPath);
 
@@ -3979,6 +4116,23 @@ public class MainActivity extends Activity {
         return root + "/" + file;
     }
 
+    private String githubMetadataPath(String rootPath) {
+        String root = sanitizeOptionalRepoPath(rootPath);
+
+        return root.isEmpty() ? SYNC_MANIFEST_NAME : root + "/" + SYNC_MANIFEST_NAME;
+    }
+
+    private long parseGithubIsoTime(String date) {
+        if (date == null || date.isEmpty()) {
+            return UNKNOWN_MTIME_SECONDS;
+        }
+        try {
+            return Instant.parse(date).getEpochSecond();
+        } catch (RuntimeException e) {
+            return UNKNOWN_MTIME_SECONDS;
+        }
+    }
+
     private String encodeRepoPath(String path) {
         String clean = sanitizeRepoPath(path);
         StringBuilder encoded = new StringBuilder();
@@ -4025,21 +4179,27 @@ public class MainActivity extends Activity {
         final String name;
         final byte[] data;
         final Uri uri;
+        final long mtimeSeconds;
         final boolean deleteMarker;
 
-        FileSnapshot(String name, byte[] data, Uri uri, boolean deleteMarker) {
+        FileSnapshot(String name, byte[] data, Uri uri, long mtimeSeconds, boolean deleteMarker) {
             this.name = name;
             this.data = data;
             this.uri = uri;
+            this.mtimeSeconds = mtimeSeconds;
             this.deleteMarker = deleteMarker;
         }
 
         static FileSnapshot file(String name, byte[] data, Uri uri) {
-            return new FileSnapshot(name, data, uri, false);
+            return file(name, data, uri, UNKNOWN_MTIME_SECONDS);
+        }
+
+        static FileSnapshot file(String name, byte[] data, Uri uri, long mtimeSeconds) {
+            return new FileSnapshot(name, data, uri, mtimeSeconds, false);
         }
 
         static FileSnapshot deleteMarker(String path) {
-            return new FileSnapshot(path, new byte[0], null, true);
+            return new FileSnapshot(path, new byte[0], null, UNKNOWN_MTIME_SECONDS, true);
         }
     }
 
@@ -4130,6 +4290,8 @@ public class MainActivity extends Activity {
         String syncedHash = "";
         String localHash = "";
         long size;
+        long mtimeSeconds = UNKNOWN_MTIME_SECONDS;
+        long syncedMtimeSeconds = UNKNOWN_MTIME_SECONDS;
         boolean dirty;
         boolean deleted;
 
@@ -4201,6 +4363,8 @@ public class MainActivity extends Activity {
                 entry.syncedHash = entry.localHash;
             }
             entry.size = json.optLong("size", 0);
+            entry.mtimeSeconds = json.optLong("mtime", UNKNOWN_MTIME_SECONDS);
+            entry.syncedMtimeSeconds = json.optLong("syncedMtime", entry.mtimeSeconds);
             entry.dirty = json.optBoolean("dirty", false);
             entry.deleted = json.optBoolean("deleted", false);
             manifest.entries.put(path, entry);
@@ -4222,6 +4386,8 @@ public class MainActivity extends Activity {
             json.put("syncedHash", entry.syncedHash == null ? "" : entry.syncedHash);
             json.put("localHash", entry.localHash == null ? "" : entry.localHash);
             json.put("size", entry.size);
+            json.put("mtime", entry.mtimeSeconds);
+            json.put("syncedMtime", entry.syncedMtimeSeconds);
             json.put("dirty", entry.dirty);
             json.put("deleted", entry.deleted);
             entries.put(entry.path, json);
@@ -4229,6 +4395,26 @@ public class MainActivity extends Activity {
         root.put("entries", entries);
         writeFileBytes(syncManifestFile(),
             root.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    private byte[] buildGithubRepoManifest(SyncManifest manifest) throws JSONException {
+        JSONObject root = new JSONObject();
+        JSONObject files = new JSONObject();
+
+        root.put("version", 1);
+        for (SyncEntry entry : manifest.entries.values()) {
+            if (entry.path.isEmpty() || entry.deleted) {
+                continue;
+            }
+            JSONObject json = new JSONObject();
+            json.put("mtime", entry.mtimeSeconds);
+            json.put("size", entry.size);
+            json.put("sha", entry.githubSha == null ? "" : entry.githubSha);
+            json.put("hash", entry.syncedHash == null ? "" : entry.syncedHash);
+            files.put(entry.path, json);
+        }
+        root.put("files", files);
+        return root.toString().getBytes(StandardCharsets.UTF_8);
     }
 
     private File syncManifestFile() throws IOException {
@@ -4250,7 +4436,8 @@ public class MainActivity extends Activity {
         SyncManifest manifest,
         String path,
         byte[] data,
-        String githubSha
+        String githubSha,
+        long mtimeSeconds
     ) {
         SyncEntry entry = manifestEntry(manifest, path);
         String hash = sha256Hex(data);
@@ -4259,11 +4446,13 @@ public class MainActivity extends Activity {
         entry.syncedHash = hash;
         entry.localHash = hash;
         entry.size = data.length;
+        entry.mtimeSeconds = mtimeSeconds;
+        entry.syncedMtimeSeconds = mtimeSeconds;
         entry.dirty = false;
         entry.deleted = false;
     }
 
-    private void markManifestLocalWrite(String path, byte[] data) {
+    private void markManifestLocalWrite(String path, byte[] data, long mtimeSeconds) {
         try {
             SyncManifest manifest = loadSyncManifest();
             SyncEntry entry = manifestEntry(manifest, path);
@@ -4271,9 +4460,11 @@ public class MainActivity extends Activity {
 
             entry.localHash = hash;
             entry.size = data.length;
+            entry.mtimeSeconds = mtimeSeconds;
             entry.deleted = false;
             entry.dirty = entry.syncedHash == null || entry.syncedHash.isEmpty() ||
-                !entry.syncedHash.equals(hash);
+                !entry.syncedHash.equals(hash) ||
+                entry.syncedMtimeSeconds != entry.mtimeSeconds;
             saveSyncManifest(manifest);
         } catch (IOException | JSONException | RuntimeException e) {
             mainHandler.post(() -> appendLog("Sync manifest update failed: " + e));
@@ -4287,6 +4478,7 @@ public class MainActivity extends Activity {
 
             entry.localHash = "";
             entry.size = 0;
+            entry.mtimeSeconds = UNKNOWN_MTIME_SECONDS;
             entry.deleted = true;
             entry.dirty = true;
             saveSyncManifest(manifest);
@@ -4309,15 +4501,21 @@ public class MainActivity extends Activity {
         for (LocalMirrorFile local : localFiles) {
             seen.add(local.path);
             SyncEntry entry = manifest.entries.get(local.path);
-            if (entry != null) {
-                continue;
-            }
             try {
                 byte[] data = readFileBytes(local.file);
-                entry = manifestEntry(manifest, local.path);
-                entry.localHash = sha256Hex(data);
+                String hash = sha256Hex(data);
+                long mtime = fileMtimeSeconds(local.file);
+
+                if (entry == null) {
+                    entry = manifestEntry(manifest, local.path);
+                    entry.dirty = true;
+                } else if (!hash.equals(entry.localHash) ||
+                        entry.mtimeSeconds != mtime) {
+                    entry.dirty = true;
+                }
+                entry.localHash = hash;
                 entry.size = data.length;
-                entry.dirty = true;
+                entry.mtimeSeconds = mtime;
                 entry.deleted = false;
             } catch (IOException | RuntimeException e) {
                 mainHandler.post(() -> appendLog("Sync manifest scan failed: " + e));
@@ -4354,36 +4552,75 @@ public class MainActivity extends Activity {
         byte[] data,
         boolean markDirty
     ) throws IOException {
+        return saveMirrorFileSync(fileName, data, UNKNOWN_MTIME_SECONDS, markDirty);
+    }
+
+    private boolean saveMirrorFileSync(
+        String fileName,
+        byte[] data,
+        long mtimeSeconds,
+        boolean markDirty
+    ) throws IOException {
         String safePath = sanitizeTransferPath(fileName, "typewrt.txt");
         File target = remoteFile(safePath);
+        boolean mtimeChanged = false;
 
         if (target.isFile()) {
             try {
                 byte[] existingData = readFileBytes(target);
                 if (bytesEqual(existingData, data)) {
-                    if (markDirty) {
-                        markManifestLocalWrite(safePath, data);
+                    if (applyFileMtime(target, mtimeSeconds)) {
+                        mtimeChanged = true;
                     }
-                    mainHandler.post(() -> setLatestFile(safePath, data, null));
-                    return false;
+                    if (markDirty) {
+                        markManifestLocalWrite(safePath, data, fileMtimeSeconds(target));
+                    }
+                    mainHandler.post(() ->
+                        setLatestFile(safePath, data, null, fileMtimeSeconds(target)));
+                    return mtimeChanged;
                 }
             } catch (IOException | RuntimeException ignored) {
                 // If the local mirror is unreadable, overwrite it from GitHub.
             }
             writeFileBytes(target, data);
+            applyFileMtime(target, mtimeSeconds);
             if (markDirty) {
-                markManifestLocalWrite(safePath, data);
+                markManifestLocalWrite(safePath, data, fileMtimeSeconds(target));
             }
-            mainHandler.post(() -> setLatestFile(safePath, data, null));
+            mainHandler.post(() ->
+                setLatestFile(safePath, data, null, fileMtimeSeconds(target)));
             return true;
         }
 
         writeFileBytes(target, data);
+        applyFileMtime(target, mtimeSeconds);
         if (markDirty) {
-            markManifestLocalWrite(safePath, data);
+            markManifestLocalWrite(safePath, data, fileMtimeSeconds(target));
         }
-        mainHandler.post(() -> setLatestFile(safePath, data, null));
+        mainHandler.post(() -> setLatestFile(safePath, data, null, fileMtimeSeconds(target)));
         return true;
+    }
+
+    private boolean applyFileMtime(File file, long mtimeSeconds) {
+        if (mtimeSeconds < 0 || file == null) {
+            return false;
+        }
+        long current = fileMtimeSeconds(file);
+        if (current == mtimeSeconds) {
+            return false;
+        }
+        boolean ok = file.setLastModified(mtimeSeconds * 1000L);
+        if (!ok) {
+            mainHandler.post(() -> appendLog("Could not preserve timestamp for " + file.getName()));
+            return false;
+        }
+        return true;
+    }
+
+    private long fileMtimeSeconds(File file) {
+        long millis = file == null ? 0 : file.lastModified();
+
+        return millis <= 0 ? UNKNOWN_MTIME_SECONDS : millis / 1000L;
     }
 
     private ArrayList<LocalMirrorFile> listLocalMirrorFiles() {
@@ -4409,13 +4646,20 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void saveFile(String fileName, byte[] data) {
+    private void saveFile(String fileName, byte[] data, long mtimeSeconds) {
         String safePath = sanitizeTransferPath(fileName, "typewrt.txt");
 
         try {
-            saveMirrorFileSync(safePath, data, true);
+            saveMirrorFileSync(safePath, data, mtimeSeconds, true);
             mainHandler.post(() -> {
-                setLatestFile(safePath, data, null);
+                File target;
+                long savedMtime = UNKNOWN_MTIME_SECONDS;
+                try {
+                    target = remoteFile(safePath);
+                    savedMtime = fileMtimeSeconds(target);
+                } catch (IOException | RuntimeException ignored) {
+                }
+                setLatestFile(safePath, data, null, savedMtime);
                 setStatus("Saved " + safePath, "remote/");
                 appendLog("Remote saved: " + safePath);
                 refreshRemoteTree();

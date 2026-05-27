@@ -20,9 +20,9 @@ tab to see the actual phone path.
 4. Received files are saved to the app's `remote/` folder, preserving subdirectories.
 
 The app connects to the Typewrt BLE service `0xffe0`, subscribes to the TX characteristic
-`0xffe1`, receives one or more `TYPEWRT-FILE` blocks, and stores the raw file bytes
-locally. The Typewrt copy is treated as authoritative for received files, so matching
-paths in `remote/` are updated directly.
+`0xffe1`, receives one or more `TYPEWRT-FILE2` blocks, and stores the raw file bytes
+and modification time locally. The Typewrt copy is treated as authoritative for
+received files, so matching paths in `remote/` are updated directly.
 
 ### Send updates to Typewrt
 
@@ -30,11 +30,13 @@ paths in `remote/` are updated directly.
 2. From the Typewrt menu, enter `ble recv` to advertise receive mode in the current directory.
 3. Tap **To Typewrt**.
 
-The app writes the same `TYPEWRT-FILE <bytes> <name>\n` stream to the RX characteristic
-`0xffe2`. Delete markers are sent as `TYPEWRT-DELETE <path>\n`; Typewrt keeps its local
-copy and marks it with `x` in the menu. The Repository browser marks queued file updates
-with `*` and queued deletes with `x`. Text files open read-only, with lightweight Markdown
-highlighting for Markdown files.
+The app writes the same `TYPEWRT-FILE2 <bytes> <mtime> <name>\n` stream to the RX
+characteristic `0xffe2`. Delete markers are sent as `TYPEWRT-DELETE <path>\n`; Typewrt
+keeps its local copy and marks it with `x` in the menu. The Repository browser marks
+queued file updates with `*` and queued deletes with `x`. Text files open read-only,
+with lightweight Markdown highlighting for Markdown files. GitHub sync stores preserved
+mtimes in `.typewrt-sync.json`; if that file is missing, the latest GitHub commit date
+for each file is used as the fallback mtime.
 
 ## Pandoc export
 

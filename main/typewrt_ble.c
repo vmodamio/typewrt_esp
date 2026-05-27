@@ -9,6 +9,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/utime.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "esp_err.h"
@@ -77,6 +79,8 @@ typedef struct {
     char *path;
     char *data;
     size_t len;
+    time_t mtime;
+    bool has_mtime;
     bool is_buffer;
 } typewrt_ble_pending_file_t;
 
@@ -110,6 +114,8 @@ static int ble_receive_fd = -1;
 static bool ble_receive_write_started;
 static size_t ble_receive_expected;
 static size_t ble_receive_received;
+static time_t ble_receive_mtime;
+static bool ble_receive_has_mtime;
 static unsigned ble_receive_completed_session;
 static char ble_receive_name[TYPEWRT_BLE_RX_NAME_MAX];
 static char ble_receive_line[TYPEWRT_BLE_RX_LINE_MAX];
@@ -226,6 +232,8 @@ static void typewrt_ble_receive_close_locked(bool discard)
     ble_receive_path = NULL;
     ble_receive_expected = 0;
     ble_receive_received = 0;
+    ble_receive_mtime = (time_t)0;
+    ble_receive_has_mtime = false;
     ble_receive_name[0] = '\0';
 }
 
@@ -341,11 +349,24 @@ static int typewrt_ble_rx_finish_file_locked(void)
     char name[TYPEWRT_BLE_RX_NAME_MAX];
     char *path;
     size_t received = ble_receive_received;
+    time_t mtime = ble_receive_mtime;
+    bool has_mtime = ble_receive_has_mtime;
 
     snprintf(name, sizeof(name), "%s", ble_receive_name);
     path = ble_receive_path ? typewrt_ble_strdup(ble_receive_path) : NULL;
     typewrt_ble_receive_close_locked(false);
     if (path) {
+        if (has_mtime) {
+            struct utimbuf times = {
+                .actime = mtime,
+                .modtime = mtime,
+            };
+
+            if (utime(path, &times) < 0) {
+                ESP_LOGW(TAG, "Failed to preserve mtime for %s: %s",
+                    path, strerror(errno));
+            }
+        }
         nextvi_menu_mark_synced(path);
         free(path);
     }
@@ -449,6 +470,8 @@ static int typewrt_ble_rx_start_file_locked(char *line)
     char *name;
     char *end;
     unsigned long size;
+    unsigned long mtime = 0;
+    bool has_mtime = false;
     char safe[TYPEWRT_BLE_RX_NAME_MAX];
     char msg[128];
     int err;
@@ -481,16 +504,32 @@ static int typewrt_ble_rx_start_file_locked(char *line)
         typewrt_ble_set_msg_locked(msg);
         return 0;
     }
-    if (strncmp(line, "TYPEWRT-FILE ", 13)) {
+    if (!strncmp(line, "TYPEWRT-FILE2 ", 14)) {
+        line += 14;
+        errno = 0;
+        size = strtoul(line, &end, 10);
+        if (errno || end == line || *end != ' ') {
+            return typewrt_ble_rx_fail_locked(EINVAL);
+        }
+        line = end + 1;
+        errno = 0;
+        mtime = strtoul(line, &end, 10);
+        if (errno || end == line || *end != ' ') {
+            return typewrt_ble_rx_fail_locked(EINVAL);
+        }
+        has_mtime = true;
+        name = end + 1;
+    } else if (!strncmp(line, "TYPEWRT-FILE ", 13)) {
+        line += 13;
+        errno = 0;
+        size = strtoul(line, &end, 10);
+        if (errno || end == line || *end != ' ') {
+            return typewrt_ble_rx_fail_locked(EINVAL);
+        }
+        name = end + 1;
+    } else {
         return typewrt_ble_rx_fail_locked(EINVAL);
     }
-    line += 13;
-    errno = 0;
-    size = strtoul(line, &end, 10);
-    if (errno || end == line || *end != ' ') {
-        return typewrt_ble_rx_fail_locked(EINVAL);
-    }
-    name = end + 1;
     if (!typewrt_ble_rx_safe_name(name, safe, sizeof(safe))) {
         return typewrt_ble_rx_fail_locked(EINVAL);
     }
@@ -508,6 +547,8 @@ static int typewrt_ble_rx_start_file_locked(char *line)
     snprintf(ble_receive_name, sizeof(ble_receive_name), "%s", safe);
     ble_receive_expected = (size_t)size;
     ble_receive_received = 0;
+    ble_receive_mtime = (time_t)mtime;
+    ble_receive_has_mtime = has_mtime;
     typewrt_sd_write_begin();
     ble_receive_write_started = true;
     ble_receive_fd = open(ble_receive_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -863,8 +904,16 @@ static void typewrt_ble_transfer_task(void *arg)
         }
 
         if (!err) {
-            int n = snprintf(header, sizeof(header),
-                "TYPEWRT-FILE %u %s\n", (unsigned)file->len, file->name);
+            int n;
+
+            if (file->has_mtime) {
+                n = snprintf(header, sizeof(header),
+                    "TYPEWRT-FILE2 %u %lu %s\n", (unsigned)file->len,
+                    (unsigned long)file->mtime, file->name);
+            } else {
+                n = snprintf(header, sizeof(header),
+                    "TYPEWRT-FILE %u %s\n", (unsigned)file->len, file->name);
+            }
             err = n > 0 ? typewrt_ble_notify(header, (size_t)n) : EIO;
         }
         if (!err) {
@@ -1339,6 +1388,8 @@ const char *typewrt_ble_send_file(const char *display_path, const char *fs_path)
         display_path && *display_path ? display_path : fs_path));
     files[0].path = typewrt_ble_strdup(fs_path);
     files[0].len = (size_t)st.st_size;
+    files[0].mtime = st.st_mtime;
+    files[0].has_mtime = true;
     if (!files[0].name || !files[0].path) {
         typewrt_ble_free_file_list(files, 1);
         return "ble memory failed";
@@ -1375,6 +1426,8 @@ const char *typewrt_ble_send_files(const typewrt_ble_file_request *requests,
         files[i].name = typewrt_ble_strdup(display);
         files[i].path = typewrt_ble_strdup(requests[i].fs_path);
         files[i].len = (size_t)st.st_size;
+        files[i].mtime = st.st_mtime;
+        files[i].has_mtime = true;
         if (!files[i].name || !files[i].path) {
             typewrt_ble_free_file_list(files, count);
             return "ble memory failed";
