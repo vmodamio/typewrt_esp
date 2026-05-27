@@ -1607,8 +1607,13 @@ static int vi_change(int r1, int o1, int r2, int o2, int lnmode)
 	sbuf_mem(sb, ln, l1)
 	key = led_input_at(sb, post, postn, r1 - (r1 - r2), 0, &postn,
 		ips, xrow, -1);
-	if (postn + l2 != tlen || memcmp(ln + l1, sb->s + l1, tlen - l2 - l1))
+	if (postn + l2 != tlen ||
+			memcmp(ln + l1, sb->s + l1, tlen - l2 - l1) ||
+			key == LED_REFLOW) {
+		int lines = vi_linecount(sb->s);
 		lbuf_edit(xb, sb->s, r1, r2 + 1, o1, xoff);
+		vi_hardwrap_range(r1, lines);
+	}
 	free(sb->s);
 	vi_insert_screen_leave();
 	vi_mod |= 1;
