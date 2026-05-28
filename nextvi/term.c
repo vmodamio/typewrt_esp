@@ -517,6 +517,8 @@ static int noterm_key_event_timeout(int timeout_ms)
 	while ((timeout_ms >= 0 ?
 			nextvi_keyboard_read_timeout(&ev, timeout_ms) :
 			nextvi_keyboard_read(&ev)) > 0) {
+		if (ev & NEXTVI_KEY_PRESS)
+			typewrt_display_battery_low_dismiss();
 		if (ev & NEXTVI_KEY_MODIFIER) {
 			int old_win = key_win;
 			int bit = noterm_modifier_bit(ev);
@@ -607,6 +609,10 @@ __attribute__((weak)) void nextvi_display_move_cursor(int old_row, int old_col,
 }
 
 __attribute__((weak)) void nextvi_display_note_insert(void)
+{
+}
+
+__attribute__((weak)) void typewrt_display_battery_low_dismiss(void)
 {
 }
 

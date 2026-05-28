@@ -38,6 +38,12 @@
 
 #define SHARPMEM_BYTES_PER_LINE (PXWIDTH / 8)
 #define SHARPMEM_BUFFER_BYTES ((PXWIDTH * PXHEIGHT) / 8)
+#define BATTERY_LOW_OVERLAY_TEXT "[Battery low]"
+#define BATTERY_LOW_OVERLAY_ROWS 3
+#define BATTERY_LOW_OVERLAY_COLS ((int)sizeof(BATTERY_LOW_OVERLAY_TEXT) + 1)
+#define BATTERY_LOW_OVERLAY_ROW_BYTES (PSF_GLYPH_SIZE * SHARPMEM_BYTES_PER_LINE)
+#define BATTERY_LOW_OVERLAY_BYTES \
+    (BATTERY_LOW_OVERLAY_ROWS * BATTERY_LOW_OVERLAY_ROW_BYTES)
 
 static spi_device_handle_t spi;
 static uint8_t *sharpmem_buffer;
@@ -52,6 +58,13 @@ static char splash_clock_last[24];
 static char splash_status_last[NEXTVI_DISPLAY_COLS + 1];
 static StaticSemaphore_t display_lock_storage;
 static SemaphoreHandle_t display_lock;
+static bool battery_low_overlay_active;
+static bool battery_low_overlay_hid_cursor;
+static int battery_low_overlay_top;
+static int battery_low_overlay_left;
+static int battery_low_overlay_cursor_row = -1;
+static int battery_low_overlay_cursor_col = -1;
+static uint8_t battery_low_overlay_saved[BATTERY_LOW_OVERLAY_BYTES];
 
 static uint64_t splash_status_wakeup_delay_us(void)
 {
@@ -396,6 +409,112 @@ static void renderBlankTextRow(int physical_row)
     static const char blank[NEXTVI_DISPLAY_COLS + 1] = "                                        ";
 
     renderTextRow(physical_row, blank);
+}
+
+static void drawSplashLayout(void);
+static int cursorCellValid(int row, int col);
+static void invertCursorCell(int row, int col);
+
+static void batteryLowOverlayRestoreLocked(void)
+{
+    if (!battery_low_overlay_active || !sharpmem_buffer) {
+        return;
+    }
+    for (int r = 0; r < BATTERY_LOW_OVERLAY_ROWS; r++) {
+        int row = battery_low_overlay_top + r;
+        memcpy(sharpmem_buffer + row * BATTERY_LOW_OVERLAY_ROW_BYTES,
+            battery_low_overlay_saved + r * BATTERY_LOW_OVERLAY_ROW_BYTES,
+            BATTERY_LOW_OVERLAY_ROW_BYTES);
+        updateRow((uint8_t)row);
+    }
+    if (battery_low_overlay_hid_cursor &&
+            cursorCellValid(battery_low_overlay_cursor_row,
+                battery_low_overlay_cursor_col)) {
+        invertCursorCell(battery_low_overlay_cursor_row,
+            battery_low_overlay_cursor_col);
+        updateRow((uint8_t)battery_low_overlay_cursor_row);
+        display_cursor_row = battery_low_overlay_cursor_row;
+        display_cursor_col = battery_low_overlay_cursor_col;
+        display_cursor_drawn = true;
+    }
+    battery_low_overlay_active = false;
+    battery_low_overlay_hid_cursor = false;
+    battery_low_overlay_cursor_row = -1;
+    battery_low_overlay_cursor_col = -1;
+}
+
+void typewrt_display_battery_low_dismiss(void)
+{
+    displayLock();
+    batteryLowOverlayRestoreLocked();
+    displayUnlock();
+}
+
+void typewrt_display_battery_low_show(void)
+{
+    const char *msg = BATTERY_LOW_OVERLAY_TEXT;
+    int msg_len = (int)strlen(msg);
+
+    if (!sharpmem_buffer) {
+        return;
+    }
+
+    displayLock();
+    if (battery_low_overlay_active) {
+        goto done;
+    }
+    if (splash_active) {
+        drawSplashLayout();
+    }
+
+    battery_low_overlay_top =
+        ((NEXTVI_DISPLAY_ROWS + 1) - BATTERY_LOW_OVERLAY_ROWS) / 2;
+    battery_low_overlay_left =
+        (NEXTVI_DISPLAY_COLS - BATTERY_LOW_OVERLAY_COLS) / 2;
+    if (battery_low_overlay_top < 0 ||
+            battery_low_overlay_left < 0 ||
+            battery_low_overlay_top + BATTERY_LOW_OVERLAY_ROWS >
+                NEXTVI_DISPLAY_ROWS + 1 ||
+            battery_low_overlay_left + BATTERY_LOW_OVERLAY_COLS >
+                NEXTVI_DISPLAY_COLS) {
+        goto done;
+    }
+
+    battery_low_overlay_hid_cursor = false;
+    if (display_cursor_drawn &&
+            display_cursor_row >= battery_low_overlay_top &&
+            display_cursor_row < battery_low_overlay_top +
+                BATTERY_LOW_OVERLAY_ROWS) {
+        invertCursorCell(display_cursor_row, display_cursor_col);
+        battery_low_overlay_hid_cursor = true;
+        battery_low_overlay_cursor_row = display_cursor_row;
+        battery_low_overlay_cursor_col = display_cursor_col;
+        display_cursor_drawn = false;
+    }
+
+    for (int r = 0; r < BATTERY_LOW_OVERLAY_ROWS; r++) {
+        int row = battery_low_overlay_top + r;
+        memcpy(battery_low_overlay_saved + r * BATTERY_LOW_OVERLAY_ROW_BYTES,
+            sharpmem_buffer + row * BATTERY_LOW_OVERLAY_ROW_BYTES,
+            BATTERY_LOW_OVERLAY_ROW_BYTES);
+    }
+
+    for (int r = 0; r < BATTERY_LOW_OVERLAY_ROWS; r++) {
+        int row = battery_low_overlay_top + r;
+        for (int c = 0; c < BATTERY_LOW_OVERLAY_COLS; c++) {
+            int glyph = ' ';
+            if (r == 1 && c > 0 && c <= msg_len) {
+                glyph = msg[c - 1];
+            }
+            displayGlyph((uint8_t)(battery_low_overlay_left + c),
+                (uint8_t)row, (uint8_t)glyph);
+            invertTextCell(row, battery_low_overlay_left + c);
+        }
+        updateRow((uint8_t)row);
+    }
+    battery_low_overlay_active = true;
+done:
+    displayUnlock();
 }
 
 static void splashBatteryStatus(char *out, size_t out_len)

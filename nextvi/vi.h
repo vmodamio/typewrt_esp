@@ -305,6 +305,7 @@ void nextvi_display_refresh_cursor(int row, int col, int on);
 void nextvi_display_move_cursor(int old_row, int old_col,
 	int new_row, int new_col, int on);
 void nextvi_display_note_insert(void);
+void typewrt_display_battery_low_dismiss(void);
 #else
 #define term_write(s, n) if (xled) write(1, s, n);
 #define nextvi_display_note_insert()
