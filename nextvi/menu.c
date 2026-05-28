@@ -65,6 +65,7 @@ typedef struct {
 	menu_sort sort;
 	int reverse;
 	char filter[64];
+	int show_hidden;
 } menu_dir_state;
 
 typedef struct {
@@ -76,6 +77,7 @@ typedef struct {
 	menu_sort sort;
 	int reverse;
 	char filter[64];
+	int show_hidden;
 	char message[80];
 	int bottom_message_active;
 	char *prev_path;
@@ -258,6 +260,7 @@ static void menu_dir_state_save(menu_state *m)
 	s->sort = m->sort;
 	s->reverse = m->reverse;
 	snprintf(s->filter, sizeof(s->filter), "%s", m->filter);
+	s->show_hidden = m->show_hidden;
 }
 
 static int menu_dir_state_restore(menu_state *m, const char *path)
@@ -271,6 +274,7 @@ static int menu_dir_state_restore(menu_state *m, const char *path)
 	m->sort = s->sort;
 	m->reverse = s->reverse;
 	snprintf(m->filter, sizeof(m->filter), "%s", s->filter);
+	m->show_hidden = s->show_hidden;
 	return 1;
 }
 
@@ -555,6 +559,11 @@ static long menu_count_words(const char *path)
 	return n < 0 ? -1 : words;
 }
 
+static int menu_hidden_name(const char *name)
+{
+	return name && name[0] == '.';
+}
+
 static void menu_entries_free(menu_state *m)
 {
 	for (int i = 0; i < m->count; i++) {
@@ -683,6 +692,8 @@ static int menu_load(menu_state *m)
 	}
 	while ((de = readdir(dir))) {
 		if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
+			continue;
+		if (!m->show_hidden && menu_hidden_name(de->d_name))
 			continue;
 		path = menu_path_join(ex_vcwd, de->d_name);
 		if (stat(path, &st)) {
@@ -1118,6 +1129,7 @@ static int menu_change_dir(menu_state *m, const char *path)
 	m->sort = MENU_SORT_NAME;
 	m->reverse = 0;
 	m->filter[0] = '\0';
+	m->show_hidden = 0;
 	restored = menu_dir_state_restore(m, ex_vcwd);
 	menu_load(m);
 	if (!restored && menu_parent_of(ex_vcwd, old_path))
@@ -1164,24 +1176,98 @@ static char *menu_resolve_arg(const char *arg)
 	return menu_path_normalize(trimmed);
 }
 
+static int menu_dir_has_entries(const char *path, int *has_entries)
+{
+	DIR *dir = opendir(path);
+	struct dirent *de;
+
+	*has_entries = 0;
+	if (!dir)
+		return errno ? errno : EIO;
+	while ((de = readdir(dir))) {
+		if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
+			continue;
+		*has_entries = 1;
+		break;
+	}
+	closedir(dir);
+	return 0;
+}
+
+static int menu_delete_tree(const char *path, int is_dir)
+{
+	DIR *dir;
+	struct dirent *de;
+	int err = 0;
+
+	if (!is_dir) {
+		if (unlink(path))
+			return errno ? errno : EIO;
+		menu_mark_unmarked(path);
+		return 0;
+	}
+	dir = opendir(path);
+	if (!dir)
+		return errno ? errno : EIO;
+	while (!err && (de = readdir(dir))) {
+		struct stat st;
+		char *child;
+		if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
+			continue;
+		child = menu_path_join(path, de->d_name);
+		if (!child)
+			err = ENOMEM;
+		else if (stat(child, &st))
+			err = errno ? errno : EIO;
+		else
+			err = menu_delete_tree(child, S_ISDIR(st.st_mode));
+		free(child);
+	}
+	closedir(dir);
+	if (err)
+		return err;
+	if (rmdir(path))
+		return errno ? errno : EIO;
+	return 0;
+}
+
+static int menu_confirm_delete(menu_state *m, const char *name, const char *path,
+	int is_dir)
+{
+	char msg[96];
+	int has_entries = 0;
+	int err;
+
+	snprintf(msg, sizeof(msg), "delete %s? y/N", name);
+	if (!menu_confirm(m, msg))
+		return 0;
+	if (!is_dir)
+		return 1;
+	err = menu_dir_has_entries(path, &has_entries);
+	if (err) {
+		menu_set_message(m, strerror(err));
+		return 0;
+	}
+	if (!has_entries)
+		return 1;
+	snprintf(msg, sizeof(msg), "delete full dir %s? y/N", name);
+	return menu_confirm(m, msg);
+}
+
 static void menu_delete_selected(menu_state *m)
 {
 	menu_entry *e = menu_selected(m);
-	char msg[96];
-	int ret;
+	int err;
 	if (!e) {
 		menu_set_message(m, "no file selected");
 		return;
 	}
-	snprintf(msg, sizeof(msg), "delete %s? y/N", e->name);
-	if (!menu_confirm(m, msg))
+	if (!menu_confirm_delete(m, e->name, e->path, e->is_dir))
 		return;
-	ret = e->is_dir ? rmdir(e->path) : unlink(e->path);
-	if (ret)
-		menu_set_message(m, strerror(errno));
+	err = menu_delete_tree(e->path, e->is_dir);
+	if (err)
+		menu_set_message(m, strerror(err));
 	else {
-		if (!e->is_dir)
-			menu_mark_unmarked(e->path);
 		menu_set_message(m, "deleted");
 		menu_load(m);
 	}
@@ -1695,6 +1781,7 @@ static int menu_command(menu_state *m, char *cmdline)
 		m->sort = MENU_SORT_NAME;
 		m->reverse = 0;
 		m->filter[0] = '\0';
+		m->show_hidden = 0;
 		while ((tok = menu_token(&p))) {
 			if (tok[0] == '-') {
 				for (int i = 1; tok[i]; i++) {
@@ -1704,12 +1791,16 @@ static int menu_command(menu_state *m, char *cmdline)
 						m->sort = MENU_SORT_MTIME;
 					else if (tok[i] == 'r')
 						m->reverse = 1;
+					else if (tok[i] == 'a')
+						m->show_hidden = 1;
 				}
 			} else if (!strcmp(tok, "by-size")) {
 				m->sort = MENU_SORT_SIZE;
 			} else if (!strcmp(tok, "by-last-modified") ||
 					!strcmp(tok, "by-mtime")) {
 				m->sort = MENU_SORT_MTIME;
+			} else if (!strcmp(tok, "all") || !strcmp(tok, "hidden")) {
+				m->show_hidden = 1;
 			} else
 				snprintf(m->filter, sizeof(m->filter), "%s", tok);
 		}
@@ -1717,45 +1808,48 @@ static int menu_command(menu_state *m, char *cmdline)
 		menu_dir_state_save(m);
 		return 0;
 	}
-	if (!strcmp(cmd, "mkdir")) {
-		char *path;
-		p = menu_trim(p);
-		path = menu_resolve_arg(p);
-		if (!path)
-			menu_set_message(m, "mkdir needs a path");
-		else if (mkdir(path, 0777))
-			menu_set_message(m, strerror(errno));
-		else {
-			menu_set_message(m, "directory created");
-			menu_load(m);
-		}
-		free(path);
-		return 0;
-	}
-	if (!strcmp(cmd, "rm") || !strcmp(cmd, "delete")) {
-		char *path;
-		struct stat st;
-		int is_dir;
-		p = menu_trim(p);
-		if (!*p) {
-			menu_delete_selected(m);
+		if (!strcmp(cmd, "mkdir")) {
+			char *path;
+			p = menu_trim(p);
+			path = menu_resolve_arg(p);
+			if (!path)
+				menu_set_message(m, "mkdir needs a path");
+			else if (mkdir(path, 0777))
+				menu_set_message(m, strerror(errno));
+			else {
+				menu_set_message(m, "directory created");
+				menu_load(m);
+			}
+			free(path);
 			return 0;
 		}
-		path = menu_resolve_arg(p);
-		if (!path)
-			menu_set_message(m, "delete needs a path");
-		else if ((is_dir = (!stat(path, &st) && S_ISDIR(st.st_mode))) ?
-				rmdir(path) : unlink(path))
-			menu_set_message(m, strerror(errno));
-		else {
-			if (!is_dir)
-				menu_mark_unmarked(path);
-			menu_set_message(m, "deleted");
-			menu_load(m);
+		if (!strcmp(cmd, "rm") || !strcmp(cmd, "delete")) {
+			char *path;
+			struct stat st;
+			int is_dir;
+			int err;
+			p = menu_trim(p);
+			if (!*p) {
+				menu_delete_selected(m);
+				return 0;
+			}
+			path = menu_resolve_arg(p);
+			if (!path)
+				menu_set_message(m, "delete needs a path");
+			else if (stat(path, &st))
+				menu_set_message(m, strerror(errno));
+			else if ((is_dir = S_ISDIR(st.st_mode)) &&
+					!menu_confirm_delete(m, p, path, is_dir))
+				;
+			else if ((err = menu_delete_tree(path, is_dir)))
+				menu_set_message(m, strerror(err));
+			else {
+				menu_set_message(m, "deleted");
+				menu_load(m);
+			}
+			free(path);
+			return 0;
 		}
-		free(path);
-		return 0;
-	}
 	if (!strcmp(cmd, "rename") || !strcmp(cmd, "mv")) {
 		char *src = menu_token(&p);
 		char *dst = menu_trim(p);

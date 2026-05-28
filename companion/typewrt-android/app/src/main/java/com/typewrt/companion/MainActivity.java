@@ -1840,6 +1840,9 @@ public class MainActivity extends Activity {
         int deletes = 0;
 
         for (FileSnapshot snapshot : pendingSendFiles) {
+            if (isCompanionMetadataPath(snapshot.name)) {
+                continue;
+            }
             if (snapshot.deleteMarker) {
                 deletes++;
             } else {
@@ -1862,7 +1865,7 @@ public class MainActivity extends Activity {
         long total = 0;
 
         for (FileSnapshot snapshot : pendingSendFiles) {
-            if (!snapshot.deleteMarker) {
+            if (!snapshot.deleteMarker && !isCompanionMetadataPath(snapshot.name)) {
                 total += snapshot.data.length;
             }
         }
@@ -1896,6 +1899,10 @@ public class MainActivity extends Activity {
     }
 
     private void beginNextOutgoingFile(BluetoothGatt gatt) {
+        while (outgoingFileIndex < pendingSendFiles.size() &&
+                isCompanionMetadataPath(pendingSendFiles.get(outgoingFileIndex).name)) {
+            outgoingFileIndex++;
+        }
         if (outgoingFileIndex >= pendingSendFiles.size()) {
             finishOutgoingTransfer(gatt);
             return;
@@ -1929,7 +1936,9 @@ public class MainActivity extends Activity {
                 appendLog("Sending delete marker: " + name);
             } else {
                 setStatus("Sending " + name, outgoingProgressText(0, snapshot.data.length));
-                appendLog("Sending: " + name + " (" + snapshot.data.length + " bytes)");
+                appendLog("Sending: " + name + " (" + snapshot.data.length + " bytes" +
+                    (snapshot.mtimeSeconds >= 0 ? ", mtime " + snapshot.mtimeSeconds : "") +
+                    ")");
             }
             updateSendFileActions();
         });
@@ -3119,7 +3128,6 @@ public class MainActivity extends Activity {
         ArrayList<FileSnapshot> updates = new ArrayList<>();
         GitHubFetchResult result = new GitHubFetchResult(updates);
         SyncManifest manifest = loadSyncManifest();
-        Map<String, Long> repoMtimes = fetchGithubRepoMtimes(owner, repo, branch, root, token);
 
         try {
             collectGithubContents(owner, repo, branch, root, root, token, remoteFiles);
@@ -3128,8 +3136,23 @@ public class MainActivity extends Activity {
                 throw e;
             }
         }
+        String importPrefix = inferRepositoryImportPrefix(repo, root, remoteFiles);
+        Map<String, Long> repoMtimes = fetchGithubRepoMtimes(owner, repo, branch, root, token);
+        if (!importPrefix.isEmpty()) {
+            repoMtimes = repoMtimesForImportPrefix(repoMtimes, importPrefix);
+            repoMtimes.putAll(fetchGithubRepoMtimes(owner, repo, branch,
+                githubPathForSnapshot(root, importPrefix), token));
+            String prefix = importPrefix;
+            mainHandler.post(() -> appendLog(
+                "GitHub pull using " + prefix + "/ as the Typewrt root."));
+        }
         for (GitHubRemoteFile remote : remoteFiles) {
-            String localPath = remoteRelativePath(remote.path, root);
+            String remotePath = remoteRelativePath(remote.path, root);
+            String localPath = stripPathPrefix(remotePath, importPrefix);
+
+            if (localPath.isEmpty() || isCompanionMetadataPath(localPath)) {
+                continue;
+            }
 
             if (remote.size > MAX_FILE_BYTES || remote.downloadUrl == null ||
                     remote.downloadUrl.isEmpty()) {
@@ -3144,7 +3167,7 @@ public class MainActivity extends Activity {
             }
             long mtime = repoMtimes.containsKey(localPath) ?
                 repoMtimes.get(localPath) :
-                fetchGithubLatestFileMtime(owner, repo, branch, root, localPath, token);
+                fetchGithubLatestFileMtime(owner, repo, branch, root, remotePath, token);
             if (mtime < 0) {
                 mtime = System.currentTimeMillis() / 1000L;
             }
@@ -3158,6 +3181,10 @@ public class MainActivity extends Activity {
         }
 
         for (LocalMirrorFile local : listLocalMirrorFiles()) {
+            if (isCompanionMetadataPath(local.path)) {
+                deleteLocalMirrorFile(local.file);
+                continue;
+            }
             if (remotePaths.contains(local.path)) {
                 continue;
             }
@@ -3564,6 +3591,85 @@ public class MainActivity extends Activity {
             }
         }
         return sanitizeTransferPath(remote, "typewrt.txt");
+    }
+
+    private String inferRepositoryImportPrefix(
+        String repo,
+        String rootPath,
+        List<GitHubRemoteFile> remoteFiles
+    ) {
+        if (!sanitizeOptionalRepoPath(rootPath).isEmpty()) {
+            return "";
+        }
+
+        String repoFolder = repositoryFolderName(repo);
+        String repoPrefix = repoFolder + "/";
+        boolean hasWrappedFile = false;
+
+        if (repoFolder.isEmpty()) {
+            return "";
+        }
+        for (GitHubRemoteFile remote : remoteFiles) {
+            String path = remoteRelativePath(remote.path, rootPath);
+            String unwrappedPath = stripPathPrefix(path, repoFolder);
+
+            if (path.equals(SYNC_MANIFEST_NAME) || unwrappedPath.equals(SYNC_MANIFEST_NAME)) {
+                continue;
+            }
+            if (!path.startsWith(repoPrefix)) {
+                return "";
+            }
+            hasWrappedFile = true;
+        }
+        return hasWrappedFile ? repoFolder : "";
+    }
+
+    private String repositoryFolderName(String repo) {
+        String folder = sanitizeTransferPath(repo, "");
+
+        if (folder.toLowerCase(Locale.US).endsWith(".git")) {
+            folder = folder.substring(0, folder.length() - 4);
+        }
+        return sanitizeTransferPath(folder, "");
+    }
+
+    private String stripPathPrefix(String path, String prefix) {
+        String clean = sanitizeTransferPath(path, "");
+        String root = sanitizeTransferPath(prefix, "");
+
+        if (root.isEmpty()) {
+            return clean;
+        }
+        if (clean.equals(root)) {
+            return "";
+        }
+        if (clean.startsWith(root + "/")) {
+            return sanitizeTransferPath(clean.substring(root.length() + 1), "");
+        }
+        return clean;
+    }
+
+    private boolean isCompanionMetadataPath(String path) {
+        String safe = sanitizeTransferPath(path, "");
+
+        return safe.equals(SYNC_MANIFEST_NAME) ||
+            safe.endsWith("/" + SYNC_MANIFEST_NAME);
+    }
+
+    private Map<String, Long> repoMtimesForImportPrefix(
+        Map<String, Long> mtimes,
+        String prefix
+    ) {
+        HashMap<String, Long> out = new HashMap<>();
+
+        for (Map.Entry<String, Long> entry : mtimes.entrySet()) {
+            String path = stripPathPrefix(entry.getKey(), prefix);
+
+            if (!path.isEmpty()) {
+                out.put(path, entry.getValue());
+            }
+        }
+        return out;
     }
 
     private Map<String, Long> fetchGithubRepoMtimes(

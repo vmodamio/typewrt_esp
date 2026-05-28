@@ -137,7 +137,7 @@ Normal menu keys:
 | `g` / `G` | First/last entry |
 | `Enter` or `o` | Open file, or enter directory |
 | `b` | Send all pending `*` files by BLE |
-| `d` | Delete selected file/directory after confirmation |
+| `d` | Delete selected file/directory; non-empty directories require an extra confirmation |
 | `r` | Rename selected entry |
 | `c` | Copy selected file |
 | `R` | Refresh listing |
@@ -164,7 +164,9 @@ Each listing row reserves right-hand columns for word count and last modificatio
 Word counts use compact units such as `846` or `1.5 k`. Modification time is shown
 as `HH:mm` for files changed today, and `Mon dd` for older files.
 
-Menu commands include `cd PATH`, `cd ..`, `cd -`, `ls`, `ls -s`, `ls -rt`,
+Dotfiles are hidden in the browser by default; use `:ls -a` to show them.
+
+Menu commands include `cd PATH`, `cd ..`, `cd -`, `ls`, `ls -a`, `ls -s`, `ls -rt`,
 `ls *pattern*`, `mkdir PATH`, `open PATH`, `gmarks`,
 `ble [send|recv|selected|PATH|status|off]`, `rtc [datetime]`, `battery`,
 `off`, `rename`, `copy`, `delete`, and forwarded Nextvi ex commands.

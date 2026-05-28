@@ -332,6 +332,39 @@ static int typewrt_ble_rx_make_parent_dirs(char *path)
     return 0;
 }
 
+static bool typewrt_ble_rx_apply_mtime(const char *path, time_t mtime,
+    const char *what)
+{
+    struct utimbuf times = {
+        .actime = mtime,
+        .modtime = mtime,
+    };
+    struct stat st;
+
+    if (utime(path, &times) < 0) {
+        ESP_LOGW(TAG, "Failed to preserve %s mtime for %s: %s",
+            what, path, strerror(errno));
+        return false;
+    }
+    if (!stat(path, &st) && st.st_mtime != mtime) {
+        ESP_LOGW(TAG, "%s mtime for %s requested %lu, got %lu",
+            what, path, (unsigned long)mtime, (unsigned long)st.st_mtime);
+    }
+    return true;
+}
+
+static void typewrt_ble_rx_apply_parent_dir_mtimes(char *path, time_t mtime)
+{
+    for (char *p = path + 1; *p; p++) {
+        if (*p != '/') {
+            continue;
+        }
+        *p = '\0';
+        typewrt_ble_rx_apply_mtime(path, mtime, "directory");
+        *p = '/';
+    }
+}
+
 static int typewrt_ble_rx_fail_locked(int err)
 {
     char msg[128];
@@ -357,15 +390,8 @@ static int typewrt_ble_rx_finish_file_locked(void)
     typewrt_ble_receive_close_locked(false);
     if (path) {
         if (has_mtime) {
-            struct utimbuf times = {
-                .actime = mtime,
-                .modtime = mtime,
-            };
-
-            if (utime(path, &times) < 0) {
-                ESP_LOGW(TAG, "Failed to preserve mtime for %s: %s",
-                    path, strerror(errno));
-            }
+            typewrt_ble_rx_apply_mtime(path, mtime, "file");
+            typewrt_ble_rx_apply_parent_dir_mtimes(path, mtime);
         }
         nextvi_menu_mark_synced(path);
         free(path);

@@ -34,8 +34,11 @@ timestamps on the SD card.
    ```text
    Repository: YOUR_USER/YOUR_REPO
    Branch: main
-   Path: leave blank unless you committed the files inside a subfolder
+   Path: leave blank unless you committed the files inside a custom subfolder
    ```
+
+   If the repository contents are wrapped in a single top-level folder with the same
+   name as the repository, the companion treats that folder as the Typewrt root.
 
 5. Tap the GitHub pull action. The companion will use `.typewrt-sync.json` for mtimes.
 
