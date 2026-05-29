@@ -619,7 +619,7 @@ static const char help_ex[] =
 "menu          open file menu\n"
 "ble ...       BLE transfer\n"
 "rtc [time]    show/set clock\n"
-"battery       battery status\n"
+"bat battery   battery status\n"
 "power         power command\n"
 "off           power off\n"
 "about         version/about\n"
