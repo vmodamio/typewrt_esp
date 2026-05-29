@@ -518,6 +518,7 @@ static const char help_insert[] =
 "Ctrl-A        history lines in b-1\n"
 "\n"
 "MODE / DISPLAY\n"
+"Cmd   parse normal cmd, resume\n"
 "Ctrl-O        recursive vi/ex\n"
 "Ctrl-L        redraw/clean term\n"
 "\n"
