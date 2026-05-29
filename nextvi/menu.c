@@ -23,7 +23,7 @@
 #define MENU_FS_ROOT		NEXTVI_FS_ROOT
 #define MENU_SYNC_MAX		64
 #define MENU_DIR_STATE_MAX	32
-#define MENU_SIZE_COL_WIDTH	8
+#define MENU_SIZE_COL_WIDTH	7
 #define MENU_DATE_COL_WIDTH	10
 #define MENU_META_GAP		1
 #define MENU_STATUS_WAKE_MS	1000
@@ -890,9 +890,24 @@ static void menu_format_mtime(char *out, int out_len, long mtime)
 	else if (entry_tm.tm_year == now_tm.tm_year)
 		snprintf(out, out_len, "%s %02d", months[entry_tm.tm_mon],
 			entry_tm.tm_mday);
-	else
-		snprintf(out, out_len, "%s %02d", months[entry_tm.tm_mon],
-			entry_tm.tm_mday);
+	else {
+		char date[9];
+		int day = entry_tm.tm_mday;
+		int mon = entry_tm.tm_mon + 1;
+		int year = (entry_tm.tm_year + 1900) % 100;
+		if (day < 1)
+			day = 1;
+		else if (day > 31)
+			day = 31;
+		if (mon < 1)
+			mon = 1;
+		else if (mon > 12)
+			mon = 12;
+		if (year < 0)
+			year += 100;
+		snprintf(date, sizeof(date), "%02d.%02d.%02d", day, mon, year);
+		snprintf(out, out_len, "%s", date);
+	}
 }
 
 static void menu_render_entry(char line[NEXTVI_DISPLAY_COLS + 1],
@@ -1036,7 +1051,7 @@ static int menu_confirm(menu_state *m, const char *msg)
 	nextvi_display_refresh_line(MENU_BOTTOM_ROW, line, NEXTVI_DISPLAY_COLS);
 	while (!c)
 		c = menu_read_key(m);
-	menu_draw(m);
+	menu_draw_bottom_path(m);
 	return c == 'y' || c == 'Y';
 }
 
@@ -1250,7 +1265,7 @@ static int menu_confirm_delete(menu_state *m, const char *name, const char *path
 	}
 	if (!has_entries)
 		return 1;
-	snprintf(msg, sizeof(msg), "delete full dir %s? y/N", name);
+	snprintf(msg, sizeof(msg), "Directory non-empty. Proceed? y/N");
 	return menu_confirm(m, msg);
 }
 

@@ -162,7 +162,8 @@ the persistent `Ctrl-T` slots as `slot line;offset path`; use `j`/`k`,
 
 Each listing row reserves right-hand columns for word count and last modification time.
 Word counts use compact units such as `846` or `1.5 k`. Modification time is shown
-as `HH:mm` for files changed today, and `Mon dd` for older files.
+as `HH:mm` for files changed today, `Mon dd` for older files this year, and
+`dd.MM.YY` for previous years.
 
 Dotfiles are hidden in the browser by default; use `:ls -a` to show them.
 
