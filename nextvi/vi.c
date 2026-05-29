@@ -2084,7 +2084,6 @@ void vi(int init)
 			if (vi_visual)
 				vi_mod |= 1;
 		} else if (mv == 0) {
-			char *cmd;
 			term_dec()
 			re_motion:
 			c = term_read(TK_CTL('l'));
@@ -2258,21 +2257,6 @@ void vi(int init)
 					break;
 				case 'o':
 					break;
-				case 'I':;
-				case 'i':;
-					char restr[100] = "%s/^\t/";
-					vi_arg = MIN(vi_arg ? vi_arg : xts, 80);
-					if (k == 'I') {
-						cmd = restr+6;
-						while (vi_arg--)
-							*cmd++ = ' ';
-						strcpy(cmd, "/g");
-					} else {
-						strcpy(restr, "%s/^ {");
-						strcpy(nextvi_itoa(vi_arg, restr+6), "}/\t/g");
-					}
-					ln = vi_enprompt(":", restr, &k, &n);
-					goto do_excmd;
 				case 'b':
 				case 'v':
 					term_push(k == 'v' ? ":\x01" : ":\x02", 2); /* ^a : ^b */
@@ -2527,28 +2511,6 @@ void vi(int init)
 						k = vc_insert(c);
 						goto ins;
 					}
-				} else if (k == 'w') {
-					preserve(int, xgrp, xgrp = 2;)
-					preserve(int, xvis, xvis = 1;)
-					n = vi_arg ? vi_arg : 80;
-					while (1) {
-						xoff = vi_col2off(xb, xrow, n);
-						vi_col = vi_off2col(xb, xrow, xoff+1);
-						if (vi_col <= n)
-							break;
-						if (ex_exec("f>[^ \t]*[ \t]+(?\\:.$|(.)):??;c\n"))
-							break;
-					}
-					restore(xgrp)
-					restore(xvis)
-					vi_mod |= !texec;
-				} else if (k == 'q') {
-					preserve(int, xled, xled = 0;)
-					char cmd[64] = "g/./& ";
-					strcpy(nextvi_itoa(vi_arg, cmd+5), "gw");
-					ex_command(cmd)
-					restore(xled)
-					vi_mod |= 1;
 				} else if (k == '~' || k == 'u' || k == 'U') {
 					vc_motion(k);
 					goto rep;

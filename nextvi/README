@@ -130,20 +130,12 @@ VI NORMAL
                    Insert #arg words from cursor
      [#]v/         Enter re ex prompt to set regex keyword. Insert # words
                    from cursor
-     [#]vi         Enter %s/ ex prompt. Contains regex for changing spaces to
-                   tabs. # modifies tab width
-     [#]vI         Enter %s/ ex prompt. Contains regex for changing tabs to
-                   spaces. # modifies tab width
      <^G>          Print buffer status info
      1<^G>         Enable permanent status row
      2<^G>         Disable permanent status row
      ga            Print character info
      1ga           Enable permanent character info row
      2ga           Disable permanent character info row
-     [#]gw         Hard word wrap a line to # col limit. Default: 80
-     [#]gq         Hard word wrap a buffer to # col limit. Default: 80
-                   Documents and insert edits hard-wrap automatically to
-                   conf_hwwidth.
      [#]g~{arg}    Switch character case for arg region # times
      [#]gu{arg}    Switch arg region to lowercase # times
      [#]gU{arg}    Switch arg region to uppercase # times
