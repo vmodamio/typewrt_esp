@@ -306,6 +306,12 @@ void temp_write(int i, char *str)
 	lbuf_edit(lb, str, tempbufs[i].row, tempbufs[i].row, 0, 0);
 }
 
+static void ex_clean_redraw(void)
+{
+	xredraw = 1;
+	term_clean();
+}
+
 static const char help_quick[] =
 "NEXTVI HELP\n"
 "\n"
@@ -763,6 +769,7 @@ static void *ec_help(char *loc, char *cmd, char *arg)
 	lbuf_saved(lb, 1);
 	temp_pos(HELPBUF, 0, 0, 0);
 	temp_switch(HELPBUF, 0);
+	ex_clean_redraw();
 	return NULL;
 }
 
@@ -954,6 +961,7 @@ int ex_edit(const char *path, int len)
 	len = strlen(stored);
 	if (stored[0] && ((fd = bufs_find(stored, len)) >= 0)) {
 		bufs_switch(fd);
+		ex_clean_redraw();
 		free(stored);
 		return 1;
 	}
@@ -968,6 +976,7 @@ int ex_edit(const char *path, int len)
 		return -1;
 	}
 	bufs_switch(idx);
+	ex_clean_redraw();
 	free(stored);
 	ret = ex_readfile();
 	if (ret <= 0)
@@ -988,6 +997,7 @@ static void *ec_edit(char *loc, char *cmd, char *arg)
 	len = strlen(stored);
 	if (len && ((fd = bufs_find(stored, len)) >= 0)) {
 		bufs_switchwft(fd)
+		ex_clean_redraw();
 		free(stored);
 		return NULL;
 	} else if (len || !xbufcur || !strchr(cmd, '!')) {
@@ -1002,6 +1012,7 @@ static void *ec_edit(char *loc, char *cmd, char *arg)
 			return "buffer list full";
 		}
 		bufs_switch(idx);
+		ex_clean_redraw();
 		cd = 3; /* XXX: quick hack to indicate new lbuf */
 	}
 	free(stored);
