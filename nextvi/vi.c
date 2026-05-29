@@ -2252,8 +2252,6 @@ void vi(int init)
 					vi_nlmode = !vi_nlmode;
 					break;
 				case 'o':
-					ex_command("%s/\x0d//g:%s/[ \t]+$//g")
-					vi_mod |= 1;
 					break;
 				case 'I':;
 				case 'i':;
@@ -2751,6 +2749,7 @@ void nextvi_main(int argc, char *argv[])
 	temp_open(0, "/hist/");
 	temp_open(1, "/fm/");
 	temp_open(2, "/sc/");
+	temp_open(3, "/help/");
 	ibuf = emalloc(ibuf_sz);
 	term_init();
 	ex_init(argv + 1, argc - 1);

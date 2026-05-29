@@ -30,7 +30,7 @@ sbuf *xacreg;			/* autocomplete db filter regex */
 rset *xkwdrs;			/* the last searched keyword rset */
 sbuf *xregs[256];		/* string registers */
 struct buf *bufs;		/* main buffers */
-struct buf tempbufs[3];		/* temporary buffers, for internal use */
+struct buf tempbufs[4];		/* temporary buffers, for internal use */
 struct buf *ex_buf;		/* current buffer */
 struct buf *ex_pbuf;		/* prev buffer */
 static struct buf *ex_tpbuf;	/* temp prev buffer */
@@ -58,6 +58,8 @@ static char *xrerr;
 static void *xpret;		/* previous ex command return value */
 static sbuf *xanchor;		/* anchored error status buffer */
 static int xqprop;		/* number of ex_exec levels :q propagates */
+
+#define HELPBUF 3
 
 static int rstrcmp(const char *s1, const char *s2, int l1, int l2)
 {
@@ -302,6 +304,466 @@ void temp_write(int i, char *str)
 	if (lbuf_get(lb, tempbufs[i].row))
 		tempbufs[i].row++;
 	lbuf_edit(lb, str, tempbufs[i].row, tempbufs[i].row, 0, 0);
+}
+
+static const char help_quick[] =
+"NEXTVI HELP\n"
+"\n"
+"j/k h/l      move\n"
+"w b e        words\n"
+"0 ^ $        line start/end\n"
+"gg G         first/last line\n"
+"/ ? n N      search\n"
+"i a o        insert\n"
+"x d c        delete/change\n"
+"u Ctrl-R     undo/redo\n"
+"y p          yank/paste\n"
+":w :q :wq    save/quit\n"
+":menu        file menu\n"
+"\n"
+"More help:\n"
+":help normal\n"
+":help insert\n"
+":help ex\n"
+":help menu\n"
+"\n"
+"In help, use Ctrl-^ to return.\n";
+
+static const char help_normal[] =
+"HELP NORMAL\n"
+"\n"
+"COUNT\n"
+"[n] before most keys repeats or\n"
+"moves by n.\n"
+"\n"
+"MOTION\n"
+"[n]j          down n lines\n"
+"[n]k          up n lines\n"
+"[n]+ Enter    down, after indent\n"
+"[n]-          up, after indent\n"
+"[n]h          char left\n"
+"[n]l          char right\n"
+"[n]f{c}       find c forward\n"
+"[n]F{c}       find c backward\n"
+"[n]t{c}       till c forward\n"
+"[n]T{c}       till c backward\n"
+"[n];          repeat char find\n"
+"[n],          repeat opposite\n"
+"[n]w          next word\n"
+"[n]W          next WORD\n"
+"[n]b          prev word\n"
+"[n]B          prev WORD\n"
+"[n]e          word end\n"
+"[n]E          WORD end\n"
+"vw            line word mode\n"
+"[n](          next sentence edge\n"
+"[n])          prev sentence edge\n"
+"[n]{          next { section\n"
+"[n]}          prev { section\n"
+"[n][          next newline section\n"
+"[n]]          prev newline section\n"
+"^             first nonblank\n"
+"0             line start\n"
+"$             line end\n"
+"[n]|          goto column n\n"
+"[n]Space      char forward\n"
+"[n]Backspace  char backward\n"
+"%             matching bracket\n"
+"[n]%          percent in file\n"
+"'mark         jump to mark line\n"
+"`mark         jump to mark pos\n"
+"gg            first line\n"
+"gi            last insert, insert\n"
+"[n]G          line n or last\n"
+"H M L         top/middle/bottom\n"
+"z.            cursor to middle\n"
+"zEnter        cursor to top\n"
+"z-            cursor to bottom\n"
+"Ctrl-E/Y      scroll down/up\n"
+"Ctrl-D/U      half page down/up\n"
+"Ctrl-F/B      page down/up\n"
+"\n"
+"EDIT\n"
+"i             insert before cursor\n"
+"I             insert after indent\n"
+"a             append after cursor\n"
+"A             append at line end\n"
+"o             open line below\n"
+"O             open line above\n"
+"[n]s          change n chars\n"
+"S             change whole line\n"
+"[n]c{move}    change region\n"
+"C             change to line end\n"
+"[n]d{move}    delete region\n"
+"D             delete to line end\n"
+"[n]x          delete forward\n"
+"[n]X          delete backward\n"
+"di{pair}      delete inside pair\n"
+"ci{pair}      change inside pair\n"
+"[n]r{c}       replace chars\n"
+"[n]K          split line\n"
+"[n]J          join lines\n"
+"[n]y{move}    yank region\n"
+"[n]Y          yank lines\n"
+"[n]p          paste after/below\n"
+"[n]P          paste before/above\n"
+"u             undo\n"
+"Ctrl-R        redo\n"
+"[n].          repeat command\n"
+"[n]v.         repeat down lines\n"
+"\n"
+"OPERATORS\n"
+"d c y > < Ctrl-W ! g~ gu gU\n"
+"Operators take a motion/region.\n"
+"Examples: dw, d3w, 3dw, gUU.\n"
+"\n"
+"VISUAL\n"
+"V             visual line mode\n"
+"V in visual   show hidden chars\n"
+"Esc           leave visual\n"
+"visual y/d/c  yank/delete/change\n"
+"visual ~ u U  case operations\n"
+"\n"
+"MARKS\n"
+"m{a-z}        set local mark\n"
+"Ctrl-T        set global mark 0\n"
+"[1-9]Ctrl-T   set global mark n\n"
+"Digits are persistent marks.\n"
+"\n"
+"BUFFERS\n"
+"Tab           open path at cursor\n"
+"Ctrl-^        previous buffer\n"
+"Ctrl-6        previous buffer\n"
+"Ctrl-N        next buffer\n"
+"Ctrl-7 n      buffer picker\n"
+"Ctrl-_ n      buffer picker\n"
+"Ctrl-/ n      buffer picker\n"
+"\\             file menu buffer\n"
+"[n]\\          refresh file menu\n"
+"vb            history buffer b-1\n"
+"\n"
+"SEARCH\n"
+"/             search forward\n"
+"?             search backward\n"
+"n             repeat search\n"
+"N             repeat opposite\n"
+"*             word search\n"
+"Ctrl-A        word regex search\n"
+"Ctrl-]        file search forward\n"
+"Ctrl-P        file search back\n"
+"\n"
+"TOOLS\n"
+":             ex prompt\n"
+"Q             ex mode\n"
+"vv            last ex command\n"
+"vr vt v/      ex prompt helpers\n"
+"vi vI         tab/space helpers\n"
+"Ctrl-C        line motion numbers\n"
+"[1-5]Ctrl-C   select line numbers\n"
+"Ctrl-V        cycle line numbers\n"
+"Ctrl-G        status\n"
+"ga            character info\n"
+"gw            wrap line\n"
+"gq            wrap buffer\n"
+"Ctrl-K        write buffer\n"
+"R             show registers\n"
+"\"reg op       use register\n"
+"@reg          blocking macro\n"
+"&reg          nonblocking macro\n"
+"@@ &&         repeat last macro\n"
+"@: &:         run ex register\n"
+"Z ZZ Zz       exit variants\n"
+"Ctrl-L        redraw\n";
+
+static const char help_insert[] =
+"HELP INSERT\n"
+"\n"
+"Text keys insert text.  The same\n"
+"line editor is used by insert mode\n"
+"and by ex/menu prompts.\n"
+"\n"
+"EDITING\n"
+"Backspace     delete char\n"
+"Ctrl-H        delete char\n"
+"Ctrl-U        delete to mark/start\n"
+"Ctrl-W        delete word\n"
+"Ctrl-T        increase indent\n"
+"Ctrl-D        decrease indent\n"
+"Ctrl-V key    insert literal key\n"
+"Ctrl-K key    insert digraph\n"
+"Enter         newline in insert\n"
+"Enter         submit ex prompt\n"
+"Esc           leave insert/cancel\n"
+"Ctrl-C        leave insert/cancel\n"
+"\n"
+"REGISTERS\n"
+"Ctrl-]        cycle paste register\n"
+"Ctrl-\\ key    select register\n"
+"Ctrl-P        paste register\n"
+"\n"
+"COMPLETION\n"
+"Ctrl-X        set/reset edit mark\n"
+"Ctrl-G        index buffer\n"
+"Ctrl-Y        clear index data\n"
+"Ctrl-N        next completion\n"
+"Ctrl-R        prev completion\n"
+"Ctrl-B        show completions\n"
+"Ctrl-B ex     edit history buffer\n"
+"Ctrl-A        history lines in b-1\n"
+"\n"
+"MODE / DISPLAY\n"
+"Ctrl-O        recursive vi/ex\n"
+"Ctrl-L        redraw/clean term\n"
+"\n"
+"KEYMAPS\n"
+"Alt-e         English\n"
+"Alt-s         Spanish\n"
+"Alt-i         Italian\n"
+"Alt-n         Norwegian\n"
+"Alt-g         German\n"
+"Alt-f         French\n"
+"Alt-t         Turkish\n"
+"Alt-k         Colemak\n";
+
+static const char help_ex[] =
+"HELP EX\n"
+"\n"
+"FORM\n"
+":cmd arg      run command\n"
+":cmd:cmd      chain commands\n"
+"Backslash escapes : and %.\n"
+"Use spaces between cmd and arg.\n"
+"\n"
+"RANGES\n"
+"%             whole buffer\n"
+".             current line/pos\n"
+"$             last line/end line\n"
+",             line range sep\n"
+";             char range sep\n"
+"#             rebase to previous\n"
+"+ - * / %     range arithmetic\n"
+">pat>         search forward\n"
+"<pat<         search backward\n"
+"'mark         mark address\n"
+"No command with a range moves.\n"
+"\n"
+"SEARCH / FILTER\n"
+"f>pat         find forward\n"
+"f<pat         find backward\n"
+"f+pat         find next forward\n"
+"f-pat         find next backward\n"
+"f pat         fuzzy find\n"
+"re pat        set regex keyword\n"
+"g/pat/cmd     global command\n"
+"g!/pat/cmd    inverse global\n"
+"? cond ? a ? b while/if command\n"
+"??            test last command\n"
+"\n"
+"EDIT TEXT\n"
+"p [text]      print line/text\n"
+"=             print range numbers\n"
+"i text        insert before\n"
+"a text        append after\n"
+"c text        change range\n"
+"d             delete range\n"
+"j [x]         join range\n"
+"s/pat/repl/g  substitute\n"
+"u             undo\n"
+"rd            redo\n"
+"\n"
+"FILES\n"
+"e [path]      edit file\n"
+"e! [path]     force edit/reload\n"
+"r [path]      read file\n"
+"w [path]      write file\n"
+"w! [path]     force write\n"
+"wq / wq!      write quit\n"
+"x / x!        write if changed quit\n"
+"q / q!        quit / force quit\n"
+"cd [path]     change/show cwd\n"
+"fd [path]     fill file list b-2\n"
+"fp [path]     set file-list root\n"
+"inc [pat]     file-list filter\n"
+"ef [pat]      open fuzzy file\n"
+"ef! [pat]     force fuzzy open\n"
+"\n"
+"BUFFERS\n"
+"b [n]         buffers/switch\n"
+"b-1           history buffer\n"
+"b-2           file menu buffer\n"
+"b-3           scratch buffer\n"
+"b-4           help buffer\n"
+"bp [path]     set buffer path\n"
+"bs [*]        mark saved\n"
+"bw[!] [n]     wipe buffer\n"
+"bx [n]        max buffers\n"
+"\n"
+"MARKS / REGISTERS\n"
+"m marks       set marks\n"
+"gmarks        global marks\n"
+"ya [reg]      yank range\n"
+"ya! [reg]     clear register\n"
+"pu [reg]      paste register\n"
+"reg           show registers\n"
+"nreg text     set register n\n"
+"nreg+ text    append register n\n"
+"\n"
+"TYPEWRT\n"
+"menu          open file menu\n"
+"ble ...       BLE transfer\n"
+"rtc [time]    show/set clock\n"
+"battery       battery status\n"
+"power         power command\n"
+"off           power off\n"
+"about         version/about\n"
+"help [topic]  open help\n"
+"\n"
+"OPTIONS\n"
+"ai            auto indent\n"
+"ic            ignore case regex\n"
+"grp n         regex group\n"
+"ts n          tab width\n"
+"left n        horizontal scroll\n"
+"lim n         render limit\n"
+"mpt n         prompt behavior\n"
+"pac           completion display\n"
+"pr n          print to register\n"
+"err n         error behavior\n"
+"led           terminal output\n"
+"vis n         startup flags\n"
+"cm keymap     keymap\n"
+"cm! keymap    alt keymap\n"
+"ac regex      completion regex\n"
+"sc ...        ex special chars\n"
+"uc            UTF-8 decoding\n"
+"uz            zero-width chars\n"
+"ub            multi-codepoint seqs\n"
+"ph ...        placeholders\n";
+
+static const char help_menu[] =
+"HELP MENU\n"
+"\n"
+"The menu is the Typewrt file\n"
+"browser.  Quit the editor or run\n"
+":menu to enter it.\n"
+"\n"
+"KEYS\n"
+"j             move down\n"
+"k             move up\n"
+"h             parent directory\n"
+"l             open entry\n"
+"Enter         open file/dir\n"
+"o             open file/dir\n"
+"Ctrl-D        page down\n"
+"Ctrl-U        page up\n"
+"g             first entry\n"
+"G             last entry\n"
+"/             search listing\n"
+":             command prompt\n"
+"b             send marked files\n"
+"d             delete entry\n"
+"r             rename entry\n"
+"c             copy entry\n"
+"R             refresh listing\n"
+"P             power off\n"
+"Ctrl-N        return, next buffer\n"
+"Ctrl-^        return, prev buffer\n"
+"Ctrl-_        buffer picker\n"
+"q             return to editor\n"
+"Esc           back/cancel\n"
+"\n"
+"BUFFER PICKER\n"
+"j/k           move\n"
+"Ctrl-D/U      page down/up\n"
+"g/G           first/last\n"
+"digit         choose buffer\n"
+"Enter l o     switch buffer\n"
+"q Esc         file browser\n"
+"\n"
+"GLOBAL MARK PICKER\n"
+":gmarks       open picker\n"
+"j/k           move\n"
+"digit         choose mark\n"
+"Enter l o     open mark\n"
+"\n"
+"COMMANDS\n"
+"cd PATH       change directory\n"
+"cd ..         parent directory\n"
+"cd -          previous directory\n"
+"ls            list\n"
+"ls -a         show dotfiles\n"
+"ls -s         sort by size\n"
+"ls -rt        sort by time\n"
+"ls *pat*      filter listing\n"
+"mkdir PATH    make directory\n"
+"open PATH     open file/dir\n"
+"gmarks        mark picker\n"
+"help [topic]  help topic\n"
+"ble send      send current/queued\n"
+"ble recv      receive by BLE\n"
+"ble selected  send marked files\n"
+"ble PATH      send path\n"
+"ble status    BLE status\n"
+"ble off       cancel BLE\n"
+"rtc [time]    show/set clock\n"
+"battery       battery status\n"
+"rename        rename selected\n"
+"copy          copy selected\n"
+"delete        delete selected\n"
+"off           power off\n"
+"ex command    forwarded to Nextvi\n";
+
+struct help_entry {
+	const char *name;
+	const char *text;
+};
+
+static const struct help_entry help_entries[] = {
+	{"", help_quick},
+	{"quick", help_quick},
+	{"normal", help_normal},
+	{"vi", help_normal},
+	{"insert", help_insert},
+	{"prompt", help_insert},
+	{"ex", help_ex},
+	{"command", help_ex},
+	{"commands", help_ex},
+	{"options", help_ex},
+	{"menu", help_menu},
+};
+
+static const char *help_text(const char *topic)
+{
+	const char *end;
+	while (*topic == ' ' || *topic == '\t')
+		topic++;
+	end = topic;
+	while (*end && *end != ' ' && *end != '\t')
+		end++;
+	while (*end == ' ' || *end == '\t')
+		end++;
+	if (*end)
+		return NULL;
+	for (int i = 0; i < LEN(help_entries); i++)
+		if ((int)(end - topic) == (int)strlen(help_entries[i].name) &&
+				!strncmp(topic, help_entries[i].name, end - topic))
+			return help_entries[i].text;
+	return NULL;
+}
+
+static void *ec_help(char *loc, char *cmd, char *arg)
+{
+	const char *text = help_text(arg);
+	struct lbuf *lb = tempbufs[HELPBUF].lb;
+	(void)loc;
+	(void)cmd;
+	if (!text)
+		return "unknown help topic";
+	lbuf_edit(lb, (char*)text, 0, lbuf_len(lb), 0, 0);
+	lbuf_saved(lb, 1);
+	temp_pos(HELPBUF, 0, 0, 0);
+	temp_switch(HELPBUF, 0);
+	return NULL;
 }
 
 /* set the current search keyword rset if the kwd or flags changed */
@@ -2021,6 +2483,7 @@ static struct excmd {
 	{"f>", ec_find},
 	{"f<", ec_find},
 	{"f", ec_fuzz},
+	{"help", ec_help},
 	{"inc", ec_setincl},
 	EO(ic),
 	{"i", ec_insert},

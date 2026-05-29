@@ -134,7 +134,6 @@ VI NORMAL
                    tabs. # modifies tab width
      [#]vI         Enter %s/ ex prompt. Contains regex for changing tabs to
                    spaces. # modifies tab width
-     vo            Remove trailing white spaces and <\r> line endings
      <^G>          Print buffer status info
      1<^G>         Enable permanent status row
      2<^G>         Disable permanent status row
@@ -747,6 +746,8 @@ EX COMMANDS
              :b-2
              Example: switch to the /sc/ scratch buffer
              :b-3
+             Example: switch to the /help/ help buffer
+             :b-4
 
      bp[path]
              Set current buffer path
@@ -818,6 +819,17 @@ EX COMMANDS
              :inc submodule.*\.c$
              Example: exclude .git and submodule folders
              :inc (^(?\:(?\!^\.git|^submodule).)+[^/]+$)
+
+     help[topic]
+             Open built-in help in the /help/ temporary buffer.
+
+             No argument opens quick help.  Topics include normal, insert,
+             ex, and menu.
+
+             Example: open quick help
+             :help
+             Example: open normal-mode help
+             :help normal
 
      &{macro}
              Global non-blocking macro

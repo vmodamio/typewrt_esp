@@ -432,7 +432,7 @@ extern sbuf *xacreg;
 extern rset *xkwdrs;
 extern sbuf *xregs[256];
 extern struct buf *bufs;
-extern struct buf tempbufs[3];
+extern struct buf tempbufs[4];
 extern struct buf *ex_buf;
 extern struct buf *ex_pbuf;
 #define istempbuf(buf) (buf >= tempbufs && buf < tempbufs + LEN(tempbufs))
