@@ -257,6 +257,7 @@ static int vi_scycle_row;
 static int vi_scycle_off;
 static int vi_scycle_currow;
 static int vi_scycle_curoff;
+static int vi_search_visible;
 
 static void vi_msg_right(char *msg, int msg_len, const char *right)
 {
@@ -406,6 +407,8 @@ static void vi_search_counter(char *out, int out_len, int row, int off)
 	int idx, total;
 
 	out[0] = '\0';
+	if (!vi_search_visible)
+		return;
 	if (vi_search_count_at(row, off, &idx, &total)) {
 		if (vi_scycle_done && vi_scycle_kwdcnt == xkwdcnt &&
 				row == vi_scycle_row && off == vi_scycle_off)
@@ -980,6 +983,8 @@ static int vi_search(int cmd, int cnt, int *row, int *off, int msg)
 		ex_krsset(xregs['/'] ? xregs['/']->s : NULL, xkwddir);
 	if (!lbuf_len(xb) || (!xkwddir || !xkwdrs))
 		return 1;
+	if (msg)
+		vi_search_visible = 1;
 	dir = cmd == 'N' ? -xkwddir : xkwddir;
 	sdir = dir < 0 ? -1 : 1;
 	if (msg && !explicit && vi_search_cycle_current(sdir, *row, *off) &&
@@ -2338,6 +2343,7 @@ void vi(int init)
 				vi_mod |= 1;
 				break;
 			case ':':
+				vi_search_visible = 0;
 				ln = vi_enprompt(":", NULL, &k, &n);
 				do_excmd:
 				if (k && ln[n])
