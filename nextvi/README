@@ -816,7 +816,7 @@ EX COMMANDS
              Open built-in help in the /help/ temporary buffer.
 
              No argument opens quick help.  Topics include normal, insert,
-             ex, and menu.
+             ex, menu, and markdown.
 
              Example: open quick help
              :help
