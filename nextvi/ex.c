@@ -1124,7 +1124,7 @@ int ex_edit(const char *path, int len)
 	free(stored);
 	ret = ex_readfile();
 	if (ret <= 0)
-		ex_bufpostfix(ex_buf, 0);
+		ex_bufpostfix(ex_buf, !ret);
 	return 0;
 }
 
@@ -1162,7 +1162,7 @@ static void *ec_edit(char *loc, char *cmd, char *arg)
 	free(stored);
 	rd = ex_readfile();
 	if (cd == 3 || !rd)
-		ex_bufpostfix(ex_buf, arg[0]);
+		ex_bufpostfix(ex_buf, !rd || arg[0]);
 	snprintf(msg, sizeof(msg), "\"%s\" %dL [%c]",
 			*xb_path ? xb_path : "unnamed", lbuf_len(xb),
 			rd < 0 || rd ? 'f' : 'r');

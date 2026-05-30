@@ -146,9 +146,12 @@ struct lopt *lbuf_opt(struct lbuf *lb, int beg, int o1, int n_del)
 {
 	struct lopt *lo;
 	static struct lopt slo;
+	int hist_u = lb->hist_u;
 	if (xseq < 0)
 		lo = &slo;
 	else {
+		if (lb->saved > hist_u)
+			lb->saved = -1;
 		for (int i = lb->hist_u; i < lb->hist_n; i++)
 			lopt_done(&lb->hist[i]);
 		lb->hist_n = lb->hist_u;
