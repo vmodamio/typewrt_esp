@@ -478,7 +478,6 @@ static const char help_normal[] =
 "&reg          nonblocking macro\n"
 "@@ &&         repeat last macro\n"
 "@: &:         run ex register\n"
-"Z ZZ Zz       exit variants\n"
 "Ctrl-L        redraw\n";
 
 static const char help_insert[] =

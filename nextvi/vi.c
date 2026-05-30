@@ -2577,22 +2577,6 @@ void vi(int init)
 				if (xquit)
 					continue;
 				break;
-			case 'Z':
-				k = term_read(0);
-				if (TK_INT(k))
-					continue;
-				if (k == 'Z') {
-					ex_exec("x");
-					continue;
-				}
-				xquit = texec == '&' ? -1 : 1;
-				if (k == 'z')
-					term_push("\n", 1);
-				else if (xgrec == 1) {
-					term_clean();
-					xgrec = 0;
-				}
-				continue;
 			case '.':
 				vc_repeat();
 				break;

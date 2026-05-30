@@ -207,9 +207,6 @@ VI NORMAL
                    from cursor
      [#]<^P>       Filesystem regex search backward
      <^L>          Force redraw whole screen and update terminal dimensions
-     Z{*}          Exit and clean terminal, force quit in an & macro
-     Zz            Exit and submit history command, force quit in an & macro
-     ZZ            Exit and write unsaved changes to a file
 
 VI REGIONS
      Regions are vi normal commands that define [h v]range for vi motions.
