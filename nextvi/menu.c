@@ -31,6 +31,9 @@
 #define MENU_DATE_COL_WIDTH	10
 #define MENU_META_GAP		1
 #define MENU_STATUS_WAKE_MS	1000
+#define MENU_BLE_NO_CHANGE	0
+#define MENU_BLE_RELOAD		1
+#define MENU_BLE_STATUS		2
 
 typedef enum {
 	MENU_SORT_NAME = 0,
@@ -867,18 +870,32 @@ static int menu_read_key(menu_state *m)
 	return c;
 }
 
+static void menu_draw_bottom_message(menu_state *m, const char *msg)
+{
+	char line[NEXTVI_DISPLAY_COLS + 1];
+
+	menu_line(line, msg);
+	nextvi_display_refresh_line(MENU_BOTTOM_ROW, line, NEXTVI_DISPLAY_COLS);
+	m->message[0] = '\0';
+	m->bottom_message_active = 1;
+}
+
 static int menu_ble_poll(menu_state *m)
 {
 	unsigned gen = typewrt_ble_status_generation();
 	char status[128];
 
 	if (gen == m->ble_status_generation)
-		return 0;
+		return MENU_BLE_NO_CHANGE;
 	m->ble_status_generation = gen;
 	typewrt_ble_get_status(status, sizeof(status));
+	if (typewrt_ble_receive_active()) {
+		menu_draw_bottom_message(m, status);
+		return MENU_BLE_STATUS;
+	}
 	menu_set_message(m, status);
 	menu_load(m);
-	return 1;
+	return MENU_BLE_RELOAD;
 }
 
 static void menu_format_words(char *out, int out_len, long words)
@@ -2022,6 +2039,8 @@ static int menu_finish(menu_state *m, int ret)
 int nextvi_menu_run(void)
 {
 	menu_state m;
+	int redraw = 1;
+
 	memset(&m, 0, sizeof(m));
 	menu_dir_state_restore(&m, ex_vcwd);
 	m.ble_status_generation = typewrt_ble_status_generation();
@@ -2029,15 +2048,22 @@ int nextvi_menu_run(void)
 	while (1) {
 		char cmd[256];
 		int c;
-		menu_draw(&m);
+
+		if (redraw) {
+			menu_draw(&m);
+			redraw = 0;
+		}
 		c = menu_read_key(&m);
 		if (!c) {
-			if (menu_ble_poll(&m))
-				continue;
-			if (m.bottom_message_active)
+			int ble_status = menu_ble_poll(&m);
+
+			if (ble_status == MENU_BLE_RELOAD)
+				redraw = 1;
+			else if (ble_status == MENU_BLE_NO_CHANGE && m.bottom_message_active)
 				menu_draw_bottom_path(&m);
 			continue;
 		}
+		redraw = 1;
 		switch (c) {
 		case 'h':
 			menu_change_dir(&m, "..");

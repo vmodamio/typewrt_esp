@@ -1549,3 +1549,16 @@ unsigned typewrt_ble_status_generation(void)
     typewrt_ble_unlock();
     return gen;
 }
+
+bool typewrt_ble_receive_active(void)
+{
+    bool active;
+
+    typewrt_ble_lock_prepare();
+    typewrt_ble_lock();
+    active = ble_enabled && ble_mode == TYPEWRT_BLE_MODE_RECEIVE &&
+        (ble_state == TYPEWRT_BLE_WAITING ||
+        ble_state == TYPEWRT_BLE_RECEIVING || ble_receive_fd >= 0);
+    typewrt_ble_unlock();
+    return active;
+}
