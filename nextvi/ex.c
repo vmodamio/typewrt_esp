@@ -2486,21 +2486,6 @@ static void *ec_battery(char *loc, char *cmd, char *arg)
 #endif
 }
 
-static void *ec_power(char *loc, char *cmd, char *arg)
-{
-#ifdef NEXTVI_EMBEDDED
-	char buf[96];
-	(void)loc;
-	(void)cmd;
-	(void)arg;
-	for (int i = 0; typewrt_power_get_status_line(i, buf, sizeof(buf)); i++)
-		ex_print(buf)
-	return NULL;
-#else
-	return "unsupported command";
-#endif
-}
-
 static void *ec_ble(char *loc, char *cmd, char *arg)
 {
 #ifdef NEXTVI_EMBEDDED
@@ -2612,7 +2597,6 @@ static struct excmd {
 	{"b", ec_buffer},
 	EO(pac),
 	EO(pr),
-	{"power", ec_power},
 	{"pu", ec_put},
 	{"ph", ec_setenc},
 	{"p", ec_print},

@@ -24,6 +24,5 @@ bool typewrt_rtc_get_datetime(char *out, size_t out_len);
 const char *typewrt_rtc_set_datetime(const char *datetime, char *out,
     size_t out_len);
 bool typewrt_battery_get_status(char *out, size_t out_len);
-bool typewrt_power_get_status_line(int line, char *out, size_t out_len);
 void typewrt_reset_button_enable(bool enabled);
 bool typewrt_power_off(void);

@@ -87,12 +87,6 @@ static uint8_t battery_warning_level;
 static bool battery_low_overlay_enabled;
 static volatile uint32_t typewrt_sd_write_locks;
 static volatile bool sd_write_led_on;
-static uint32_t typewrt_light_sleep_count;
-static uint32_t typewrt_light_sleep_fail_count;
-static int64_t typewrt_power_boot_us;
-static int64_t typewrt_light_sleep_total_us;
-static int64_t typewrt_light_sleep_last_us;
-static uint32_t typewrt_light_sleep_last_wake_causes;
 
 typedef struct {
     uint32_t voltage_uv;
@@ -111,87 +105,6 @@ static void typewrt_unused_board_pins_init(void);
 static void typewrt_unused_board_pins_poweroff(void);
 static void typewrt_power_led_high_z(void);
 static void typewrt_esp_domain_diagnostic_high_z(void);
-
-static const char *typewrt_wake_cause_name(uint32_t causes)
-{
-    if (!causes || (causes & BIT(ESP_SLEEP_WAKEUP_UNDEFINED))) {
-        return "none";
-    }
-    if ((causes & BIT(ESP_SLEEP_WAKEUP_TIMER)) &&
-            (causes & BIT(ESP_SLEEP_WAKEUP_GPIO))) {
-        return "timer+gpio";
-    }
-    if (causes & BIT(ESP_SLEEP_WAKEUP_TIMER)) {
-        return "timer";
-    }
-    if (causes & BIT(ESP_SLEEP_WAKEUP_GPIO)) {
-        return "gpio";
-    }
-    if (causes & BIT(ESP_SLEEP_WAKEUP_EXT0)) {
-        return "ext0";
-    }
-    if (causes & BIT(ESP_SLEEP_WAKEUP_EXT1)) {
-        return "ext1";
-    }
-    if (causes & BIT(ESP_SLEEP_WAKEUP_TOUCHPAD)) {
-        return "touch";
-    }
-    if (causes & BIT(ESP_SLEEP_WAKEUP_ULP)) {
-        return "ulp";
-    }
-    if (causes & BIT(ESP_SLEEP_WAKEUP_UART)) {
-        return "uart";
-    }
-    if (causes & BIT(ESP_SLEEP_WAKEUP_WIFI)) {
-        return "wifi";
-    }
-    if (causes & BIT(ESP_SLEEP_WAKEUP_COCPU)) {
-        return "cocpu";
-    }
-    if (causes & BIT(ESP_SLEEP_WAKEUP_COCPU_TRAP_TRIG)) {
-        return "trap";
-    }
-    if (causes & BIT(ESP_SLEEP_WAKEUP_BT)) {
-        return "bt";
-    }
-    return "?";
-}
-
-static void typewrt_format_duration(char *out, size_t out_len, int64_t us)
-{
-    uint64_t seconds;
-
-    if (!out || out_len == 0) {
-        return;
-    }
-    seconds = us > 0 ? (uint64_t)(us / 1000000LL) : 0;
-    if (seconds >= 3600) {
-        snprintf(out, out_len, "%" PRIu64 "h%02" PRIu64 "m",
-            seconds / 3600, (seconds / 60) % 60);
-    } else if (seconds >= 60) {
-        snprintf(out, out_len, "%" PRIu64 "m%02" PRIu64 "s",
-            seconds / 60, seconds % 60);
-    } else {
-        snprintf(out, out_len, "%" PRIu64 "s", seconds);
-    }
-}
-
-static void typewrt_format_deadline(char *out, size_t out_len, int64_t deadline,
-    int64_t now)
-{
-    if (!out || out_len == 0) {
-        return;
-    }
-    if (deadline <= 0) {
-        snprintf(out, out_len, "--");
-        return;
-    }
-    if (deadline <= now) {
-        snprintf(out, out_len, "due");
-        return;
-    }
-    typewrt_format_duration(out, out_len, deadline - now);
-}
 
 static int bcd_to_dec(uint8_t value)
 {
@@ -687,56 +600,6 @@ void typewrt_sleep_clear_ui_wakeup(void)
     __atomic_store_n(&typewrt_ui_wakeup_deadline_us, 0, __ATOMIC_RELAXED);
 }
 
-bool typewrt_power_get_status_line(int line, char *out, size_t out_len)
-{
-    char total[16], last[16], awake[16], bat[16], ui[16];
-    uint32_t locks, sleep_count, fail_count;
-    int64_t now, boot_us, total_us, awake_us;
-    uint32_t wake_causes;
-
-    if (!out || out_len == 0) {
-        return false;
-    }
-    out[0] = '\0';
-    now = esp_timer_get_time();
-    boot_us = typewrt_power_boot_us ? typewrt_power_boot_us : now;
-    total_us = typewrt_light_sleep_total_us;
-    awake_us = now > boot_us + total_us ? now - boot_us - total_us : 0;
-    sleep_count = typewrt_light_sleep_count;
-    fail_count = typewrt_light_sleep_fail_count;
-    wake_causes = typewrt_light_sleep_last_wake_causes;
-
-    switch (line) {
-    case 0:
-        typewrt_format_duration(total, sizeof(total), total_us);
-        if (sleep_count) {
-            typewrt_format_duration(last, sizeof(last),
-                typewrt_light_sleep_last_us);
-        } else {
-            snprintf(last, sizeof(last), "--");
-        }
-        snprintf(out, out_len, "sleep %" PRIu32 "x total %s last %s",
-            sleep_count, total, last);
-        return true;
-    case 1:
-        typewrt_format_duration(awake, sizeof(awake), awake_us);
-        snprintf(out, out_len, "wake %s fail %" PRIu32 " awake %s",
-            typewrt_wake_cause_name(wake_causes), fail_count, awake);
-        return true;
-    case 2:
-        locks = __atomic_load_n(&typewrt_sleep_locks, __ATOMIC_RELAXED);
-        typewrt_format_deadline(bat, sizeof(bat), battery_next_check_us, now);
-        typewrt_format_deadline(ui, sizeof(ui),
-            __atomic_load_n(&typewrt_ui_wakeup_deadline_us,
-                __ATOMIC_RELAXED), now);
-        snprintf(out, out_len, "locks %" PRIu32 " kbd %s bat %s ui %s",
-            locks, typewrt_keyboard_idle() ? "idle" : "busy", bat, ui);
-        return true;
-    default:
-        return false;
-    }
-}
-
 static bool typewrt_sleep_is_locked(void)
 {
     return __atomic_load_n(&typewrt_sleep_locks, __ATOMIC_RELAXED) != 0;
@@ -752,7 +615,6 @@ void typewrt_light_sleep_if_idle(void)
 {
 #if TYPEWRT_ENABLE_LIGHT_SLEEP
     esp_err_t ret;
-    int64_t sleep_start_us;
 
     if (!typewrt_light_sleep_allowed()) {
         return;
@@ -779,16 +641,9 @@ void typewrt_light_sleep_if_idle(void)
     typewrt_display_prepare_sleep();
     typewrt_timer_wakeup_prepare();
     typewrt_keyboard_prepare_wakeup_rows();
-    sleep_start_us = esp_timer_get_time();
     ret = esp_light_sleep_start();
     if (ret != ESP_OK) {
-        typewrt_light_sleep_fail_count++;
         ESP_LOGW(TAG, "light sleep failed: %s", esp_err_to_name(ret));
-    } else {
-        typewrt_light_sleep_last_us = esp_timer_get_time() - sleep_start_us;
-        typewrt_light_sleep_total_us += typewrt_light_sleep_last_us;
-        typewrt_light_sleep_count++;
-        typewrt_light_sleep_last_wake_causes = esp_sleep_get_wakeup_causes();
     }
     typewrt_power_led_update();
     typewrt_display_after_sleep();
@@ -1457,8 +1312,6 @@ bool typewrt_power_off(void)
 
 void typewrt_power_init(void)
 {
-    typewrt_power_boot_us = esp_timer_get_time();
-
     gpio_deep_sleep_hold_dis();
     (void)gpio_hold_dis(TYPEWRT_PIN_LDO2_EN);
     (void)gpio_hold_dis(TYPEWRT_PIN_LEDN);
