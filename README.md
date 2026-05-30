@@ -144,7 +144,7 @@ Normal menu keys:
 | `P` | Power off |
 | `/` | Search the current listing by name |
 | `:` | Open menu command prompt |
-| `Ctrl-N` | Return to Nextvi and run normal-mode `Ctrl-N` buffer navigation |
+| `Ctrl-N` / `Ctrl-Tab` | Return to Nextvi and run normal-mode `Ctrl-N` buffer navigation |
 | `Ctrl-^` | Return to Nextvi and switch to the previous buffer |
 | `Ctrl-_` | Open the in-menu buffer picker |
 | `q` | Return to the current editor buffer |
