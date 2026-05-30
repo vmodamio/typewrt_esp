@@ -919,6 +919,7 @@ static int led_line(sbuf *sb, int ps, int pre, char **post, int *postn, char **p
 			if (xquit > 0)
 				restore(xquit)
 			is->t_row = tempbufs[0].row;
+			/* fall through */
 		case TK_CTL('a'):
 			is->t_row = is->t_row < -1 ? tempbufs[0].row : is->t_row;
 			is->t_row += lbuf_len(tempbufs[0].lb);

@@ -937,6 +937,7 @@ static int ex_range(char *ploc, char **num, int n, int *row)
 	case '%':
 		if (ploc != *num)
 			break;
+		/* fall through */
 	case '$':
 		n = row ? lbuf_eol(xb, *row, 2) : lbuf_len(xb) - 1;
 		++*num;

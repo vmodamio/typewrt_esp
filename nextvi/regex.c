@@ -79,6 +79,7 @@ static int compilecode(char *re_loc, rcode *prog, int sizecode, int flg)
 				term = PC;
 				break;
 			}
+			/* fall through */
 		default:
 			term = PC;
 			EMIT(PC++, CHAR);
@@ -381,10 +382,12 @@ static int reg_comp(rcode *prog, char *re, int nsubc, int laidx, int flg)
 		case RSPLIT:
 			prog->insts[i] = -scnt;
 			scnt += 2;
+			/* fall through */
 		case JMP:
 		case SAVE:
 		case CHAR:
 			i++;
+			/* fall through */
 		case ANY:
 			icnt++;
 		}

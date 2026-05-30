@@ -905,7 +905,15 @@ static void menu_format_mtime(char *out, int out_len, long mtime)
 			mon = 12;
 		if (year < 0)
 			year += 100;
-		snprintf(date, sizeof(date), "%02d.%02d.%02d", day, mon, year);
+		date[0] = '0' + day / 10;
+		date[1] = '0' + day % 10;
+		date[2] = '.';
+		date[3] = '0' + mon / 10;
+		date[4] = '0' + mon % 10;
+		date[5] = '.';
+		date[6] = '0' + year / 10;
+		date[7] = '0' + year % 10;
+		date[8] = '\0';
 		snprintf(out, out_len, "%s", date);
 	}
 }

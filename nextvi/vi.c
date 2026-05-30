@@ -2324,6 +2324,7 @@ void vi(int init)
 					break;
 			case TK_CTL('v'):
 				vi_arg = (vi_wsel % 5) + !!*vi_word;
+				/* fall through */
 			case TK_CTL('c'):
 				if (vi_arg && vi_arg <= 5) {
 					vi_wsel = vi_arg;
@@ -2401,6 +2402,7 @@ void vi(int init)
 					break;
 				}
 				term_dec()
+				/* fall through */
 			case 'y':
 			case '>':
 			case '<':

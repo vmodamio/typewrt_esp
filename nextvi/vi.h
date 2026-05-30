@@ -10,6 +10,11 @@
 #define HWBRK_IS(s)	((s) && (!memcmp((s), HWBRK, HWBRK_LEN) || \
 				!memcmp((s), HWBRK_NOSPACE, HWBRK_LEN)))
 #define HWBRK_SEP(s)	((s) && !memcmp((s), HWBRK, HWBRK_LEN))
+#ifdef __GNUC__
+#define NEXTVI_UNUSED	__attribute__((unused))
+#else
+#define NEXTVI_UNUSED
+#endif
 /* for debug; printf() but to file */
 #define p(s, ...)\
 	{FILE *f = fopen("file", "a");\
@@ -29,8 +34,8 @@ void *emalloc(size_t size);
 void *erealloc(void *p, size_t size);
 int dstrlen(const char *s, char delim);
 char *nextvi_itoa(int n, char s[]);
-static int nextvi_itoalen(int n) { char s[32]; return nextvi_itoa(n, s) - s; }
-static void swap(int *a, int *b) { int t = *a; *a = *b; *b = t; }
+static NEXTVI_UNUSED int nextvi_itoalen(int n) { char s[32]; return nextvi_itoa(n, s) - s; }
+static NEXTVI_UNUSED void swap(int *a, int *b) { int t = *a; *a = *b; *b = t; }
 
 /* sbuf: variable-sized buffer/string */
 #define NEXTSZ(o, r)	o + r + ((o + r) >> 1)
@@ -117,7 +122,7 @@ typedef struct {
 	int n;			/* number of regular expressions in this set */
 } rset;
 rset *rset_make(int n, char **pat, int flg);
-static rset *rset_smake(char *pat, int flg)
+static NEXTVI_UNUSED rset *rset_smake(char *pat, int flg)
 	{ char *ss[1] = {pat}; return rset_make(1, ss, flg); }
 int rset_find(rset *re, char *s, int *grps, int flg);
 int rset_match(rset *rs, char *s, int flg);
@@ -244,10 +249,10 @@ else \
 int uc_wid(int c);
 int uc_slen(char *s);
 char *uc_chrn(char *s, int off, int *n);
-static char *uc_chr(char *s, int off) { int n; return uc_chrn(s, off, &n); }
+static NEXTVI_UNUSED char *uc_chr(char *s, int off) { int n; return uc_chrn(s, off, &n); }
 int uc_off(char *s, int off);
 char *uc_subl(char *s, int beg, int end, int *rlen);
-static char *uc_sub(char *s, int beg, int end)
+static NEXTVI_UNUSED char *uc_sub(char *s, int beg, int end)
 	{ int l; return uc_subl(s, beg, end, &l); }
 char *uc_dup(const char *s);
 #define uc_isspace(s) ((unsigned char)*s < 0x7f && isspace((unsigned char)*s))
