@@ -611,9 +611,15 @@ static void vi_insert_screen_leave(void)
 	vi_insert_saved_xrows = 0;
 	vi_insert_status_dirty = 1;
 }
+
+static int vi_insert_screen_active(void)
+{
+	return vi_insert_saved_xrows != 0;
+}
 #else
 static void vi_insert_screen_enter(void) {}
 static void vi_insert_screen_leave(void) {}
+static int vi_insert_screen_active(void) { return 0; }
 #endif
 
 /* redraw the screen */
@@ -1874,7 +1880,8 @@ static int vc_insert(int cmd)
 	}
 	lbuf_mark(xb, '^', xrow, xoff);
 	free(sb->s);
-	vi_insert_screen_leave();
+	if (key != LED_WORD_DELETE_REENTER)
+		vi_insert_screen_leave();
 	return key;
 }
 
@@ -2039,7 +2046,7 @@ void vi(int init)
 		topfix()
 		vi_col = vi_off2col(xb, xrow, xoff);
 		vi_drawagain(xtop);
-		if (!xmpt)
+		if (!xmpt && !vi_insert_screen_active())
 			vc_status(0);
 		term_pos(xrow - xtop, led_pos(lbuf_get(xb, xrow), vi_col));
 		term_cursor(1);
@@ -2453,6 +2460,14 @@ void vi(int init)
 				}
 				if (c != 'A' && c != 'C' && xoff > 0)
 					xoff--;
+				if (k == LED_WORD_DELETE_REENTER) {
+					xleft = 0;
+					vi_mod |= 1;
+					if (vi_smart_insert == 1)
+						vi_smart_insert = 0;
+					term_push("bdwi", 4);
+					break;
+				}
 				if (TK_INT(k)) {
 					xleft = 0;
 					vi_mod |= 1;
@@ -2659,14 +2674,14 @@ void vi(int init)
 		vi_draweof(olen);
 		if (vi_mod & 2 && !(vi_mod & 1))
 			vi_drawrow(xrow);
-		if (vi_defer_status >= 0) {
+		if (!vi_insert_screen_active() && vi_defer_status >= 0) {
 			k = vi_defer_status;
 			vi_defer_status = -1;
 			vc_status(k);
 			if (vi_status && xmpt > 0)
 				xmpt = 0;
 		}
-		if (vi_status && xmpt < 1) {
+		if (!vi_insert_screen_active() && vi_status && xmpt < 1) {
 			xrows -= term_resized != vi_status;
 			vi_status = term_resized;
 			vc_status(vi_tsm);
@@ -2674,7 +2689,7 @@ void vi(int init)
 				xmpt = 0;
 		}
 #ifdef NEXTVI_NOTERM
-		if (vi_insert_status_dirty) {
+		if (!vi_insert_screen_active() && vi_insert_status_dirty) {
 			vi_insert_status_dirty = 0;
 			vc_status(vi_tsm);
 		}

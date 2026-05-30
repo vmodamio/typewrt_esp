@@ -319,6 +319,7 @@ static void led_printparts(sbuf *sb, int pre, int ps,
 #define LED_REFLOW	-4
 #define LED_HARDSEP	-5
 #define LED_SMARTKEY	-6
+#define LED_WORD_DELETE_REENTER	-7
 
 static int led_wrap_ps;
 static int led_wrap_hidden_sep;
@@ -778,7 +779,7 @@ static int led_line(sbuf *sb, int ps, int pre, char **post, int *postn, char **p
 					return hkey;
 			}
 			else if (ai_max >= 0)
-				term_push("bdwi", 5);
+				return LED_WORD_DELETE_REENTER;
 			break;
 		case TK_CTL('t'):
 			cs = uc_dup(sb->s + ps);
