@@ -23,6 +23,7 @@
 #include "zap-vga16-raw-neg.h"
 
 #define PSF_GLYPH_SIZE TYPEWRT_FONT_HEIGHT
+#define PSF_GLYPH_WIDTH 8
 
 #define SHARPMEM_BIT_WRITECMD (0x01)
 #define SHARPMEM_BIT_CLEAR (0x04)
@@ -225,6 +226,26 @@ static void updatePhysicalLine(uint16_t physical_line) {
   sharpmem_finish_write(&t, 1);
 }
 
+static void updatePhysicalRange(int first_line, int last_line)
+{
+  spi_transaction_t t;
+
+  if (first_line < 0) {
+    first_line = 0;
+  }
+  if (last_line >= PXHEIGHT) {
+    last_line = PXHEIGHT - 1;
+  }
+  if (first_line > last_line) {
+    return;
+  }
+  sharpmem_start_write(&t, 1);
+  for (int physical_line = first_line; physical_line <= last_line; physical_line++) {
+    sharpmem_send_physical_line(&t, (uint16_t)physical_line);
+  }
+  sharpmem_finish_write(&t, 1);
+}
+
 static void displayLock(void)
 {
     if (display_lock) {
@@ -252,6 +273,76 @@ static void displayGlyph(uint8_t col, uint8_t row, uint8_t index)
     for (int m = 0; m < PSF_GLYPH_SIZE; m++) {
        sharpmem_buffer[((row * PSF_GLYPH_SIZE + m) * PXWIDTH + 8 * col) / 8] =
            zap_vga16_psf[index * PSF_GLYPH_SIZE + m];
+    }
+}
+
+static void displaySetPixel(int x, int y, int color)
+{
+    uint8_t *byte;
+    uint8_t mask;
+
+    if (x < 0 || x >= PXWIDTH || y < 0 || y >= PXHEIGHT) {
+        return;
+    }
+    byte = sharpmem_buffer + y * SHARPMEM_BYTES_PER_LINE + x / 8;
+    mask = (uint8_t)(1 << (x & 7));
+    if (color) {
+        *byte |= mask;
+    } else {
+        *byte &= (uint8_t)~mask;
+    }
+}
+
+static void displayFillRect(int x, int y, int w, int h, int color)
+{
+    int x2 = x + w;
+    int y2 = y + h;
+
+    if (x < 0) {
+        x = 0;
+    }
+    if (y < 0) {
+        y = 0;
+    }
+    if (x2 > PXWIDTH) {
+        x2 = PXWIDTH;
+    }
+    if (y2 > PXHEIGHT) {
+        y2 = PXHEIGHT;
+    }
+    if (x >= x2 || y >= y2) {
+        return;
+    }
+    if (x == 0 && x2 == PXWIDTH) {
+        for (int py = y; py < y2; py++) {
+            memset(sharpmem_buffer + py * SHARPMEM_BYTES_PER_LINE,
+                color ? 0xff : 0x00, SHARPMEM_BYTES_PER_LINE);
+        }
+        return;
+    }
+    for (int py = y; py < y2; py++) {
+        for (int px = x; px < x2; px++) {
+            displaySetPixel(px, py, color);
+        }
+    }
+}
+
+static void displayGlyphAt(int x, int y, uint8_t index, bool inverted)
+{
+    for (int m = 0; m < PSF_GLYPH_SIZE; m++) {
+        int py = y + m;
+        uint8_t bits;
+
+        if (py < 0 || py >= PXHEIGHT) {
+            continue;
+        }
+        bits = zap_vga16_psf[index * PSF_GLYPH_SIZE + m];
+        if (inverted) {
+            bits ^= 0xff;
+        }
+        for (int bit = 0; bit < PSF_GLYPH_WIDTH; bit++) {
+            displaySetPixel(x + bit, py, bits & (1 << bit));
+        }
     }
 }
 
@@ -384,6 +475,41 @@ static void renderGlyphRowMode(int physical_row, const char *glyphs, bool invert
     refreshDisplay();
 #else
     updateRow((uint8_t)physical_row);
+#endif
+}
+
+static void renderGlyphRowAt(int x, int y, const char *glyphs, int cols,
+    bool inverted)
+{
+    int first_line = y;
+    int last_line = y + PSF_GLYPH_SIZE - 1;
+
+    if (!sharpmem_buffer || y >= PXHEIGHT || last_line < 0) {
+        return;
+    }
+    if (cols > NEXTVI_DISPLAY_COLS) {
+        cols = NEXTVI_DISPLAY_COLS;
+    }
+    displayFillRect(0, y, PXWIDTH, PSF_GLYPH_SIZE, inverted ? 0 : 1);
+    for (int col = 0; col < cols; col++) {
+        unsigned char glyph = glyphs && glyphs[col] ? (unsigned char)glyphs[col] : ' ';
+        displayGlyphAt(x + col * PSF_GLYPH_WIDTH, y, glyph, inverted);
+    }
+    int first_row = first_line / PSF_GLYPH_SIZE;
+    int last_row = last_line / PSF_GLYPH_SIZE;
+    if (first_row < 0) {
+        first_row = 0;
+    }
+    if (last_row > NEXTVI_DISPLAY_ROWS) {
+        last_row = NEXTVI_DISPLAY_ROWS;
+    }
+    for (int row = first_row; row <= last_row; row++) {
+        markPhysicalRowRedrawn(row);
+    }
+#if TYPEWRT_REFRESH_FULL_DISPLAY
+    refreshDisplay();
+#else
+    updatePhysicalRange(first_line, last_line);
 #endif
 }
 
@@ -806,6 +932,22 @@ done:
     displayUnlock();
 }
 
+void nextvi_display_refresh_line_at(int row, int x, int y, const char *text,
+    int cols, int inverted)
+{
+    if (!sharpmem_buffer || row < 0 || row > NEXTVI_DISPLAY_ROWS) {
+        return;
+    }
+
+    displayLock();
+    copyDisplayShadow(row, text, cols);
+    if (splash_active) {
+        disableSplash();
+    }
+    renderGlyphRowAt(x, y, display_shadow[row], cols, inverted);
+    displayUnlock();
+}
+
 void nextvi_display_draw_hline(int y, int color)
 {
     if (!sharpmem_buffer || y < 0 || y >= PXHEIGHT) {
@@ -820,6 +962,50 @@ void nextvi_display_draw_hline(int y, int color)
         color ? 0xff : 0x00, SHARPMEM_BYTES_PER_LINE);
     markPhysicalRowRedrawn(y / PSF_GLYPH_SIZE);
     updatePhysicalLine((uint16_t)y);
+    displayUnlock();
+}
+
+void nextvi_display_draw_hline_bent(int y, int margin, int bend, int color)
+{
+	int left;
+	int right;
+	int first_line;
+	int last_line;
+
+	if (!sharpmem_buffer || y < 0 || y >= PXHEIGHT) {
+		return;
+	}
+    if (margin < 0) {
+        margin = 0;
+    }
+	if (bend < 0) {
+		bend = 0;
+	}
+	left = margin;
+	right = PXWIDTH - margin - 1;
+	if (left > right) {
+		return;
+	}
+	first_line = y;
+	last_line = y + bend;
+
+	displayLock();
+	if (splash_active) {
+		disableSplash();
+	}
+	displayFillRect(0, first_line, PXWIDTH, last_line - first_line + 1, 1);
+	for (int x = left; x <= right; x++) {
+		displaySetPixel(x, y, color);
+	}
+	for (int i = 1; i <= bend; i++) {
+		displaySetPixel(left, y + i, color);
+		displaySetPixel(right, y + i, color);
+	}
+    for (int row = first_line / PSF_GLYPH_SIZE;
+            row <= last_line / PSF_GLYPH_SIZE && row <= NEXTVI_DISPLAY_ROWS; row++) {
+        markPhysicalRowRedrawn(row);
+    }
+    updatePhysicalRange(first_line, last_line);
     displayUnlock();
 }
 

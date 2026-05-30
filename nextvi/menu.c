@@ -20,6 +20,10 @@
 #define MENU_FIRST_ROW		2
 #define MENU_BOTTOM_ROW		NEXTVI_DISPLAY_ROWS
 #define MENU_VISIBLE_ROWS	(NEXTVI_DISPLAY_ROWS - 2)
+#define MENU_MARGIN_PX		4
+#define MENU_SEPARATOR_BEND_PX	2
+#define MENU_LIST_Y_SHIFT	4
+#define MENU_STATUS_COLS	(NEXTVI_DISPLAY_COLS - 1)
 #define MENU_FS_ROOT		NEXTVI_FS_ROOT
 #define MENU_SYNC_MAX		64
 #define MENU_DIR_STATE_MAX	32
@@ -114,6 +118,30 @@ static void menu_draw_row(int row, const char *text, int inverted)
 		nextvi_display_refresh_line_inverted(row, line, NEXTVI_DISPLAY_COLS);
 	else
 		nextvi_display_refresh_line(row, line, NEXTVI_DISPLAY_COLS);
+}
+
+static void menu_draw_list_row(int row, const char *text, int inverted)
+{
+	char line[NEXTVI_DISPLAY_COLS + 1];
+	menu_line(line, text);
+	nextvi_display_refresh_line_at(row, 0,
+		row * NEXTVI_FONT_HEIGHT - MENU_LIST_Y_SHIFT,
+		line, NEXTVI_DISPLAY_COLS, inverted);
+}
+
+static void menu_clear_list_bottom_gap(void)
+{
+	int bottom_y = MENU_BOTTOM_ROW * NEXTVI_FONT_HEIGHT;
+	for (int y = bottom_y - MENU_LIST_Y_SHIFT; y < bottom_y; y++)
+		nextvi_display_draw_hline(y, 1);
+}
+
+static void menu_draw_status_line(int row, const char *text, int inverted)
+{
+	char line[NEXTVI_DISPLAY_COLS + 1];
+	menu_line(line, text);
+	nextvi_display_refresh_line_at(row, MENU_MARGIN_PX,
+		row * NEXTVI_FONT_HEIGHT, line, MENU_STATUS_COLS, inverted);
 }
 
 static void menu_format_size(char *out, int out_len, uint64_t bytes)
@@ -777,18 +805,18 @@ static int menu_update_top_status(menu_state *m, int force)
 			pct_value = 100;
 		snprintf(pct, sizeof(pct), "%d%%", pct_value);
 	}
-	power_col = NEXTVI_DISPLAY_COLS - 2 - strlen(pct);
+	power_col = MENU_STATUS_COLS - 2 - strlen(pct);
 	if (power_col < 0)
 		power_col = 0;
 	pct_col = power_col + 2;
 	for (int i = 0; date[i] && i < power_col - 1; i++)
 		line[i] = date[i];
-	clock_col = (NEXTVI_DISPLAY_COLS - (int)strlen(clock)) / 2;
+	clock_col = (MENU_STATUS_COLS - (int)strlen(clock)) / 2;
 	for (int i = 0; clock[i] && clock_col + i < power_col - 1; i++)
 		if (clock_col + i >= 0)
 			line[clock_col + i] = clock[i];
 	line[power_col] = power_state;
-	for (int i = 0; pct[i] && pct_col + i < NEXTVI_DISPLAY_COLS; i++)
+	for (int i = 0; pct[i] && pct_col + i < MENU_STATUS_COLS; i++)
 		line[pct_col + i] = pct[i];
 
 	changed = !m->top_valid || strcmp(m->top_line, line) ||
@@ -803,19 +831,19 @@ static int menu_update_top_status(menu_state *m, int force)
 static void menu_draw_top(menu_state *m, int force)
 {
 	menu_update_top_status(m, force);
-	nextvi_display_refresh_line(MENU_TOP_ROW, m->top_line,
-		NEXTVI_DISPLAY_COLS);
+	menu_draw_status_line(MENU_TOP_ROW, m->top_line, 0);
 	menu_draw_row(MENU_SPACER_ROW, "", 0);
-	nextvi_display_draw_hline(NEXTVI_FONT_HEIGHT + 3, 0);
+	nextvi_display_draw_hline_bent(NEXTVI_FONT_HEIGHT + 3,
+		MENU_MARGIN_PX, MENU_SEPARATOR_BEND_PX, 0);
 }
 
 static void menu_draw_top_if_changed(menu_state *m)
 {
 	if (!menu_update_top_status(m, 0))
 		return;
-	nextvi_display_refresh_line(MENU_TOP_ROW, m->top_line,
-		NEXTVI_DISPLAY_COLS);
-	nextvi_display_draw_hline(NEXTVI_FONT_HEIGHT + 3, 0);
+	menu_draw_status_line(MENU_TOP_ROW, m->top_line, 0);
+	nextvi_display_draw_hline_bent(NEXTVI_FONT_HEIGHT + 3,
+		MENU_MARGIN_PX, MENU_SEPARATOR_BEND_PX, 0);
 }
 
 static void menu_schedule_status_wakeup(void)
@@ -965,9 +993,10 @@ static void menu_draw(menu_state *m)
 			menu_line(line, "empty");
 		else
 			menu_line(line, "");
-		menu_draw_row(MENU_FIRST_ROW + row, line,
+		menu_draw_list_row(MENU_FIRST_ROW + row, line,
 			idx == m->cursor && m->count);
 	}
+	menu_clear_list_bottom_gap();
 	if (m->message[0]) {
 		menu_line(line, m->message);
 		m->message[0] = '\0';
@@ -979,8 +1008,7 @@ static void menu_draw(menu_state *m)
 	if (m->bottom_message_active)
 		nextvi_display_refresh_line(MENU_BOTTOM_ROW, line, NEXTVI_DISPLAY_COLS);
 	else
-		nextvi_display_refresh_line_inverted(MENU_BOTTOM_ROW, line,
-			NEXTVI_DISPLAY_COLS);
+		menu_draw_status_line(MENU_BOTTOM_ROW, line, 1);
 }
 
 static void menu_draw_bottom_path(menu_state *m)
@@ -988,8 +1016,7 @@ static void menu_draw_bottom_path(menu_state *m)
 	char line[NEXTVI_DISPLAY_COLS + 1];
 
 	menu_visible_path(line);
-	nextvi_display_refresh_line_inverted(MENU_BOTTOM_ROW, line,
-		NEXTVI_DISPLAY_COLS);
+	menu_draw_status_line(MENU_BOTTOM_ROW, line, 1);
 	m->bottom_message_active = 0;
 }
 
@@ -1543,12 +1570,12 @@ static void menu_draw_buffer_picker(menu_state *m, int cursor, int top)
 			menu_line(line, "no buffers");
 		else
 			menu_line(line, "");
-		menu_draw_row(MENU_FIRST_ROW + row, line,
+		menu_draw_list_row(MENU_FIRST_ROW + row, line,
 			idx == cursor && idx < xbufcur);
 	}
+	menu_clear_list_bottom_gap();
 	menu_line(line, "buffers");
-	nextvi_display_refresh_line_inverted(MENU_BOTTOM_ROW, line,
-		NEXTVI_DISPLAY_COLS);
+	menu_draw_status_line(MENU_BOTTOM_ROW, line, 1);
 }
 
 static int menu_buffer_picker(menu_state *m)
@@ -1650,12 +1677,12 @@ static void menu_draw_gmark_picker(menu_state *m, int cursor, int top)
 			menu_render_gmark(line, idx);
 		else
 			menu_line(line, "");
-		menu_draw_row(MENU_FIRST_ROW + row, line,
+		menu_draw_list_row(MENU_FIRST_ROW + row, line,
 			idx == cursor && idx < VI_GMARKS);
 	}
+	menu_clear_list_bottom_gap();
 	menu_line(line, "global marks");
-	nextvi_display_refresh_line_inverted(MENU_BOTTOM_ROW, line,
-		NEXTVI_DISPLAY_COLS);
+	menu_draw_status_line(MENU_BOTTOM_ROW, line, 1);
 }
 
 static int menu_gmark_any(void)

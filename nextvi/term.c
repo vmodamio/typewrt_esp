@@ -589,10 +589,29 @@ __attribute__((weak)) void nextvi_display_refresh_line_attrs(int row,
 	nextvi_display_refresh_line(row, text, cols);
 }
 
+__attribute__((weak)) void nextvi_display_refresh_line_at(int row, int x, int y,
+	const char *text, int cols, int inverted)
+{
+	(void)x;
+	(void)y;
+	if (inverted)
+		nextvi_display_refresh_line_inverted(row, text, cols);
+	else
+		nextvi_display_refresh_line(row, text, cols);
+}
+
 __attribute__((weak)) void nextvi_display_draw_hline(int y, int color)
 {
 	(void)y;
 	(void)color;
+}
+
+__attribute__((weak)) void nextvi_display_draw_hline_bent(int y, int margin,
+	int bend, int color)
+{
+	(void)margin;
+	(void)bend;
+	nextvi_display_draw_hline(y, color);
 }
 
 __attribute__((weak)) void nextvi_display_refresh_cursor(int row, int col, int on)

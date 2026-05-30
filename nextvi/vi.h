@@ -305,7 +305,10 @@ void nextvi_display_refresh_line(int row, const char *text, int cols);
 void nextvi_display_refresh_line_inverted(int row, const char *text, int cols);
 void nextvi_display_refresh_line_attrs(int row, const char *text,
 	const unsigned char *attrs, int cols);
+void nextvi_display_refresh_line_at(int row, int x, int y, const char *text,
+	int cols, int inverted);
 void nextvi_display_draw_hline(int y, int color);
+void nextvi_display_draw_hline_bent(int y, int margin, int bend, int color);
 void nextvi_display_refresh_cursor(int row, int col, int on);
 void nextvi_display_move_cursor(int old_row, int old_col,
 	int new_row, int new_col, int on);
