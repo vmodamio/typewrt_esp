@@ -102,7 +102,9 @@ VI NORMAL
      <^C>          Toggle show line motion numbers for <l h e b E B w W>
      {1-5}<^C>     Select line motion number mode 1-5
      <^V>          Loop through line motion number modes
-     [#]<^R>       Redo # times
+     [#]<^R>
+     [#]<C-S-Tab>
+                   Redo # times
      [#]u          Undo # times
      <^I>
      <Tab>
@@ -178,7 +180,9 @@ VI NORMAL
      <^^>
      <^6>
                    Swap to previous buffer
-     [#]<^N>       Swap to next buffer, # changes direction [forward backward]
+     [#]<^N>
+     [#]<Ctrl-Tab>
+                   Swap to next buffer, # changes direction [forward backward]
      \             Swap to /fm/ buffer b-2
      {#}\          Refresh secondary directory listing in b-2
      vb            Recurse into b-1 history buffer. Insert current line intog
@@ -252,8 +256,12 @@ VI/EX INSERT
                    the mark
      <^G>          Index current buffer for autocomplete
      <^Y>          Reset all indexed autocomplete data
-     <^R>          Loop through autocomplete options backward
-     <^N>          Loop through autocomplete options forward
+     <^R>
+     <C-S-Tab>
+                   Loop through autocomplete options backward
+     <^N>
+     <Ctrl-Tab>
+                   Loop through autocomplete options forward
      <^B>          Print autocomplete options when in vi insert
      <^B>          Recurse into b-1 history buffer when in ex prompt. Insert
                    current line into ex prompt on exit
@@ -268,6 +276,10 @@ VI/EX INSERT
      <Alt-f>       Switch to French keymap
      <Alt-t>       Switch to Turkish keymap
      <Alt-k>       Switch to Colemak keymap
+                   Keymaps apply to insert mode and prompts. Vi normal-mode
+                   command letters stay on the physical English layout, while
+                   character arguments such as f, F, t, T, and r use the
+                   selected keymap.
      <^V>{arg}     Read a literal character arg
      <^K>{arg}     Read a digraph sequence arg
      <^C>

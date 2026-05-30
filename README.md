@@ -27,6 +27,11 @@ The old `z1`, `z2`, `ze`, and `zf` keymap commands are no longer used. Layouts
 that place accents on dead keys compose in insert and prompt input before the text
 is written to the file.
 
+Keymap changes are intentionally text-entry scoped: insert mode and prompts use
+the selected layout, while vi normal-mode command letters stay on the physical
+English layout for command muscle memory. Character arguments typed after normal
+commands such as `f`, `F`, `t`, `T`, and `r` use the selected layout.
+
 After a layout switch, the status row briefly shows the active layout, for example
 `Keyboard [es]`. Press `Alt-Space` to open the keyboard layout helper for the
 current layout. The helper shows the normal and shifted key layers, including the

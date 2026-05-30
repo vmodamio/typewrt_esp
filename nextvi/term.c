@@ -246,9 +246,7 @@ static void noterm_keyboard_help_draw(void)
 	nextvi_display_refresh_line(12,
 		"Dead: ¨+u=ü  ´+e=é  `+a=à  ^+o=ô",
 		NEXTVI_DISPLAY_COLS);
-	nextvi_display_refresh_line(13,
-		"Ctrl-Tab=Ctrl-N  C-S-Tab=Ctrl-R",
-		NEXTVI_DISPLAY_COLS);
+	nextvi_display_refresh_line(13, "", NEXTVI_DISPLAY_COLS);
 	noterm_refresh_centered_line(NEXTVI_DISPLAY_ROWS, "press any key");
 }
 

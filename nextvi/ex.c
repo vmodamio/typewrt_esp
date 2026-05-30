@@ -531,7 +531,10 @@ static const char help_insert[] =
 "Alt-g         German\n"
 "Alt-f         French\n"
 "Alt-t         Turkish\n"
-"Alt-k         Colemak\n";
+"Alt-k         Colemak\n"
+"Layouts apply to insert/prompts.\n"
+"Normal command letters stay US.\n"
+"f/F/t/T/r args use keymap.\n";
 
 static const char help_ex[] =
 "HELP EX\n"
