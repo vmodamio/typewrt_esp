@@ -101,6 +101,7 @@ static void bufs_make_blank(int idx)
 
 static void bufs_free(int idx)
 {
+	vi_repeat_drop(bufs[idx].lb);
 	free(bufs[idx].path);
 	lbuf_free(bufs[idx].lb);
 }

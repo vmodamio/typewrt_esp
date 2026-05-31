@@ -319,6 +319,7 @@ void typewrt_display_battery_low_dismiss(void);
 #define nextvi_display_note_insert()
 #endif
 void nextvi_main(int argc, char *argv[]);
+void vi_repeat_drop(struct lbuf *lb);
 void term_init(void);
 void term_done(void);
 void term_clean(void);
@@ -335,7 +336,13 @@ int term_read_timeout(int winch, int timeout_ms);
 void term_commit(void);
 void term_push(char *s, unsigned int n);
 void term_back(int c);
-#define term_dec() ibuf_pos--; icmd_pos--;
+#define term_dec() \
+{ \
+	if (ibuf_pos) \
+		ibuf_pos--; \
+	if (icmd_pos) \
+		icmd_pos--; \
+}
 #define term_exec(s, n, type) \
 { \
 	preserve(int, ibuf_cnt,) \

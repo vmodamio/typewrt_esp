@@ -1929,12 +1929,14 @@ static int vc_put(int cmd)
 	if (buf->s[buf->s_n-1] == '\n' || strchr(buf->s, '\n')) {
 		for (i = 0; i < cnt; i++)
 			sbufn_mem(sb, buf->s, buf->s_n)
+		int lines = vi_linecount(sb->s);
 		if (!lbuf_len(xb))
 			lbuf_edit(xb, "\n", 0, 0, 0, 0);
 		if (cmd == 'p')
 			xrow++;
 		lbuf_edit(xb, sb->s, xrow, xrow, 0, 0);
 		xoff = lbuf_indents(xb, xrow);
+		vi_hardwrap_range(xrow, lines);
 		free(sb->s);
 		return 1;
 	}
@@ -1947,6 +1949,7 @@ static int vc_put(int cmd)
 	sbufn_str(sb, rstate->chrs[off])
 	xoff = off + uc_slen(buf->s) * cnt - 1;
 	lbuf_edit(xb, sb->s, xrow, xrow + 1, off, xoff);
+	vi_hardwrap_range(xrow, vi_linecount(sb->s));
 	free(sb->s);
 	return 1;
 }
@@ -2001,10 +2004,36 @@ static int vc_replace(void)
 }
 
 static char rep_cmd[sizeof(icmd)];	/* the last command */
+static struct lbuf *rep_lb;
 static int rep_len;
+
+static void vc_repeat_reset(void)
+{
+	rep_lb = NULL;
+	rep_len = 0;
+}
+
+void vi_repeat_drop(struct lbuf *lb)
+{
+	if (rep_lb == lb)
+		vc_repeat_reset();
+}
+
+static void vc_repeat_save(void)
+{
+	if (icmd_pos > sizeof(rep_cmd)) {
+		vc_repeat_reset();
+		return;
+	}
+	memcpy(rep_cmd, icmd, icmd_pos);
+	rep_lb = xb;
+	rep_len = icmd_pos;
+}
 
 static void vc_repeat(void)
 {
+	if (!rep_len || rep_lb != xb)
+		return;
 	for (int i = 0; i < MAX(1, vi_arg); i++)
 		term_push(rep_cmd, rep_len);
 }
@@ -2281,7 +2310,7 @@ void vi(int init)
 					while (vi_arg) {
 						term_push("j", 1);
 						term_push(rep_cmd, rep_len);
-						if (strchr("iIoOaAsScC", rep_cmd[0])) {
+						if (rep_len && strchr("iIoOaAsScC", rep_cmd[0])) {
 							term_push("0", 1);
 							if (noff)
 								vi_argcmd(noff, 'l');
@@ -2591,7 +2620,8 @@ void vi(int init)
 			case 'S':
 				term_push("cc", 2);
 				motion:
-				icmd_pos--;
+				if (icmd_pos)
+					icmd_pos--;
 				goto re_motion;
 			case 'r':
 				vi_mod |= vc_replace();
@@ -2647,8 +2677,7 @@ void vi(int init)
 				vi_mod |= 1;
 			if (strchr("!<>AIJKOPRacdiopry", c)) {
 				rep:
-				memcpy(rep_cmd, icmd, icmd_pos);
-				rep_len = icmd_pos;
+				vc_repeat_save();
 			}
 			if (vi_smart_insert == 1)
 				vi_smart_insert_return();
