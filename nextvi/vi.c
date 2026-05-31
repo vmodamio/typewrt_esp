@@ -860,6 +860,34 @@ static void vi_hardwrap_emit(sbuf *out, char *txt, int cursor,
 	sbuf_null(out)
 }
 
+static int vi_hist_current_seq(void)
+{
+	return xseq >= 0 && xb->hist_u > 0 &&
+		xb->hist[xb->hist_u - 1].seq == xb->useq;
+}
+
+static void vi_hardwrap_undo_anchor(int beg)
+{
+	struct lopt *lo;
+
+	if (xseq < 0 || vi_hist_current_seq())
+		return;
+	/* Keep reflow-only undo from restoring the cursor to the block start. */
+	lo = lbuf_opt(xb, xrow, xoff, 0);
+	lbuf_smark(xb, lo, beg, 0);
+	lbuf_emark(xb, lo, beg, 0);
+}
+
+static void vi_hardwrap_redo_anchor(int row, int off)
+{
+	struct lopt *lo;
+
+	if (!vi_hist_current_seq())
+		return;
+	lo = lbuf_opt(xb, row, off, 0);
+	(void)lo;
+}
+
 static int vi_hardwrap_reflow(int row)
 {
 	int beg = row, end, cur = 0, cursor = 0, nrow = -1, noff = 0;
@@ -924,12 +952,14 @@ static int vi_hardwrap_reflow(int row)
 		if (*s++ == '\n')
 			new_lines++;
 	new_lines = MAX(new_lines, 1);
+	vi_hardwrap_undo_anchor(beg);
 	lbuf_edit(xb, out->s, beg, end, 0, noff);
 	if (has_cursor) {
 		xrow = nrow;
 		xoff = noff;
 	} else if (xrow >= end)
 		xrow += new_lines - old_lines;
+	vi_hardwrap_redo_anchor(xrow, xoff);
 	free(out->s);
 	free(txt->s);
 	return 1;
