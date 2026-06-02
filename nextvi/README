@@ -110,7 +110,7 @@ VI NORMAL
      [#]u          Undo # times
      <^I>
      <Tab>
-                   Open file path from cursor to end of line
+                   Open existing file path under cursor
      <^K>          Write current buffer to file. Force write on 2nd attempt
      [#]<^W>{arg}  Unindent arg region # times
      [#]<{arg}     Indent left arg region # times

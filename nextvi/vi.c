@@ -1072,6 +1072,7 @@ static int vi_search(int cmd, int cnt, int *row, int *off, int msg)
 }
 
 static int vi_gmark_key(int key, int *row, int *off);
+static void vc_status_defer(int type);
 
 /* read a line motion */
 static int vi_motionln(int *row, int cmd, int cnt)
@@ -1147,6 +1148,79 @@ static char *vi_curword(struct lbuf *lb, int row, int off, int n, int ex)
 	} else
 		ex_regesc(sb, chrs[off], chrs[end], ex);
 	sbufn_ret(sb, sb->s)
+}
+
+static int vi_pathdelim(char *c)
+{
+	unsigned char ch = (unsigned char)c[0];
+
+	return !ch || ch == '\n' || isspace(ch) ||
+		strchr("\"'`()[]{}<>", ch);
+}
+
+static char *vi_curpath(void)
+{
+	char *ln = lbuf_get(xb, xrow);
+	char *beg, *end, *cur, *path;
+	int off, len;
+
+	if (!ln)
+		return NULL;
+	off = ren_noeol(ln, xoff);
+	cur = rstate->chrs[off];
+	if (vi_pathdelim(cur))
+		return NULL;
+	beg = cur;
+	while (beg > ln) {
+		char *prev = uc_beg(ln, beg - 1);
+		if (vi_pathdelim(prev))
+			break;
+		beg = prev;
+	}
+	end = cur;
+	while (!vi_pathdelim(end))
+		end += uc_len(end);
+	len = end - beg;
+	if (!len)
+		return NULL;
+	path = emalloc(len + 1);
+	memcpy(path, beg, len);
+	path[len] = '\0';
+	return path;
+}
+
+static int vi_open_curpath(void)
+{
+	struct stat st;
+	char *path, *fspath;
+	int ret;
+
+	path = vi_curpath();
+	if (!path) {
+		vi_drawmsg_mpt("no file under cursor")
+		return 0;
+	}
+	fspath = ex_pathresolve(path);
+	ret = stat(fspath, &st);
+	free(fspath);
+	if (ret < 0) {
+		free(path);
+		vi_drawmsg_mpt("file not found")
+		return 0;
+	}
+	if (!S_ISREG(st.st_mode)) {
+		free(path);
+		vi_drawmsg_mpt("not a regular file")
+		return 0;
+	}
+	ret = ex_edit(path, strlen(path));
+	free(path);
+	if (ret < 0) {
+		vi_drawmsg_mpt("open failed")
+		return 0;
+	}
+	vc_status_defer(0);
+	return 1;
 }
 
 static void vi_regput(int c, const char *s, int lnmode)
@@ -2220,13 +2294,8 @@ void vi(int init)
 				vi_mod |= 4;
 				break;
 			case TK_CTL('i'): {
-				if (!(ln = lbuf_get(xb, xrow)))
-					break;
-				ln += xoff;
-				char buf[strlen(ln)+4];
-				strcpy(buf, ":e ");
-				strcpy(buf+3, ln);
-				term_push(buf, strlen(ln)+3);
+				if (vi_open_curpath())
+					vi_mod |= 1;
 				break; }
 			case TK_CTL('n'):
 			{
