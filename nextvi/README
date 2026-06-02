@@ -92,6 +92,8 @@ VI NORMAL
      [#]<^U>       Scroll up half a screen size. If [#], set scroll to # lines
      <^B>          Scroll up full screen size
      <^F>          Scroll down full screen size
+     <Cmd>         Scroll down full screen size, keeping cursor row
+     <Ctrl-Cmd>    Scroll up full screen size, keeping cursor row
      V             Enter visual mode. In visual mode, V toggles show hidden
                    characters:<Space Tab Newline>
      <ESC>         Exit visual mode

@@ -1980,6 +1980,16 @@ static void vi_scrollbackward(int cnt)
 	xrow = MIN(xrow, xtop + xrows - 1);
 }
 
+static void vi_scrollfixed(int dir, int cnt)
+{
+	int srow = xrow - xtop;
+	int maxrow = MAX(0, lbuf_len(xb) - 1);
+	int maxtop = MAX(0, maxrow - srow);
+
+	xtop = dir > 0 ? MIN(maxtop, xtop + cnt) : MAX(0, xtop - cnt);
+	xrow = MIN(maxrow, xtop + srow);
+}
+
 static int vc_replace(void)
 {
 	int cnt = MAX(1, vi_arg);
@@ -2157,10 +2167,18 @@ void vi(int init)
 			case TK_MENU:
 				xquit = !xquit ? 1 : xquit;
 				continue;
+			case TK_SMART_CTRL:
+				vi_scrollfixed(-1, MAX(1, vi_arg) * (xrows - 1));
+				xoff = vi_col2off(xb, xrow, vi_col);
+				break;
 			case TK_CTL('b'):
 				vi_scrollbackward(MAX(1, vi_arg) * (xrows - 1));
 				xoff = lbuf_indents(xb, xrow);
 				vi_mod |= 4;
+				break;
+			case TK_SMART:
+				vi_scrollfixed(+1, MAX(1, vi_arg) * (xrows - 1));
+				xoff = vi_col2off(xb, xrow, vi_col);
 				break;
 			case TK_CTL('f'):
 				vi_scrollforward(MAX(1, vi_arg) * (xrows - 1));

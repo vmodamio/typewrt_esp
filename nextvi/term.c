@@ -26,6 +26,8 @@ static int noterm_overlay_row = -1;
 static void noterm_modifier(unsigned char ev);
 
 #define NOTERM_KEY_MENU 55	/* KBDMAP[62], dedicated typewriter menu key */
+#define NOTERM_SIDE_LEFT 1
+#define NOTERM_SIDE_RIGHT 2
 
 /* Aligned with the compact key codes produced by KBDMAP in typewrt_keymap.h. */
 static const unsigned char key_normal[64] = {
@@ -470,8 +472,15 @@ static void noterm_modifier(unsigned char ev)
 		state = &key_ctrl;
 	else if (bit == NEXTVI_MOD_ALT)
 		state = &key_alt;
-	else if (bit == NEXTVI_MOD_WIN)
-		state = &key_win;
+	else if (bit == NEXTVI_MOD_WIN) {
+		int side = (ev & NEXTVI_KEY_SIDE) ?
+			NOTERM_SIDE_RIGHT : NOTERM_SIDE_LEFT;
+		if (ev & NEXTVI_KEY_PRESS)
+			key_win |= side;
+		else
+			key_win &= ~side;
+		return;
+	}
 	*state = !!(ev & NEXTVI_KEY_PRESS);
 }
 
@@ -522,10 +531,12 @@ static int noterm_key_event_timeout(int timeout_ms)
 		if (ev & NEXTVI_KEY_MODIFIER) {
 			int old_win = key_win;
 			int bit = noterm_modifier_bit(ev);
+			int side = (ev & NEXTVI_KEY_SIDE) ?
+				NOTERM_SIDE_RIGHT : NOTERM_SIDE_LEFT;
 			noterm_modifier(ev);
 			if (bit == NEXTVI_MOD_WIN && (ev & NEXTVI_KEY_PRESS) &&
-					!old_win)
-				return TK_SMART;
+					!(old_win & side))
+				return key_ctrl ? TK_SMART_CTRL : TK_SMART;
 			continue;
 		}
 		if (!(ev & NEXTVI_KEY_PRESS))

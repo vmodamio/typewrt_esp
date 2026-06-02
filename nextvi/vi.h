@@ -365,6 +365,8 @@ void term_back(int c);
 #define TK_MENU		0xff
 #define TK_SMART	0xfe
 #define TK_INT(c)	(!c || c == TK_ESC || c == TK_CTL('c') || c == TK_MENU)
+#define TK_SMART_CTRL	0xfd
+#define TK_SMART_ANY(c)	((c) == TK_SMART || (c) == TK_SMART_CTRL)
 
 /* led.c: line-oriented input and output */
 void led_modeswap(void);

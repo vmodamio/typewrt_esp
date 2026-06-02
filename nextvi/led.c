@@ -721,7 +721,7 @@ static int led_line(sbuf *sb, int ps, int pre, char **post, int *postn, char **p
 		len = sb->s_n;
 		int queued = ibuf_pos < ibuf_cnt;
 		c = term_read(TK_CTL('l'));
-		if (!queued && ai_max >= 0 && c == TK_SMART) {
+		if (!queued && ai_max >= 0 && TK_SMART_ANY(c)) {
 			if (icmd_pos)
 				icmd_pos--;
 			if (icmd_pos < sizeof(icmd))
@@ -956,7 +956,7 @@ static int led_line(sbuf *sb, int ps, int pre, char **post, int *postn, char **p
 			}
 			continue; }
 		default:
-			if (c == TK_SMART)
+			if (TK_SMART_ANY(c))
 				continue;
 			if (TK_INT(c))
 				return c;
