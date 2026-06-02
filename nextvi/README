@@ -185,8 +185,6 @@ VI NORMAL
      [#]<^N>
      [#]<Ctrl-Tab>
                    Swap to next buffer, # changes direction [forward backward]
-     \             Swap to /fm/ buffer b-2
-     {#}\          Refresh secondary directory listing in b-2
      vb            Recurse into b-1 history buffer. Insert current line intog
                    ex prompt on exit
      <Alt-e>       Switch to English keymap
@@ -207,11 +205,6 @@ VI NORMAL
      *             Regex search, no center, wraparound move [up down]
      {#}*
      {#}<^A>       Regex search, set keyword to # words from cursor
-     <^]>          Filesystem regex search forward based on directory listing
-                   in b-2. Sets global line mark 0 for <^P> fallback
-     {#}<^]>       Filesystem regex search forward, set keyword to # words
-                   from cursor
-     [#]<^P>       Filesystem regex search backward
      <^L>          Force redraw whole screen and update terminal dimensions
 
 VI REGIONS
@@ -310,8 +303,8 @@ EX PARSING
      Examples:
      :evi.c
              Evaluates to ":e vi.c"
-     :efbc
-             Evaluates to ":ef bc" not ":e fbc"
+     :wqout.txt
+             Evaluates to ":wq out.txt" not ":w qout.txt"
      :e  vi.c
              Edit " vi.c". <pad> is required
 
@@ -674,23 +667,6 @@ EX COMMANDS
 
              No argument re-reads the current buffer from the filesystem.
 
-     [vrange]ef[regex]
-             Open file using fuzzy search prompt
-
-             Requires the b-2 buffer to have a directory listing backfilled.
-
-             Example: backfill b-2 using :fd
-             :fd
-             Prompt behavior is equivalent to the :f command.
-
-             Example: enter prompt & print entire listing
-             :ef
-             Example: search for pathname containing "v"
-             :ef v
-
-     [vrange]ef![regex]
-             Forced version of :ef
-
      [range]r[path]
              Read a file
 
@@ -745,8 +721,6 @@ EX COMMANDS
              :b5
              Example: switch to the /hist/ ex history buffer
              :b-1
-             Example: switch to the /fm/ directory listing buffer
-             :b-2
              Example: switch to the /sc/ scratch buffer
              :b-3
              Example: switch to the /help/ help buffer
@@ -790,14 +764,6 @@ EX COMMANDS
              Currently open buffers' file paths will be automatically adjusted
              to reflect a newly set working directory.
 
-     fp[path]
-             Clear or set a secondary directory path
-
-     fd[path]
-             Calculate directory listing in b-2 buffer
-
-             No argument uses secondary or a working directory path.
-
      rtc[datetime]
              Embedded RTC command for the Typewrt ESP-IDF backend
 
@@ -812,16 +778,6 @@ EX COMMANDS
              :rtc 2026-05-10 22.45.00
              Example: alternate time separator
              :rtc 2026-05-10 22 45 00
-
-     inc[regex]
-             Include regex for :fd calculation
-
-             No argument disables the filter.
-
-             Example: include only files in submodule directory that end with .c
-             :inc submodule.*\.c$
-             Example: exclude .git and submodule folders
-             :inc (^(?\:(?\!^\.git|^submodule).)+[^/]+$)
 
      help[topic]
              Open built-in help in the /help/ temporary buffer.
@@ -884,8 +840,6 @@ EX COMMANDS
              :$? u
              Example: repeat chain of ex commands 10 times
              :10? 1p\:5p\:10p
-             Example: calculate directory only if :cd succeeded
-             :? cd /blah?fd
              Example: print a line only if it contains "int" at offset 5
              :? ;5;#>^int>?p
              Example: edit vi.c only if it exists

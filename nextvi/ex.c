@@ -449,8 +449,6 @@ static const char help_normal[] =
 "Ctrl-7 n      buffer picker\n"
 "Ctrl-_ n      buffer picker\n"
 "Ctrl-/ n      buffer picker\n"
-"\\             file menu buffer\n"
-"[n]\\          refresh file menu\n"
 "vb            history buffer b-1\n"
 "\n"
 "SEARCH\n"
@@ -460,8 +458,6 @@ static const char help_normal[] =
 "N             repeat opposite\n"
 "*             word search\n"
 "Ctrl-A        word regex search\n"
-"Ctrl-]        file search forward\n"
-"Ctrl-P        file search back\n"
 "\n"
 "TOOLS\n"
 ":             ex prompt\n"
@@ -594,16 +590,10 @@ static const char help_ex[] =
 "x / x!        write if changed quit\n"
 "q / q!        quit / force quit\n"
 "cd [path]     change/show cwd\n"
-"fd [path]     fill file list b-2\n"
-"fp [path]     set file-list root\n"
-"inc [pat]     file-list filter\n"
-"ef [pat]      open fuzzy file\n"
-"ef! [pat]     force fuzzy open\n"
 "\n"
 "BUFFERS\n"
 "b [n]         buffers/switch\n"
 "b-1           history buffer\n"
-"b-2           file menu buffer\n"
 "b-3           scratch buffer\n"
 "b-4           help buffer\n"
 "bp [path]     set buffer path\n"
@@ -1174,18 +1164,15 @@ static void *ec_edit(char *loc, char *cmd, char *arg)
 static void *ec_fuzz(char *loc, char *cmd, char *arg)
 {
 	rset *rs;
-	char *path, *p, buf[128], trunc[128], *sret = NULL;
+	char *path, *p, buf[128], trunc[128];
 	int c, pos, subs[2], inst = -1, lnum = -1;
 	int beg, end, max = INT_MAX, dwid1, dwid2;
 	int flg = REG_NEWLINE | REG_NOCAP;
 	int pflg = ((xvis & 2) == 0) * 2;
 	ins_state is;
+	(void)cmd;
 	ins_init(is)
-	if (*cmd !='f')
-		temp_switch(1, 0);
 	if (ex_vregion(loc, &beg, &end)) {
-		if (*cmd !='f')
-			temp_switch(1, 1);
 		return xrerr;
 	}
 	if (!*loc) {
@@ -1273,18 +1260,13 @@ static void *ec_fuzz(char *loc, char *cmd, char *arg)
 	free(fuzz->s);
 	free(sb->s);
 	path = lbuf_get(xb, lnum);
-	if (*cmd == 'f' && path) {
+	if (path) {
 		rset_find(rs, path, subs, 0);
 		xrow = lnum;
 		xoff = uc_off(path, subs[0]);
-	} else if (path) {
-		path[lbuf_s(path)->len] = '\0';
-		sret = ec_edit(loc, cmd, path);
-		path[lbuf_s(path)->len] = '\n';
-	} else if (*cmd != 'f')
-		temp_switch(1, 1);
+	}
 	rset_free(rs);
-	return sret;
+	return NULL;
 }
 
 static void *ec_find(char *loc, char *cmd, char *arg)
@@ -1348,8 +1330,9 @@ static void *ec_buffer(char *loc, char *cmd, char *arg)
 		}
 		return NULL;
 	} else if (atoi(arg) < 0) {
-		if (abs(atoi(arg)) <= LEN(tempbufs)) {
-			temp_switch(abs(atoi(arg))-1, 1);
+		int idx = abs(atoi(arg));
+		if (idx != 2 && idx <= LEN(tempbufs)) {
+			temp_switch(idx - 1, 1);
 			return NULL;
 		}
 	} else if (atoi(arg) < xbufcur) {
@@ -2176,20 +2159,6 @@ static void *ec_join(char *loc, char *cmd, char *arg)
 	return lbuf_join(xb, beg, end+1, xoff, &o2, arg[0]) ? xuerr : NULL;
 }
 
-static void *ec_setdir(char *loc, char *cmd, char *arg)
-{
-	static char *exdir;
-	if (cmd[1] == 'p') {
-		free(exdir);
-		exdir = *arg ? uc_dup(arg) : NULL;
-	} else if (cmd[1] == 'd') {
-		char *path = ex_pathresolve(*arg ? arg : (exdir ? exdir : "."));
-		dir_calc(path);
-		free(path);
-	}
-	return NULL;
-}
-
 static void *ec_chdir(char *loc, char *cmd, char *arg)
 {
 #ifdef NEXTVI_EMBEDDED
@@ -2263,16 +2232,6 @@ static void *ec_chdir(char *loc, char *cmd, char *arg)
 	}
 	return NULL;
 #endif
-}
-
-static void *ec_setincl(char *loc, char *cmd, char *arg)
-{
-	rset_free(fsincl);
-	if (!*arg)
-		fsincl = NULL;
-	else if (!(fsincl = rset_smake(arg, xic ? REG_ICASE : 0)))
-		return xserr;
-	return NULL;
 }
 
 static void *ec_setacreg(char *loc, char *cmd, char *arg)
@@ -2585,20 +2544,20 @@ static struct excmd {
 	{"ac", ec_setacreg},
 	{"a", ec_insert},
 	EO(err),
-	{"ef!", ec_fuzz},
-	{"ef", ec_fuzz},
+	{"ef!", ec_unknown},
+	{"ef", ec_unknown},
 	{"e!", ec_edit},
 	{"e", ec_edit},
 	{"ft", ec_unknown},
-	{"fd", ec_setdir},
-	{"fp", ec_setdir},
+	{"fd", ec_unknown},
+	{"fp", ec_unknown},
 	{"f+", ec_find},
 	{"f-", ec_find},
 	{"f>", ec_find},
 	{"f<", ec_find},
 	{"f", ec_fuzz},
 	{"help", ec_help},
-	{"inc", ec_setincl},
+	{"inc", ec_unknown},
 	EO(ic),
 	{"i", ec_insert},
 	{"d", ec_delete},

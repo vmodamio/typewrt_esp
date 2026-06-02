@@ -1,6 +1,7 @@
 #ifdef NEXTVI_EMBEDDED
 
 #include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <time.h>
 #include "esp_app_desc.h"

@@ -4,7 +4,6 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
-#include <dirent.h>
 #ifndef NEXTVI_NOTERM
 #include <signal.h>
 #include <poll.h>
@@ -15,10 +14,6 @@
 #include <limits.h>
 #include <sys/stat.h>
 #include "vi.h"
-
-#if defined(NEXTVI_NOTERM) && !defined(lstat)
-#define lstat(path, st) stat(path, st)
-#endif
 
 #include "conf.c"
 #ifdef NEXTVI_EMBEDDED
@@ -1236,111 +1231,6 @@ static void vi_regput(int c, const char *s, int lnmode)
 	ex_regput(tolower(c), s, isupper(c));
 }
 
-rset *fsincl;
-static int fspos;
-static int fsdir;
-
-void dir_calc(char *path)
-{
-	struct dirent *dirp;
-	struct stat statbuf;
-	int ret, sp = 0;
-	char *stack[1024];
-	DIR *dp;
-	sbuf_smake(sb, 1024)
-	temp_pos(1, -1, 0, 0);
-	fspos = 0;
-	stack[sp++] = uc_dup(path);
-	while (sp > 0) {
-		char *dir = stack[--sp];
-		unsigned int dirlen = strlen(dir);
-		if (!(dp = opendir(dir))) {
-			free(dir);
-			continue;
-		}
-		while ((dirp = readdir(dp))) {
-			unsigned int namelen = strlen(dirp->d_name);
-			unsigned int slash = dirlen && dir[dirlen - 1] != '/';
-			unsigned int len = dirlen + slash + namelen;
-			char *cpath;
-			if (strcmp(dirp->d_name, ".") == 0 ||
-				strcmp(dirp->d_name, "..") == 0 ||
-				namelen + 1 > 1023 || len > INT_MAX - 1)
-				continue;
-			cpath = emalloc(len + 1);
-			memcpy(cpath, dir, dirlen);
-			if (slash)
-				cpath[dirlen++] = '/';
-			memcpy(cpath + dirlen, dirp->d_name, namelen + 1);
-			ret = lstat(cpath, &statbuf);
-			if (ret >= 0 && S_ISDIR(statbuf.st_mode)) {
-				if (sp < LEN(stack))
-					stack[sp++] = cpath;
-				else
-					free(cpath);
-			} else if (ret >= 0 && S_ISREG(statbuf.st_mode))
-				if (!fsincl || rset_match(fsincl, cpath, 0)) {
-					sbuf_mem(sb, cpath, (int)len)
-					sbuf_chr(sb, '\n')
-				}
-			if (!(ret >= 0 && S_ISDIR(statbuf.st_mode)))
-				free(cpath);
-		}
-		closedir(dp);
-		free(dir);
-	}
-	sbuf_null(sb)
-	if (sb->s_n > 1)
-		temp_write(1, sb->s);
-	free(sb->s);
-}
-
-#define fssearch() \
-len = lbuf_s(path)->len; \
-path[len] = '\0'; \
-ret = ex_edit(path, len); \
-path[len] = '\n'; \
-if (ret < 0) { \
-	*row = 0; *off = 0; \
-} else if (ret && xrow) { \
-	*row = xrow; *off = xoff; /* short circuit */ \
-	if (!vi_search('n', cnt, row, off, 0)) \
-		return 1; \
-	++*off; \
-} else { \
-	*row = 0; *off = 0; \
-} \
-if (!vi_search(*row ? 'N' : 'n', cnt, row, off, 0)) \
-	return 1; \
-
-static int fs_search(int cnt, int *row, int *off)
-{
-	char *path;
-	int again = 0, ret, len;
-	wrap:
-	while (fspos < lbuf_len(tempbufs[1].lb)) {
-		path = tempbufs[1].lb->ln[fspos++];
-		fssearch()
-	}
-	if (fspos == lbuf_len(tempbufs[1].lb) && !again) {
-		fspos = 0;
-		again = 1;
-		goto wrap;
-	}
-	return 0;
-}
-
-static int fs_searchback(int cnt, int *row, int *off)
-{
-	char *path;
-	int ret, len;
-	while (--fspos >= 0) {
-		path = tempbufs[1].lb->ln[fspos];
-		fssearch()
-	}
-	return 0;
-}
-
 static void vc_status(int type)
 {
 	int l, col;
@@ -1398,7 +1288,6 @@ static int vi_gmark_key(int key, int *row, int *off)
 static int vi_motion(int vc, int *row, int *off)
 {
 	static rset *bre;
-	static int lkwdcnt;
 	static int cadir = 1;
 	char *cs;
 	int cnt = vi_arg ? vi_arg : 1;
@@ -1553,41 +1442,6 @@ static int vi_motion(int vc, int *row, int *off)
 		for (i = 0; i < cnt; i++)
 			if (lbuf_sectionbeg(xb, dir, row, off, var))
 				break;
-		break;
-	case TK_CTL(']'):	/* this is also ^5 on some systems */
-	case TK_CTL('p'):
-		#define open_saved(n) \
-		vi_gmark_open(n, row, off); \
-
-		if (vi_arg && (cs = vi_curword(xb, *row, *off, cnt, 0))) {
-			ex_krsset(cs, +1);
-			free(cs);
-		}
-		struct buf* tmpex_buf = istempbuf(ex_buf) ? ex_pbuf : ex_buf;
-		if (mv == TK_CTL(']')) {
-			if (vi_arg || lkwdcnt != xkwdcnt)
-				term_exec("", 1, '&')
-			lkwdcnt = xkwdcnt;
-			fspos += fsdir < 0 ? 1 : 0;
-			fspos = MIN(fspos, lbuf_len(tempbufs[1].lb));
-			fs_search(1, row, off);
-			fsdir = 1;
-		} else {
-			fspos -= fsdir > 0 ? 1 : 0;
-			if (!fs_searchback(1, row, off)) {
-				open_saved(0)
-				fsdir = 0;
-			} else
-				fsdir = -1;
-			fspos = MAX(fspos, 0);
-		}
-		if (tmpex_buf != ex_buf)
-			ex_pbuf = tmpex_buf;
-		for (i = xbufcur-1; i >= 0 && bufs[i].mtime == -1; i--)
-			ex_bufpostfix(&bufs[i], 1);
-		vc_status_defer(0);
-		xtop = MAX(0, *row - xrows / 2);
-		vi_mod |= 1;
 		break;
 	case TK_CTL('t'):
 		if (vi_arg >= VI_GMARKS)
@@ -2739,14 +2593,7 @@ void vi(int init)
 				vc_execute(c);
 				break;
 			case '\\':
-				if (!vi_arg)
-					ex_exec("b-2");
-				else if (xb != tempbufs[1].lb)
-					ex_exec("b-2:%d:fd:b-2");
-				else
-					ex_exec("%d:fd");
-				vc_status(0);
-				vi_mod |= 1;
+				term_dec()
 				break;
 			case TK_ESC:
 				if (vi_visual) {
@@ -2869,7 +2716,7 @@ void nextvi_main(int argc, char *argv[])
 	setup_signals();
 #endif
 	temp_open(0, "/hist/");
-	temp_open(1, "/fm/");
+	temp_open(1, "/tmp/");
 	temp_open(2, "/sc/");
 	temp_open(3, "/help/");
 	ibuf = emalloc(ibuf_sz);
