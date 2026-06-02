@@ -972,34 +972,7 @@ EX COMMANDS
              This command is particularly useful when editing files with
              mixed encodings, binary files, or when the terminal does not
              support UTF-8 or lacks the necessary fonts to display UTF-8
-             characters. It is often paired with :ph command to achieve
-             hex editor-like functionality.
-
-     uz      Toggle zero-width character placeholders
-
-             Hides zero-width characters rather than rendering them as placeholders.
-
-     ub      Toggle multi-codepoint sequence placeholders
-
-             Passes multi-codepoint sequences such as emojis to the terminal
-             for native rendering rather than substituting placeholders.
-
-     ph[#clow] [#chigh] [#width] [#blen][*char]
-             Redefine placeholders
-
-             This command replaces placeholders defined in conf.c
-             and subsequent :ph commands expand the list of placeholders.
-
-             Example: render 8 bit ascii (Extended ASCII) as <~>
-             :ph 128 255 1 1~
-             Example: flawless ISO/IEC 8859-1 (latin-1) support
-             :uc:ph 128 160 1 1~
-             Example: render control byte 03 as "^C"
-             :ph 3 3 2 1^C
-             Example: reset to default as in conf.c
-             :ph
-             Example: disable default placeholders in conf.c
-             :ph:ph0
+             characters.
 
 EX OPTIONS
      Ex options are ex commands designed to alter global variables.
@@ -1023,9 +996,6 @@ EX OPTIONS
 
              Example: position on a character prefixed by "int"
              :grp 1:%f+int(.):grp
-
-     led[val=1]
-             Enable all terminal output
 
      vis[val=0]
              Control startup flags

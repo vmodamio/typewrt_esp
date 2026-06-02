@@ -227,8 +227,6 @@ int ren_off(char *s, int p);
 char *ren_translate(char *s, char *ln);
 /* uc.c: utf-8 helper functions */
 extern unsigned char utf8_length[256];
-extern int zwlen, def_zwlen;
-extern int bclen, def_bclen;
 /* the length of a given utf-8 character */
 #define uc_len(s) utf8_length[(unsigned char)s[0]]
 /* the unicode codepoint of a given utf-8 character */

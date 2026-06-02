@@ -626,7 +626,6 @@ static const char help_ex[] =
 "ble ...       BLE transfer\n"
 "rtc [time]    show/set clock\n"
 "bat battery   battery status\n"
-"power         power command\n"
 "off           power off\n"
 "about         version/about\n"
 "help [topic]  open help\n"
@@ -642,16 +641,12 @@ static const char help_ex[] =
 "pac           completion display\n"
 "pr n          print to register\n"
 "err n         error behavior\n"
-"led           terminal output\n"
 "vis n         startup flags\n"
 "cm keymap     keymap\n"
 "cm! keymap    alt keymap\n"
 "ac regex      completion regex\n"
 "sc ...        ex special chars\n"
-"uc            UTF-8 decoding\n"
-"uz            zero-width chars\n"
-"ub            multi-codepoint seqs\n"
-"ph ...        placeholders\n";
+"uc            UTF-8 decoding\n";
 
 static const char help_menu[] =
 "HELP MENU\n"
@@ -2333,31 +2328,7 @@ static void *ec_regprint(char *loc, char *cmd, char *arg)
 
 static void *ec_setenc(char *loc, char *cmd, char *arg)
 {
-	if (cmd[0] == 'p') {
-		if (!*arg) {
-			if (ph != _ph)
-				free(ph);
-			phlen = LEN(_ph);
-			ph = _ph;
-			return NULL;
-		} else if (ph == _ph) {
-			ph = NULL;
-			phlen = 0;
-		}
-		ph = erealloc(ph, sizeof(struct placeholder) * (phlen + 1));
-		ph[phlen].cp[0] = strtol(arg, &arg, 0);
-		ph[phlen].cp[1] = strtol(arg, &arg, 0);
-		ph[phlen].wid = strtol(arg, &arg, 0);
-		ph[phlen].l = strtol(arg, &arg, 0);
-		if (strlen(arg) && strlen(arg) < LEN(ph[0].d))
-			strcpy(ph[phlen++].d, arg);
-		return NULL;
-	}
-	if (cmd[1] == 'z')
-		zwlen = !zwlen ? def_zwlen : 0;
-	else if (cmd[1] == 'b')
-		bclen = !bclen ? def_bclen : 0;
-	else if (utf8_length[0xc0] == 1) {
+	if (utf8_length[0xc0] == 1) {
 		memset(utf8_length+0xc0, 2, 0xe0 - 0xc0);
 		memset(utf8_length+0xe0, 3, 0xf0 - 0xe0);
 		memset(utf8_length+0xf0, 4, 0xf8 - 0xf0);
@@ -2567,7 +2538,7 @@ static void *eo_##opt(char *loc, char *cmd, char *arg) { inner }
 	_EO(opt, x##opt = !*arg ? !x##opt : eo_val(arg); return NULL;)
 
 EO(pac) EO(pr) EO(ai) EO(err) EO(ic) EO(mpt)
-EO(seq) EO(ts) EO(lim) EO(led) EO(vis)
+EO(seq) EO(ts) EO(lim) EO(vis)
 
 _EO(grp, xgrp = (!*arg ? !xgrp : eo_val(arg)) * 2; return NULL;)
 
@@ -2608,7 +2579,6 @@ static struct excmd {
 	EO(pac),
 	EO(pr),
 	{"pu", ec_put},
-	{"ph", ec_setenc},
 	{"p", ec_print},
 	EO(ai),
 	{"ac", ec_setacreg},
@@ -2652,8 +2622,6 @@ static struct excmd {
 	{"w!", ec_write},
 	{"w", ec_write},
 	{"uc", ec_setenc},
-	{"uz", ec_setenc},
-	{"ub", ec_setenc},
 	{"ud", ec_undoredo},
 	{"version", ec_about},
 	{"ver", ec_about},
@@ -2673,7 +2641,6 @@ static struct excmd {
 	EO(ts),
 	EO(left),
 	EO(lim),
-	EO(led),
 	EO(vis),
 	{"=", ec_num},
 	{"", ec_print}, /* do not remove */
