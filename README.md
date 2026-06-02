@@ -142,6 +142,7 @@ Normal menu keys:
 | `j` / `k` | Move down/up |
 | `h` | Go up one directory, like `cd ..` |
 | `l` | Open the selected entry, entering directories |
+| `0` / `$` | Pan a truncated selected name to start/end |
 | `Ctrl-D` / `Ctrl-U` | Page down/up |
 | `g` / `G` | First/last entry |
 | `Enter` or `o` | Open file, or enter directory |

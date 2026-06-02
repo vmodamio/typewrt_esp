@@ -666,6 +666,7 @@ static const char help_menu[] =
 "Ctrl-U        page up\n"
 "g             first entry\n"
 "G             last entry\n"
+"0/$           pan name start/end\n"
 "/             search listing\n"
 ":             command prompt\n"
 "b             send marked files\n"

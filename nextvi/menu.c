@@ -81,6 +81,7 @@ typedef struct {
 	int cap;
 	int cursor;
 	int top;
+	int name_scroll;
 	menu_sort sort;
 	int reverse;
 	char filter[64];
@@ -550,6 +551,60 @@ static const char *menu_sync_tag(const menu_entry *e)
 	}
 }
 
+static int menu_left_cols(void)
+{
+	return NEXTVI_DISPLAY_COLS - MENU_SIZE_COL_WIDTH -
+		MENU_META_GAP - MENU_DATE_COL_WIDTH;
+}
+
+static int menu_entry_name_len(const menu_entry *e)
+{
+	int len = strlen(e->name);
+
+	return len + (e->is_dir && strcmp(e->name, ".."));
+}
+
+static int menu_entry_name_cols(const menu_entry *e)
+{
+	int prefix = strlen(menu_sync_tag(e)) + 1;
+
+	return MAX(0, menu_left_cols() - prefix);
+}
+
+static int menu_entry_name_scroll_max(const menu_entry *e)
+{
+	return MAX(0, menu_entry_name_len(e) - menu_entry_name_cols(e));
+}
+
+static int menu_name_scroll_max(menu_state *m)
+{
+	if (!m->count || m->cursor < 0 || m->cursor >= m->count)
+		return 0;
+	return menu_entry_name_scroll_max(&m->entry[m->cursor]);
+}
+
+static void menu_name_scroll_clip(menu_state *m)
+{
+	int max = menu_name_scroll_max(m);
+
+	if (m->name_scroll > max)
+		m->name_scroll = max;
+	if (m->name_scroll < 0)
+		m->name_scroll = 0;
+}
+
+static int menu_name_scroll_to(menu_state *m, int end)
+{
+	int max = menu_name_scroll_max(m);
+
+	if (!max) {
+		m->name_scroll = 0;
+		return 0;
+	}
+	m->name_scroll = end ? max : 0;
+	return 1;
+}
+
 static int menu_glob_match(const char *pat, const char *text)
 {
 	if (!pat || !*pat)
@@ -687,6 +742,7 @@ static void menu_fit_cursor(menu_state *m)
 		m->top = m->cursor - MENU_VISIBLE_ROWS + 1;
 	if (m->top < 0)
 		m->top = 0;
+	menu_name_scroll_clip(m);
 }
 
 static void menu_select_path(menu_state *m, const char *path)
@@ -696,6 +752,7 @@ static void menu_select_path(menu_state *m, const char *path)
 	for (int i = 0; i < m->count; i++)
 		if (menu_same_path(m->entry[i].path, path)) {
 			m->cursor = i;
+			m->name_scroll = 0;
 			menu_fit_cursor(m);
 			return;
 		}
@@ -737,6 +794,7 @@ static int menu_load(menu_state *m)
 	menu_qsort_mode = m->sort;
 	menu_qsort_reverse = m->reverse;
 	qsort(m->entry, m->count, sizeof(m->entry[0]), menu_entry_cmp_selected);
+	m->name_scroll = 0;
 	menu_fit_cursor(m);
 	return 0;
 }
@@ -964,24 +1022,32 @@ static void menu_format_mtime(char *out, int out_len, long mtime)
 }
 
 static void menu_render_entry(char line[NEXTVI_DISPLAY_COLS + 1],
-	const menu_entry *e)
+	const menu_entry *e, int name_scroll)
 {
-	char left[128];
 	char words[16];
 	char date[16];
 	const char *tag = menu_sync_tag(e);
 	int words_len;
 	int date_len;
-	int left_cols = NEXTVI_DISPLAY_COLS - MENU_SIZE_COL_WIDTH -
-		MENU_META_GAP - MENU_DATE_COL_WIDTH;
+	int left_cols = menu_left_cols();
 	int size_col = left_cols;
 	int date_col = NEXTVI_DISPLAY_COLS - MENU_DATE_COL_WIDTH;
+	int tag_len = strlen(tag);
+	int prefix = MIN(left_cols, tag_len + 1);
+	int name_cols = MAX(0, left_cols - prefix);
+	int name_len = strlen(e->name);
+	int display_len = menu_entry_name_len(e);
 
 	menu_line(line, "");
-	snprintf(left, sizeof(left), "%s %s%s", tag, e->name,
-		e->is_dir && strcmp(e->name, "..") ? "/" : "");
-	for (int i = 0; left[i] && i < left_cols; i++)
-		line[i] = left[i];
+	for (int i = 0; tag[i] && i < left_cols; i++)
+		line[i] = tag[i];
+	if (tag_len < left_cols)
+		line[tag_len] = ' ';
+	name_scroll = MIN(name_scroll,
+		MAX(0, display_len - name_cols));
+	for (int i = 0, src = name_scroll;
+			i < name_cols && src < display_len; i++, src++)
+		line[prefix + i] = src < name_len ? e->name[src] : '/';
 	menu_format_words(words, sizeof(words), e->words);
 	menu_format_mtime(date, sizeof(date), e->mtime);
 	words_len = strlen(words);
@@ -1005,7 +1071,8 @@ static void menu_draw(menu_state *m)
 		int idx = m->top + row;
 		if (idx < m->count) {
 			menu_entry *e = &m->entry[idx];
-			menu_render_entry(line, e);
+			menu_render_entry(line, e,
+				idx == m->cursor ? m->name_scroll : 0);
 		} else if (!m->count && row == 0)
 			menu_line(line, "empty");
 		else
@@ -2017,6 +2084,8 @@ static int menu_command(menu_state *m, char *cmdline)
 
 static void menu_move(menu_state *m, int delta)
 {
+	int old_cursor = m->cursor;
+
 	if (!m->count)
 		return;
 	m->cursor += delta;
@@ -2024,6 +2093,8 @@ static void menu_move(menu_state *m, int delta)
 		m->cursor = 0;
 	if (m->cursor >= m->count)
 		m->cursor = m->count - 1;
+	if (m->cursor != old_cursor)
+		m->name_scroll = 0;
 	menu_fit_cursor(m);
 }
 
@@ -2093,11 +2164,19 @@ int nextvi_menu_run(void)
 			break;
 		case 'g':
 			m.cursor = 0;
+			m.name_scroll = 0;
 			menu_fit_cursor(&m);
 			break;
 		case 'G':
 			m.cursor = m.count - 1;
+			m.name_scroll = 0;
 			menu_fit_cursor(&m);
+			break;
+		case '0':
+			menu_name_scroll_to(&m, 0);
+			break;
+		case '$':
+			menu_name_scroll_to(&m, 1);
 			break;
 		case '\n':
 		case 'l':
