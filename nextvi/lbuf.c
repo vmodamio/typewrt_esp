@@ -101,7 +101,8 @@ static int lbuf_replace(struct lbuf *lb, sbuf *sb, char *s, struct lopt *lo, int
 	if (lb->ln_n + n_ins - n_del >= lb->ln_sz) {
 		int nsz = lb->ln_n + n_ins - n_del + 512;
 		char **nln = emalloc(nsz * sizeof(lb->ln[0]));
-		memcpy(nln, lb->ln, lb->ln_n * sizeof(lb->ln[0]));
+		if (lb->ln_n)
+			memcpy(nln, lb->ln, lb->ln_n * sizeof(lb->ln[0]));
 		free(lb->ln);
 		lb->ln = nln;
 		lb->ln_sz = nsz;
@@ -158,7 +159,8 @@ struct lopt *lbuf_opt(struct lbuf *lb, int beg, int o1, int n_del)
 		if (lb->hist_n == lb->hist_sz) {
 			int sz = lb->hist_sz + (lb->hist_sz ? lb->hist_sz : 128);
 			struct lopt *hist = emalloc(sz * sizeof(hist[0]));
-			memcpy(hist, lb->hist, lb->hist_n * sizeof(hist[0]));
+			if (lb->hist_n)
+				memcpy(hist, lb->hist, lb->hist_n * sizeof(hist[0]));
 			free(lb->hist);
 			lb->hist = hist;
 			lb->hist_sz = sz;

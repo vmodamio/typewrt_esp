@@ -1244,50 +1244,50 @@ void dir_calc(char *path)
 {
 	struct dirent *dirp;
 	struct stat statbuf;
-	int i = 0, ret;
-	char *cpath, *ptrs[1024];
-	int plen[1024];
-	DIR *dp, *sdp, *dps[1024];
-	unsigned int pathlen = strlen(path), len;
-	if (!(dp = opendir(path)))
-		return;
-	cpath = emalloc(pathlen + 1024);
-	strcpy(cpath, path);
+	int ret, sp = 0;
+	char *stack[1024];
+	DIR *dp;
 	sbuf_smake(sb, 1024)
 	temp_pos(1, -1, 0, 0);
 	fspos = 0;
-	for (;;) {
+	stack[sp++] = uc_dup(path);
+	while (sp > 0) {
+		char *dir = stack[--sp];
+		unsigned int dirlen = strlen(dir);
+		if (!(dp = opendir(dir))) {
+			free(dir);
+			continue;
+		}
 		while ((dirp = readdir(dp))) {
-			len = strlen(dirp->d_name)+1;
+			unsigned int namelen = strlen(dirp->d_name);
+			unsigned int slash = dirlen && dir[dirlen - 1] != '/';
+			unsigned int len = dirlen + slash + namelen;
+			char *cpath;
 			if (strcmp(dirp->d_name, ".") == 0 ||
 				strcmp(dirp->d_name, "..") == 0 ||
-				len > 1023)
+				namelen + 1 > 1023 || len > INT_MAX - 1)
 				continue;
-			cpath[pathlen] = '/';
-			memcpy(&cpath[pathlen+1], dirp->d_name, len);
+			cpath = emalloc(len + 1);
+			memcpy(cpath, dir, dirlen);
+			if (slash)
+				cpath[dirlen++] = '/';
+			memcpy(cpath + dirlen, dirp->d_name, namelen + 1);
 			ret = lstat(cpath, &statbuf);
 			if (ret >= 0 && S_ISDIR(statbuf.st_mode)) {
-				if (!(sdp = opendir(cpath)) || i >= LEN(ptrs))
-					break;
-				dps[i] = sdp;
-				ptrs[i] = cpath;
-				cpath = emalloc(pathlen + 1024);
-				memcpy(cpath, ptrs[i], pathlen + len);
-				plen[i++] = pathlen + len;
+				if (sp < LEN(stack))
+					stack[sp++] = cpath;
+				else
+					free(cpath);
 			} else if (ret >= 0 && S_ISREG(statbuf.st_mode))
 				if (!fsincl || rset_match(fsincl, cpath, 0)) {
-					sbuf_mem(sb, cpath, (int)(pathlen + len))
+					sbuf_mem(sb, cpath, (int)len)
 					sbuf_chr(sb, '\n')
 				}
+			if (!(ret >= 0 && S_ISDIR(statbuf.st_mode)))
+				free(cpath);
 		}
 		closedir(dp);
-		free(cpath);
-		if (i > 0) {
-			dp = dps[--i];
-			pathlen = plen[i];
-			cpath = ptrs[i];
-		} else
-			break;
+		free(dir);
 	}
 	sbuf_null(sb)
 	if (sb->s_n > 1)
@@ -1513,6 +1513,8 @@ static int vi_motion(int vc, int *row, int *off)
 			org = *off;
 			for (; (cs = lbuf_get(xb, *row)) && *cs == '\n'; *row += dir);
 			if (*row != var) {
+				if (!lbuf_get(xb, *row))
+					return -1;
 				*off = MAX(0, lbuf_indents(xb, *row));
 				if (dir > 0)
 					continue;
@@ -1532,6 +1534,8 @@ static int vi_motion(int vc, int *row, int *off)
 						if (dir < 0 && *row + 1 == var)
 							continue;
 						*row += 1;
+						if (!lbuf_get(xb, *row))
+							return -1;
 						*off = MAX(0, lbuf_indents(xb, *row));
 					} else
 						*off += uc_off(cs, subs[1]);
@@ -2524,7 +2528,10 @@ void vi(int init)
 					int r1 = xrow, o1 = xoff, r2, o2;
 					int dir = (k == pairs[1] && pairs[0] != pairs[1]) ? -1 : 1;
 					int pair_found = 0;
-					ren_position(lbuf_get(xb, r1));
+					ln = lbuf_get(xb, r1);
+					if (!ln)
+						break;
+					o1 = ren_noeol(ln, o1);
 					while (*rstate->chrs[o1] != pairs[0])
 						if (lbuf_next(xb, dir, &r1, &o1))
 							goto out;
