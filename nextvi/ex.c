@@ -522,7 +522,7 @@ static const char help_insert[] =
 "Ctrl-L        redraw/clean term\n"
 "\n"
 "KEYMAPS\n"
-"Alt-e         English US-intl ISO\n"
+"Alt-e         English US ISO\n"
 "Alt-s         Spanish\n"
 "Alt-i         Italian\n"
 "Alt-n         Norwegian\n"
@@ -530,6 +530,8 @@ static const char help_insert[] =
 "Alt-f         French\n"
 "Alt-t         Turkish\n"
 "Alt-k         Colemak\n"
+"Alt-Esc       key left of 1\n"
+"S-Alt-Esc     shifted key left of 1\n"
 "Layouts apply to insert/prompts.\n"
 "Normal command letters stay English.\n"
 "f/F/t/T/r args use keymap.\n";

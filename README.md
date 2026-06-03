@@ -9,14 +9,13 @@ board reset pin, an external LED for notifications, and an on-demand BLE file se
 
 ## Keyboard layouts
 
-Nextvi starts in the English keymap, which is US International ISO: US
-punctuation, dead accent keys for composition, and the ISO extra key left of `Z`
-as `<` unshifted and `>` with Shift. On the embedded Typewrt keyboard, hold
-`Alt` and press one of the layout letters to switch:
+Nextvi starts in the English keymap, which is US ISO: US punctuation and the ISO
+extra key left of `Z` as `<` unshifted and `>` with Shift. On the embedded
+Typewrt keyboard, hold `Alt` and press one of the layout letters to switch:
 
 | Shortcut | Layout |
 | --- | --- |
-| `Alt-e` | English (US International ISO) |
+| `Alt-e` | English (US ISO) |
 | `Alt-s` | Spanish |
 | `Alt-i` | Italian |
 | `Alt-n` | Norwegian |
@@ -34,11 +33,17 @@ the selected layout, while vi normal-mode command letters stay on the physical
 English layout for command muscle memory. Character arguments typed after normal
 commands such as `f`, `F`, `t`, `T`, and `r` use the selected layout.
 
+Because `Esc` occupies the usual key left of `1`, `Alt-Esc` enters that layout's
+unshifted top-left symbol and `Shift-Alt-Esc` enters the shifted symbol. In
+English these are `` ` `` and `~`.
+
 After a layout switch, the status row briefly shows the active layout, for example
 `Keyboard [es]`. Press `Alt-Space` to open the keyboard layout helper for the
 current layout. The helper shows the normal and shifted key layers, including the
-top row and left/right letter blocks, and a short dead-key reminder such as
-`´e=é`. Press any key to close it and return to the editor.
+top row and left/right letter blocks, plus the current `Alt-Esc` symbols. For
+English it shows the ISO `<` / `>` key; for layouts with dead keys it shows a
+short reminder such as `´+e=é`. Press any key to close it and return to the
+editor.
 
 On the embedded keyboard, `Ctrl-Tab` is an alias for `Ctrl-N` in every editor
 context, and `Ctrl-Shift-Tab` is an alias for `Ctrl-R`.

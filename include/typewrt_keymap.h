@@ -30,8 +30,10 @@
  *  
  *  There are two extra special keys: LANG and SYS. Neither is a modifier.
  *  Keyboard layouts are switched in Nextvi with Alt + {e, s, i, n, g, f, t, k}
- *  for English (US International ISO), Spanish, Italian, Norwegian, German,
- *  French, Turkish, and Colemak.
+ *  for English (US ISO), Spanish, Italian, Norwegian, German, French, Turkish,
+ *  and Colemak.
+ *  Alt-Esc and Shift-Alt-Esc enter the selected layout's unshifted and shifted
+ *  symbols for the key position left of 1, which is occupied by Esc here.
  *
  *  CAPSLOCK isnt a modifier too. Its a special key that latch.
  *

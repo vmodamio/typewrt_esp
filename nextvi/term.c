@@ -26,6 +26,7 @@ static int noterm_overlay_row = -1;
 static void noterm_modifier(unsigned char ev);
 
 #define NOTERM_KEY_MENU 55	/* KBDMAP[62], dedicated typewriter menu key */
+#define NOTERM_KEY_ESC 1
 #define NOTERM_SIDE_LEFT 1
 #define NOTERM_SIDE_RIGHT 2
 
@@ -216,7 +217,28 @@ static const char *noterm_keyboard_help_name(int kmap)
 	char *name = conf_kmap(kmap)[0];
 	if (!name)
 		return "";
-	return !strcmp(name, "en") ? "en US-intl ISO" : name;
+	return !strcmp(name, "en") ? "en US ISO" : name;
+}
+
+static const char *noterm_keyboard_help_note(int kmap)
+{
+	char *name = conf_kmap(kmap)[0];
+	if (name && !strcmp(name, "en"))
+		return "ISO: key left of Z is < / >";
+	return "Dead: ¨+u=ü  ´+e=é  `+a=à  ^+o=ô";
+}
+
+static void noterm_draw_alt_esc_help(int row, int kmap)
+{
+	char normal_buf[8], shifted_buf[8], line[80];
+	const char *normal = noterm_key_label(kmap, '`', normal_buf,
+		sizeof(normal_buf));
+	const char *shifted = noterm_key_label(kmap, '~', shifted_buf,
+		sizeof(shifted_buf));
+
+	snprintf(line, sizeof(line), "Alt-Esc: [%s]  S-Alt-Esc: [%s]",
+		normal, shifted);
+	nextvi_display_refresh_line(row, line, NEXTVI_DISPLAY_COLS);
 }
 
 static void noterm_refresh_centered_line(int row, const char *text)
@@ -253,10 +275,9 @@ static void noterm_keyboard_help_draw(void)
 	noterm_draw_key_row(9, "", key_shifted, 16, 27, 20, xkmap);
 	noterm_draw_key_row(10, "", key_shifted, 30, 41, 34, xkmap);
 	noterm_draw_key_row(11, "", key_shifted, 42, 52, 47, xkmap);
-	nextvi_display_refresh_line(12,
-		"Dead: ´e=é `a=à ^o=ô ¨u=ü ~n=ñ",
+	noterm_draw_alt_esc_help(12, xkmap);
+	nextvi_display_refresh_line(13, noterm_keyboard_help_note(xkmap),
 		NEXTVI_DISPLAY_COLS);
-	nextvi_display_refresh_line(13, "", NEXTVI_DISPLAY_COLS);
 	noterm_refresh_centered_line(NEXTVI_DISPLAY_ROWS, "press any key");
 }
 
@@ -553,6 +574,10 @@ static int noterm_key_event_timeout(int timeout_ms)
 		if (code == NOTERM_KEY_MENU) {
 			noterm_overlay_restore();
 			return TK_MENU;
+		}
+		if (key_alt && code == NOTERM_KEY_ESC) {
+			noterm_overlay_restore();
+			return key_shift ? '~' : '`';
 		}
 		ch = (key_shift ^ (key_caps && key_normal[code] >= 'a' &&
 			key_normal[code] <= 'z')) ? key_shifted[code] : key_normal[code];

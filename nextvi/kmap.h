@@ -2,19 +2,15 @@
 #define KMAP_DEAD_GRAVE "\001`"
 #define KMAP_DEAD_CIRC "\001^"
 #define KMAP_DEAD_DIA "\001\""
-#define KMAP_DEAD_TILDE "\001~"
 
 static char *kmap_en[256] = {
 	[0] = "en",
-	['`'] = KMAP_DEAD_GRAVE,
-	['~'] = KMAP_DEAD_TILDE,
-	['^'] = KMAP_DEAD_CIRC,
-	['\''] = KMAP_DEAD_ACUTE,
-	['"'] = KMAP_DEAD_DIA,
 };
 
 static char *kmap_es[256] = {
 	[0] = "es",
+	['`'] = "º",
+	['~'] = "ª",
 	['@'] = "\"",
 	['#'] = "·",
 	['^'] = "&",
@@ -44,6 +40,8 @@ static char *kmap_es[256] = {
 
 static char *kmap_it[256] = {
 	[0] = "it",
+	['`'] = "\\",
+	['~'] = "|",
 	['@'] = "\"",
 	['#'] = "£",
 	['^'] = "&",
@@ -73,6 +71,8 @@ static char *kmap_it[256] = {
 
 static char *kmap_no[256] = {
 	[0] = "no",
+	['`'] = "|",
+	['~'] = "§",
 	['@'] = "\"",
 	['$'] = "¤",
 	['^'] = "&",
@@ -102,6 +102,7 @@ static char *kmap_no[256] = {
 
 static char *kmap_de[256] = {
 	[0] = "de",
+	['`'] = KMAP_DEAD_CIRC,
 	['~'] = "°",
 	['@'] = "\"",
 	['#'] = "§",
@@ -136,6 +137,8 @@ static char *kmap_de[256] = {
 
 static char *kmap_fr[256] = {
 	[0] = "fr",
+	['`'] = "²",
+	['~'] = "~",
 	['1'] = "&",
 	['!'] = "1",
 	['2'] = "é",
@@ -190,6 +193,7 @@ static char *kmap_fr[256] = {
 
 static char *kmap_tr[256] = {
 	[0] = "tr",
+	['`'] = "\"",
 	['~'] = "é",
 	['@'] = "'",
 	['#'] = "^",
