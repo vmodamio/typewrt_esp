@@ -47,7 +47,7 @@ static const unsigned char key_shifted[64] = {
 	'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I',
 	'O', 'P', '{', '}', '\n', 0, 'A', 'S',
 	'D', 'F', 'G', 'H', 'J', 'K', 'L', ':',
-	'"', '|', '<', 'Z', 'X', 'C', 'V', 'B',
+	'"', '|', '>', 'Z', 'X', 'C', 'V', 'B',
 	'N', 'M', '<', '>', '?', ' ', 0, 0,
 	0, 0, 0, 0, 0, 0, 0, 0,
 };
@@ -211,6 +211,14 @@ static void noterm_draw_key_row(int row, const char *left_label,
 	nextvi_display_refresh_line(row, line, NEXTVI_DISPLAY_COLS);
 }
 
+static const char *noterm_keyboard_help_name(int kmap)
+{
+	char *name = conf_kmap(kmap)[0];
+	if (!name)
+		return "";
+	return !strcmp(name, "en") ? "en US-intl ISO" : name;
+}
+
 static void noterm_refresh_centered_line(int row, const char *text)
 {
 	char line[NEXTVI_DISPLAY_COLS + 1];
@@ -232,7 +240,7 @@ static void noterm_keyboard_help_draw(void)
 		term_cursor_drawn = 0;
 	}
 	snprintf(title, sizeof(title), "Keyboard [%s]",
-		conf_kmap(xkmap)[0]);
+		noterm_keyboard_help_name(xkmap));
 	noterm_refresh_centered_line(0, title);
 	nextvi_display_refresh_line(1, "normal", NEXTVI_DISPLAY_COLS);
 	noterm_draw_key_row(2, "", key_normal, 2, 13, -1, xkmap);
@@ -246,7 +254,7 @@ static void noterm_keyboard_help_draw(void)
 	noterm_draw_key_row(10, "", key_shifted, 30, 41, 34, xkmap);
 	noterm_draw_key_row(11, "", key_shifted, 42, 52, 47, xkmap);
 	nextvi_display_refresh_line(12,
-		"Dead: ¨+u=ü  ´+e=é  `+a=à  ^+o=ô",
+		"Dead: ´e=é `a=à ^o=ô ¨u=ü ~n=ñ",
 		NEXTVI_DISPLAY_COLS);
 	nextvi_display_refresh_line(13, "", NEXTVI_DISPLAY_COLS);
 	noterm_refresh_centered_line(NEXTVI_DISPLAY_ROWS, "press any key");

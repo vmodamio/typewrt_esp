@@ -1,11 +1,17 @@
-static char *kmap_en[256] = {
-	[0] = "en",
-};
-
 #define KMAP_DEAD_ACUTE "\001'"
 #define KMAP_DEAD_GRAVE "\001`"
 #define KMAP_DEAD_CIRC "\001^"
 #define KMAP_DEAD_DIA "\001\""
+#define KMAP_DEAD_TILDE "\001~"
+
+static char *kmap_en[256] = {
+	[0] = "en",
+	['`'] = KMAP_DEAD_GRAVE,
+	['~'] = KMAP_DEAD_TILDE,
+	['^'] = KMAP_DEAD_CIRC,
+	['\''] = KMAP_DEAD_ACUTE,
+	['"'] = KMAP_DEAD_DIA,
+};
 
 static char *kmap_es[256] = {
 	[0] = "es",

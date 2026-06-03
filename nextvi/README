@@ -187,7 +187,7 @@ VI NORMAL
                    Swap to next buffer, # changes direction [forward backward]
      vb            Recurse into b-1 history buffer. Insert current line intog
                    ex prompt on exit
-     <Alt-e>       Switch to English keymap
+     <Alt-e>       Switch to English (US International ISO) keymap
      <Alt-s>       Switch to Spanish keymap
      <Alt-i>       Switch to Italian keymap
      <Alt-n>       Switch to Norwegian keymap
@@ -263,7 +263,7 @@ VI/EX INSERT
      <^A>          Loop through lines in a history buffer b-1
      <^L>          Redraw screen in vi mode, clean terminal in ex
      <^O>          Switch between vi and ex modes recursively
-     <Alt-e>       Switch to English keymap
+     <Alt-e>       Switch to English (US International ISO) keymap
      <Alt-s>       Switch to Spanish keymap
      <Alt-i>       Switch to Italian keymap
      <Alt-n>       Switch to Norwegian keymap
@@ -275,6 +275,8 @@ VI/EX INSERT
                    command letters stay on the physical English layout, while
                    character arguments such as f, F, t, T, and r use the
                    selected keymap.
+                   The English keymap is US International ISO: dead accent
+                   keys compose text, and the ISO key left of Z is < / >.
      <^V>{arg}     Read a literal character arg
      <^K>{arg}     Read a digraph sequence arg
      <^C>

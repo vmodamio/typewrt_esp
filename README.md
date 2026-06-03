@@ -9,12 +9,14 @@ board reset pin, an external LED for notifications, and an on-demand BLE file se
 
 ## Keyboard layouts
 
-Nextvi starts in the English keymap. On the embedded Typewrt keyboard, hold `Alt`
-and press one of the layout letters to switch:
+Nextvi starts in the English keymap, which is US International ISO: US
+punctuation, dead accent keys for composition, and the ISO extra key left of `Z`
+as `<` unshifted and `>` with Shift. On the embedded Typewrt keyboard, hold
+`Alt` and press one of the layout letters to switch:
 
 | Shortcut | Layout |
 | --- | --- |
-| `Alt-e` | English |
+| `Alt-e` | English (US International ISO) |
 | `Alt-s` | Spanish |
 | `Alt-i` | Italian |
 | `Alt-n` | Norwegian |
@@ -36,7 +38,7 @@ After a layout switch, the status row briefly shows the active layout, for examp
 `Keyboard [es]`. Press `Alt-Space` to open the keyboard layout helper for the
 current layout. The helper shows the normal and shifted key layers, including the
 top row and left/right letter blocks, and a short dead-key reminder such as
-`¨+u=ü`. Press any key to close it and return to the editor.
+`´e=é`. Press any key to close it and return to the editor.
 
 On the embedded keyboard, `Ctrl-Tab` is an alias for `Ctrl-N` in every editor
 context, and `Ctrl-Shift-Tab` is an alias for `Ctrl-R`.
