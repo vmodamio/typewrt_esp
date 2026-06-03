@@ -34,17 +34,17 @@
 #define TYPEWRT_LED_SD_BLINK_PERIOD_US 75000
 #define TYPEWRT_BATTERY_CHECK_HIGH_US (10ULL * 60ULL * 1000000ULL)
 #define TYPEWRT_BATTERY_CHECK_MED_US (5ULL * 60ULL * 1000000ULL)
-#define TYPEWRT_BATTERY_CHECK_LOW_US (2ULL * 60ULL * 1000000ULL)
+#define TYPEWRT_BATTERY_CHECK_LOW_US (1ULL * 60ULL * 1000000ULL)
 #define TYPEWRT_BATTERY_LOW_OVERLAY_REPEAT_US (30ULL * 1000000ULL)
 #define TYPEWRT_BATTERY_WARN_LOW_REPEAT_US (5ULL * 60ULL * 1000000ULL)
-#define TYPEWRT_BATTERY_WARN_CRIT_REPEAT_US (2ULL * 60ULL * 1000000ULL)
-#define TYPEWRT_BATTERY_LOW_OVERLAY_SOC_TENTHS 80
+#define TYPEWRT_BATTERY_WARN_CRIT_REPEAT_US (1ULL * 60ULL * 1000000ULL)
+#define TYPEWRT_BATTERY_LOW_OVERLAY_SOC_TENTHS 70
 #define TYPEWRT_BATTERY_WARN_LOW_SOC_TENTHS 250
 #define TYPEWRT_BATTERY_WARN_CRIT_SOC_TENTHS 100
 #define TYPEWRT_BATTERY_WARN_PULSE_ON_US 150000
 #define TYPEWRT_BATTERY_WARN_PULSE_GAP_US 850000
 #define TYPEWRT_BATTERY_WARN_LOW_PULSES 3
-#define TYPEWRT_BATTERY_WARN_CRIT_TOGGLE_US 100000
+#define TYPEWRT_BATTERY_WARN_CRIT_TOGGLE_US 75000
 #define TYPEWRT_BATTERY_WARN_CRIT_DURATION_US 2000000
 #define TYPEWRT_POWEROFF_SD_WAIT_MS 3000
 #define TYPEWRT_POWEROFF_SD_POLL_MS 20
@@ -85,6 +85,8 @@ static int64_t battery_low_overlay_next_us;
 static volatile int64_t typewrt_ui_wakeup_deadline_us;
 static uint8_t battery_warning_level;
 static bool battery_low_overlay_enabled;
+static volatile bool battery_test_active;
+static volatile uint32_t battery_test_soc_tenths;
 static volatile uint32_t typewrt_sd_write_locks;
 static volatile bool sd_write_led_on;
 
@@ -97,6 +99,8 @@ typedef struct {
 
 static void typewrt_power_led_update(void);
 static void typewrt_led_boot_blink_start(void);
+static void typewrt_battery_led_cancel(void);
+static void typewrt_battery_low_overlay_clear(void);
 static void typewrt_battery_monitor_check(bool force);
 static void typewrt_battery_monitor_start(void);
 static void typewrt_timer_wakeup_prepare(void);
@@ -451,6 +455,16 @@ static esp_err_t battery_max17048_read_word(uint8_t reg, uint16_t *value)
     return ESP_OK;
 }
 
+static bool typewrt_battery_test_is_active(void)
+{
+    return __atomic_load_n(&battery_test_active, __ATOMIC_RELAXED);
+}
+
+static uint32_t typewrt_battery_test_voltage_uv(uint32_t soc_tenths)
+{
+    return 3300000U + soc_tenths * 900U;
+}
+
 static esp_err_t typewrt_battery_read_sample(typewrt_battery_sample_t *sample)
 {
     uint16_t vcell_raw;
@@ -460,6 +474,16 @@ static esp_err_t typewrt_battery_read_sample(typewrt_battery_sample_t *sample)
 
     if (!sample) {
         return ESP_ERR_INVALID_ARG;
+    }
+    if (typewrt_battery_test_is_active()) {
+        uint32_t soc_tenths = __atomic_load_n(&battery_test_soc_tenths,
+            __ATOMIC_RELAXED);
+
+        sample->voltage_uv = typewrt_battery_test_voltage_uv(soc_tenths);
+        sample->soc_tenths = soc_tenths;
+        sample->rate_tenths = -50;
+        sample->absent = false;
+        return ESP_OK;
     }
     if (!battery_gauge_available || !battery_i2c_dev) {
         return ESP_ERR_INVALID_STATE;
@@ -487,6 +511,7 @@ bool typewrt_battery_get_status(char *out, size_t out_len)
     uint32_t rate_abs_tenths;
     const char *state;
     const char *rate_sign;
+    const char *suffix = typewrt_battery_test_is_active() ? " test" : "";
 
     if (!out || out_len == 0) {
         return false;
@@ -526,12 +551,109 @@ bool typewrt_battery_get_status(char *out, size_t out_len)
 
     snprintf(out, out_len,
         "bat %" PRIu32 ".%" PRIu32 "%% %" PRIu32 ".%03" PRIu32
-        "V %s %s%" PRIu32 ".%" PRIu32 "%%/h",
+        "V %s %s%" PRIu32 ".%" PRIu32 "%%/h%s",
         sample.soc_tenths / 10U, sample.soc_tenths % 10U,
         sample.voltage_uv / 1000000U, (sample.voltage_uv % 1000000U) / 1000U,
-        state, rate_sign, rate_abs_tenths / 10U, rate_abs_tenths % 10U);
+        state, rate_sign, rate_abs_tenths / 10U, rate_abs_tenths % 10U,
+        suffix);
     typewrt_sleep_unlock();
     return true;
+}
+
+static bool typewrt_battery_test_arg_eq(const char *arg, const char *word)
+{
+    size_t len = strlen(word);
+
+    while (*arg == ' ' || *arg == '\t') {
+        arg++;
+    }
+    if (strncmp(arg, word, len)) {
+        return false;
+    }
+    arg += len;
+    while (*arg == ' ' || *arg == '\t') {
+        arg++;
+    }
+    return !*arg;
+}
+
+static bool typewrt_battery_test_parse_level(const char *arg,
+    uint32_t *soc_tenths)
+{
+    uint32_t whole = 0;
+    uint32_t frac = 0;
+    bool have_digit = false;
+
+    while (*arg == ' ' || *arg == '\t') {
+        arg++;
+    }
+    while (isdigit((unsigned char)*arg)) {
+        have_digit = true;
+        if (whole > 100) {
+            return false;
+        }
+        whole = whole * 10U + (uint32_t)(*arg - '0');
+        arg++;
+    }
+    if (*arg == '.') {
+        arg++;
+        if (isdigit((unsigned char)*arg)) {
+            have_digit = true;
+            frac = (uint32_t)(*arg - '0');
+            arg++;
+        }
+        while (isdigit((unsigned char)*arg)) {
+            arg++;
+        }
+    }
+    while (*arg == ' ' || *arg == '\t') {
+        arg++;
+    }
+    if (!have_digit || *arg || whole > 100 || (whole == 100 && frac)) {
+        return false;
+    }
+    *soc_tenths = whole * 10U + frac;
+    return true;
+}
+
+const char *typewrt_battery_test_level(const char *level, char *out,
+    size_t out_len)
+{
+    uint32_t soc_tenths;
+
+    if (!level) {
+        return "bat syntax: bat LEVEL|off";
+    }
+    if (typewrt_battery_test_arg_eq(level, "off") ||
+            typewrt_battery_test_arg_eq(level, "real") ||
+            typewrt_battery_test_arg_eq(level, "clear") ||
+            typewrt_battery_test_arg_eq(level, "reset")) {
+        __atomic_store_n(&battery_test_active, false, __ATOMIC_RELAXED);
+        battery_warning_level = 0;
+        battery_next_check_us = 0;
+        battery_next_warning_us = 0;
+        typewrt_battery_low_overlay_clear();
+        typewrt_battery_led_cancel();
+        if (out && out_len) {
+            snprintf(out, out_len, "battery test off");
+        }
+        return NULL;
+    }
+    if (!typewrt_battery_test_parse_level(level, &soc_tenths)) {
+        return "bat syntax: bat LEVEL|off";
+    }
+
+    __atomic_store_n(&battery_test_soc_tenths, soc_tenths, __ATOMIC_RELAXED);
+    __atomic_store_n(&battery_test_active, true, __ATOMIC_RELAXED);
+    battery_warning_level = 0;
+    battery_next_check_us = 0;
+    battery_next_warning_us = 0;
+    typewrt_battery_low_overlay_clear();
+    typewrt_battery_led_cancel();
+    if (out && out_len) {
+        typewrt_battery_get_status(out, out_len);
+    }
+    return NULL;
 }
 
 bool typewrt_battery_init(void)
@@ -659,6 +781,11 @@ bool typewrt_usb_power_present(void)
     return gpio_get_level(TYPEWRT_PIN_5V_EN) == 1;
 }
 
+static bool typewrt_battery_usb_powered(void)
+{
+    return !typewrt_battery_test_is_active() && typewrt_usb_power_present();
+}
+
 static void typewrt_led_set(bool on)
 {
     (void)gpio_hold_dis(TYPEWRT_PIN_LEDN);
@@ -703,7 +830,7 @@ static void typewrt_power_led_update(void)
             __atomic_load_n(&boot_led_steps, __ATOMIC_RELAXED) != 0) {
         return;
     }
-    typewrt_led_set(typewrt_usb_power_present());
+    typewrt_led_set(typewrt_battery_usb_powered());
     gpio_hold_en(TYPEWRT_PIN_LEDN);
 }
 
@@ -1059,7 +1186,7 @@ static void typewrt_battery_low_overlay_tick(int64_t now)
     if (!battery_low_overlay_enabled) {
         return;
     }
-    if (typewrt_usb_power_present()) {
+    if (typewrt_battery_usb_powered()) {
         typewrt_battery_low_overlay_clear();
         return;
     }
@@ -1115,7 +1242,7 @@ static void typewrt_battery_monitor_check(bool force)
 
     typewrt_battery_schedule_next_check(now,
         typewrt_battery_check_interval_us(sample.soc_tenths));
-    usb_powered = typewrt_usb_power_present();
+    usb_powered = typewrt_battery_usb_powered();
     discharging = !usb_powered && sample.rate_tenths <= 0;
     typewrt_battery_low_overlay_update(now,
         !usb_powered &&
@@ -1123,6 +1250,13 @@ static void typewrt_battery_monitor_check(bool force)
     if (!discharging) {
         battery_warning_level = 0;
         battery_next_warning_us = 0;
+        return;
+    }
+
+    if (sample.soc_tenths < TYPEWRT_BATTERY_LOW_OVERLAY_SOC_TENTHS) {
+        battery_warning_level = 0;
+        battery_next_warning_us = 0;
+        typewrt_battery_led_cancel();
         return;
     }
 
@@ -1164,7 +1298,7 @@ static void typewrt_timer_wakeup_prepare(void)
         have_timer = true;
     }
     if (battery_low_overlay_enabled && battery_low_overlay_next_us &&
-            !typewrt_usb_power_present()) {
+            !typewrt_battery_usb_powered()) {
         uint64_t overlay_delay_us = battery_low_overlay_next_us > now ?
             (uint64_t)(battery_low_overlay_next_us - now) : 1;
         if (!have_timer || overlay_delay_us < delay_us) {

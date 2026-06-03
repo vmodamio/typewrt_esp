@@ -39,9 +39,12 @@
 
 #define SHARPMEM_BYTES_PER_LINE (PXWIDTH / 8)
 #define SHARPMEM_BUFFER_BYTES ((PXWIDTH * PXHEIGHT) / 8)
-#define BATTERY_LOW_OVERLAY_TEXT "[Battery low]"
-#define BATTERY_LOW_OVERLAY_ROWS 3
-#define BATTERY_LOW_OVERLAY_COLS ((int)sizeof(BATTERY_LOW_OVERLAY_TEXT) + 1)
+#define BATTERY_LOW_OVERLAY_TEXT "Battery low"
+#define BATTERY_LOW_OVERLAY_MARGIN_X 2
+#define BATTERY_LOW_OVERLAY_MARGIN_Y 1
+#define BATTERY_LOW_OVERLAY_ROWS (1 + BATTERY_LOW_OVERLAY_MARGIN_Y * 2)
+#define BATTERY_LOW_OVERLAY_COLS \
+    ((int)sizeof(BATTERY_LOW_OVERLAY_TEXT) - 1 + BATTERY_LOW_OVERLAY_MARGIN_X * 2)
 #define BATTERY_LOW_OVERLAY_ROW_BYTES (PSF_GLYPH_SIZE * SHARPMEM_BYTES_PER_LINE)
 #define BATTERY_LOW_OVERLAY_BYTES \
     (BATTERY_LOW_OVERLAY_ROWS * BATTERY_LOW_OVERLAY_ROW_BYTES)
@@ -629,8 +632,10 @@ void typewrt_display_battery_low_show(void)
         int row = battery_low_overlay_top + r;
         for (int c = 0; c < BATTERY_LOW_OVERLAY_COLS; c++) {
             int glyph = ' ';
-            if (r == 1 && c > 0 && c <= msg_len) {
-                glyph = msg[c - 1];
+            if (r == BATTERY_LOW_OVERLAY_MARGIN_Y &&
+                    c >= BATTERY_LOW_OVERLAY_MARGIN_X &&
+                    c < BATTERY_LOW_OVERLAY_MARGIN_X + msg_len) {
+                glyph = msg[c - BATTERY_LOW_OVERLAY_MARGIN_X];
             }
             displayGlyph((uint8_t)(battery_low_overlay_left + c),
                 (uint8_t)row, (uint8_t)glyph);

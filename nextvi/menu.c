@@ -2071,8 +2071,15 @@ static int menu_command(menu_state *m, char *cmdline)
 	}
 	if (!strcmp(cmd, "bat") || !strcmp(cmd, "battery")) {
 		char buf[96];
-		typewrt_battery_get_status(buf, sizeof(buf));
-		menu_set_message(m, buf);
+		const char *err;
+		p = menu_trim(p);
+		if (*p)
+			err = typewrt_battery_test_level(p, buf, sizeof(buf));
+		else {
+			typewrt_battery_get_status(buf, sizeof(buf));
+			err = NULL;
+		}
+		menu_set_message(m, err ? err : buf);
 		return 0;
 	}
 	if (!strcmp(cmd, "off")) {

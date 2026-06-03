@@ -50,6 +50,7 @@ static char ex_vcwd[4096] = NEXTVI_FS_ROOT;
 bool typewrt_rtc_get_datetime(char *out, size_t out_len);
 const char *typewrt_rtc_set_datetime(const char *datetime, char *out, size_t out_len);
 bool typewrt_battery_get_status(char *out, size_t out_len);
+const char *typewrt_battery_test_level(const char *level, char *out, size_t out_len);
 #endif
 static char xserr[] = "syntax error";
 static char xirerr[] = "invalid range";
@@ -615,7 +616,7 @@ static const char help_ex[] =
 "menu          open file menu\n"
 "ble ...       BLE transfer\n"
 "rtc [time]    show/set clock\n"
-"bat battery   battery status\n"
+"bat [n|off]   battery status/test\n"
 "off           power off\n"
 "about         version/about\n"
 "help [topic]  open help\n"
@@ -706,7 +707,7 @@ static const char help_menu[] =
 "ble status    BLE status\n"
 "ble off       cancel BLE\n"
 "rtc [time]    show/set clock\n"
-"battery       battery status\n"
+"bat [n|off]   battery status/test\n"
 "rename        rename selected\n"
 "copy          copy selected\n"
 "delete        delete selected\n"
@@ -2416,9 +2417,16 @@ static void *ec_battery(char *loc, char *cmd, char *arg)
 {
 #ifdef NEXTVI_EMBEDDED
 	char buf[96];
+	const char *err;
 	(void)loc;
 	(void)cmd;
-	(void)arg;
+	if (*arg) {
+		err = typewrt_battery_test_level(arg, buf, sizeof(buf));
+		if (err)
+			return (void*)err;
+		ex_print(buf)
+		return NULL;
+	}
 	typewrt_battery_get_status(buf, sizeof(buf));
 	ex_print(buf)
 	return NULL;
