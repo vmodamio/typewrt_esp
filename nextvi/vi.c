@@ -979,8 +979,12 @@ static void vi_hardwrap_all(void)
 {
 	if (conf_hwwidth <= 0)
 		return;
-	for (int r = 0; r < lbuf_len(xb); r++)
+	for (int r = 0; r < lbuf_len(xb); r++) {
 		vi_hardwrap_reflow(r);
+		/* reflow() normalizes the whole logical wrapped block. */
+		while (r + 1 < lbuf_len(xb) && vi_forced_line(lbuf_get(xb, r + 1)))
+			r++;
+	}
 }
 
 static int vi_linecount(char *s)
