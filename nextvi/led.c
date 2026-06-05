@@ -37,49 +37,111 @@ static int search(const char *pattern, int l)
 	return suggestsb->s_n;
 }
 
-static void file_index(struct lbuf *buf)
+static void file_index_line(char *ln, rset *rs, sbuf *ibuf)
+{
+	int len, sidx, grp = xgrp;
+	int subs[rs->nsubc];
+
+	sidx = 0;
+	while (rset_find(rs, ln+sidx, subs, sidx ? REG_NOTBOL : 0) >= 0) {
+		/* if target group not found, continue with group 1
+		which will always be valid, otherwise there be no match */
+		if (subs[grp] < 0) {
+			sidx += subs[1] > 0 ? subs[1] : 1;
+			continue;
+		}
+		len = subs[grp + 1] - subs[grp];
+		if (len > 1) {
+			char *part = ln+sidx+subs[grp];
+			int n, *ip = (int*)(ibuf->s+sizeof(n));
+			for (n = len+1; ip < (int*)&ibuf->s[ibuf->s_n]; ip++)
+				if (*ip - ip[-1] == n &&
+					!memcmp(acsb->s + ip[-1], part, len))
+						goto skip;
+			sbuf_mem(acsb, part, len)
+			sbuf_chr(acsb, '\n')
+			sbuf_mem(ibuf, &acsb->s_n, (int)sizeof(n))
+		}
+		skip:
+		sidx += subs[grp + 1] > 0 ? subs[grp + 1] : 1;
+	}
+}
+
+static rset *file_index_rset(void)
 {
 	char reg[] = "[^\t !-/:-@[-\\]^`{-\x7f]+";
-	int len, sidx, grp = xgrp;
-	char **ss = buf->ln;
-	int ln_n = lbuf_len(buf), n;
-	rset *rs = rset_smake(xacreg ? xacreg->s : reg,
+
+	return rset_smake(xacreg ? xacreg->s : reg,
 		xic ? REG_ICASE | REG_NEWLINE : REG_NEWLINE);
-	if (!rs)
-		return;
-	int subs[rs->nsubc];
-	sbuf_smake(ibuf, 1024)
+}
+
+static void file_index_offsets(sbuf *ibuf)
+{
+	int n;
+
 	for (n = 1; n <= acsb->s_n; n++)
 		if (acsb->s[n - 1] == '\n')
 			sbuf_mem(ibuf, &n, (int)sizeof(n))
-	for (int i = 0; i < ln_n; i++) {
-		sidx = 0;
-		while (rset_find(rs, ss[i]+sidx, subs, sidx ? REG_NOTBOL : 0) >= 0) {
-			/* if target group not found, continue with group 1
-			which will always be valid, otherwise there be no match */
-			if (subs[grp] < 0) {
-				sidx += subs[1] > 0 ? subs[1] : 1;
-				continue;
-			}
-			len = subs[grp + 1] - subs[grp];
-			if (len > 1) {
-				char *part = ss[i]+sidx+subs[grp];
-				int *ip = (int*)(ibuf->s+sizeof(n));
-				for (n = len+1; ip < (int*)&ibuf->s[ibuf->s_n]; ip++)
-					if (*ip - ip[-1] == n &&
-						!memcmp(acsb->s + ip[-1], part, len))
-							goto skip;
-				sbuf_mem(acsb, part, len)
-				sbuf_chr(acsb, '\n')
-				sbuf_mem(ibuf, &acsb->s_n, (int)sizeof(n))
-			}
-			skip:
-			sidx += subs[grp + 1] > 0 ? subs[grp + 1] : 1;
+}
+
+static void file_index_lines_with(char **ss, int ln_n, rset *rs, sbuf *ibuf)
+{
+	for (int i = 0; i < ln_n; i++)
+		file_index_line(ss[i], rs, ibuf);
+}
+
+static void file_index_lines(char **ss, int ln_n)
+{
+	rset *rs = file_index_rset();
+	if (!rs)
+		return;
+	sbuf_smake(ibuf, 1024)
+	file_index_offsets(ibuf);
+	file_index_lines_with(ss, ln_n, rs, ibuf);
+	sbuf_null(acsb)
+	free(ibuf->s);
+	rset_free(rs);
+}
+
+static void file_index(struct lbuf *buf)
+{
+	file_index_lines(buf->ln, lbuf_len(buf));
+}
+
+static void file_index_text(char *txt)
+{
+	char *line = txt;
+	rset *rs = file_index_rset();
+	if (!rs)
+		return;
+	sbuf_smake(ibuf, 1024)
+	file_index_offsets(ibuf);
+
+	while (*line) {
+		char *nl = strchr(line, '\n');
+		if (nl && nl[1]) {
+			char c = nl[1];
+			nl[1] = '\0';
+			file_index_line(line, rs, ibuf);
+			nl[1] = c;
+			line = nl + 1;
+		} else {
+			file_index_line(line, rs, ibuf);
+			break;
 		}
 	}
 	sbuf_null(acsb)
 	free(ibuf->s);
 	rset_free(rs);
+}
+
+static void file_index_insert(sbuf *sb, char *post)
+{
+	sbuf_smake(tmp, sb->s_n + strlen(post) + 1)
+	sbuf_mem(tmp, sb->s, sb->s_n)
+	sbufn_str(tmp, post)
+	file_index_text(tmp->s);
+	free(tmp->s);
 }
 
 static char *kmap_map(int kmap, int c)
@@ -320,6 +382,8 @@ static void led_printparts(sbuf *sb, int pre, int ps,
 #define LED_HARDSEP	-5
 #define LED_SMARTKEY	-6
 #define LED_WORD_DELETE_REENTER	-7
+#define LED_HARDWRAP_SUGGEST	-8
+#define LED_HARDUNWRAP_SUGGEST	-9
 
 static int led_wrap_ps;
 static int led_wrap_hidden_sep;
@@ -715,7 +779,7 @@ static int led_line(sbuf *sb, int ps, int pre, char **post, int *postn, char **p
 	int ai_max, int *poff, int *kmap, ins_state *is, int orow, int crow, int ctop, int flg)
 {
 	char *cs;
-	int len, c, i, hkey;
+	int len, c, i, hkey, keep_suggest;
 	do {
 		led_printparts(sb, pre, ps, *post, *postn, poff);
 		len = sb->s_n;
@@ -730,6 +794,7 @@ static int led_line(sbuf *sb, int ps, int pre, char **post, int *postn, char **p
 			return LED_SMARTKEY;
 		}
 		noredraw:
+		keep_suggest = 0;
 		switch (c) {
 		case TK_CTL('h'):
 		case 127:
@@ -820,6 +885,8 @@ static int led_line(sbuf *sb, int ps, int pre, char **post, int *postn, char **p
 				sbufn_chr(acsb, '\n')
 			}
 			file_index(xb);
+			if (ai_max >= 0)
+				file_index_insert(sb, *post);
 			break;
 		case TK_CTL('y'):
 			led_done();
@@ -865,7 +932,8 @@ static int led_line(sbuf *sb, int ps, int pre, char **post, int *postn, char **p
 				sbuf_cut(sb, is->lsug)
 				sbuf_str(sb, is->sug)
 				is->sug = is->_sug+1;
-				continue;
+				keep_suggest = 1;
+				break;
 			}
 			lookup:
 			if (search(sb->s + is->lsug, len - is->lsug)) {
@@ -968,9 +1036,11 @@ static int led_line(sbuf *sb, int ps, int pre, char **post, int *postn, char **p
 			}
 		}
 		if (ai_max >= 0 && led_hardwrap_insert(sb, ps, post, postn))
-			return LED_HARDWRAP;
+			return keep_suggest ? LED_HARDWRAP_SUGGEST : LED_HARDWRAP;
 		if (ai_max >= 0 && led_hardwrap_unwrap(sb, ps, *post))
-			return LED_HARDUNWRAP;
+			return keep_suggest ? LED_HARDUNWRAP_SUGGEST : LED_HARDUNWRAP;
+		if (keep_suggest)
+			continue;
 		is->sug = NULL;
 		is->_sug = NULL;
 		if (ai_max >= 0 && xpac)
@@ -1025,6 +1095,7 @@ static int led_input_at(sbuf *sb, char *post, int postn, int row, int flg,
 	int ai_max = 128 * xai;
 	int n, key, ps = ips, pre = ipre >= 0 ? MAX(ipre, ips) : -1;
 	int crow = icrow, ctop = xtop;
+	int keep_is = 0;
 	char *postref = NULL;
 	ins_state is;
 	led_pcols = conf_hwwidth > 0 ? conf_hwwidth : 0;
@@ -1033,10 +1104,13 @@ static int led_input_at(sbuf *sb, char *post, int postn, int row, int flg,
 	while (1) {
 		if (pre < ps)
 			pre = sb->s_n;
-		ins_init(is)
+		if (!keep_is) {
+			ins_init(is)
+		}
+		keep_is = 0;
 		key = led_line(sb, ps, pre, &post, &postn, &postref,
 			ai_max, &xoff, &xkmap, &is, row, crow, ctop, flg);
-		if (key == LED_HARDWRAP) {
+		if (key == LED_HARDWRAP || key == LED_HARDWRAP_SUGGEST) {
 			char *nl = strchr(sb->s + ps, '\n');
 			int nllen;
 			if (!nl)
@@ -1055,11 +1129,12 @@ static int led_input_at(sbuf *sb, char *post, int postn, int row, int flg,
 			term_cursor_suspend(0);
 			if (!led_wrap_hidden_sep)
 				term_cursor(1);
+			keep_is = key == LED_HARDWRAP_SUGGEST;
 			continue;
 		}
 		if (key == LED_HARDSEP)
 			continue;
-		if (key == LED_HARDUNWRAP) {
+		if (key == LED_HARDUNWRAP || key == LED_HARDUNWRAP_SUGGEST) {
 			int wraprow = MAX(1, crow - ctop);
 			led_wrap_sep_pending = 0;
 			led_wrap_sep_ps = -1;
@@ -1074,6 +1149,7 @@ static int led_input_at(sbuf *sb, char *post, int postn, int row, int flg,
 			term_cursor_suspend(0);
 			if (!led_wrap_hidden_sep)
 				term_cursor(1);
+			keep_is = key == LED_HARDUNWRAP_SUGGEST;
 			continue;
 		}
 		if (key != '\n') {
