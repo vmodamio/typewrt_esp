@@ -2095,6 +2095,11 @@ void vi(int init)
 			xoff = noff;
 			if (vi_visual)
 				vi_mod |= 1;
+			if (vi_smart_insert == 1)
+				vi_smart_insert_return();
+		} else if (mv < 0) {
+			if (vi_smart_insert == 1)
+				vi_smart_insert_return();
 		} else if (mv == 0) {
 			term_dec()
 			re_motion:
