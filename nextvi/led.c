@@ -384,6 +384,7 @@ static void led_printparts(sbuf *sb, int pre, int ps,
 #define LED_WORD_DELETE_REENTER	-7
 #define LED_HARDWRAP_SUGGEST	-8
 #define LED_HARDUNWRAP_SUGGEST	-9
+#define LED_WORD_DELETE_APPEND_REENTER	-10
 
 static int led_wrap_ps;
 static int led_wrap_hidden_sep;
@@ -844,7 +845,8 @@ static int led_line(sbuf *sb, int ps, int pre, char **post, int *postn, char **p
 					return hkey;
 			}
 			else if (ai_max >= 0)
-				return LED_WORD_DELETE_REENTER;
+				return (*post)[0] == '\n' ? LED_WORD_DELETE_APPEND_REENTER :
+					LED_WORD_DELETE_REENTER;
 			break;
 		case TK_CTL('t'):
 			cs = uc_dup(sb->s + ps);

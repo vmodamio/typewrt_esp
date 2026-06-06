@@ -1846,7 +1846,8 @@ static int vc_insert(int cmd)
 	}
 	lbuf_mark(xb, '^', xrow, xoff);
 	free(sb->s);
-	if (key != LED_WORD_DELETE_REENTER)
+	if (key != LED_WORD_DELETE_REENTER &&
+			key != LED_WORD_DELETE_APPEND_REENTER)
 		vi_insert_screen_leave();
 	return key;
 }
@@ -2478,12 +2479,14 @@ void vi(int init)
 				}
 				if (c != 'A' && c != 'C' && xoff > 0)
 					xoff--;
-				if (k == LED_WORD_DELETE_REENTER) {
+				if (k == LED_WORD_DELETE_REENTER ||
+						k == LED_WORD_DELETE_APPEND_REENTER) {
 					xleft = 0;
 					vi_mod |= 1;
 					if (vi_smart_insert == 1)
 						vi_smart_insert = 0;
-					term_push("bdwi", 4);
+					term_push(k == LED_WORD_DELETE_APPEND_REENTER ?
+						"bdwa" : "bdwi", 4);
 					break;
 				}
 				if (TK_INT(k)) {
