@@ -12,6 +12,7 @@
 #include "esp_psram.h"
 #include "esp_vfs_fat.h"
 #include "typewrt_ble.h"
+#include "typewrt_power.h"
 #include "typewrt_sdcard.h"
 
 #define TYPEWRT_FIRMWARE_VERSION	"2.0"
@@ -2072,6 +2073,12 @@ static int menu_command(menu_state *m, char *cmdline)
 	if (!strcmp(cmd, "bat") || !strcmp(cmd, "battery")) {
 		char buf[96];
 		typewrt_battery_get_status(buf, sizeof(buf));
+		menu_set_message(m, buf);
+		return 0;
+	}
+	if (!strcmp(cmd, "mem") || !strcmp(cmd, "memory")) {
+		char buf[96];
+		typewrt_memory_get_status(buf, sizeof(buf));
 		menu_set_message(m, buf);
 		return 0;
 	}

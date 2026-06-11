@@ -618,6 +618,7 @@ static const char help_ex[] =
 "ble ...       BLE transfer\n"
 "rtc [time]    show/set clock\n"
 "bat battery   battery status\n"
+"mem           memory status\n"
 "off           power off\n"
 "about         version/about\n"
 "help [topic]  open help\n"
@@ -709,6 +710,7 @@ static const char help_menu[] =
 "ble off       cancel BLE\n"
 "rtc [time]    show/set clock\n"
 "battery       battery status\n"
+"mem           memory status\n"
 "rename        rename selected\n"
 "copy          copy selected\n"
 "delete        delete selected\n"
@@ -2429,6 +2431,21 @@ static void *ec_battery(char *loc, char *cmd, char *arg)
 #endif
 }
 
+static void *ec_memory(char *loc, char *cmd, char *arg)
+{
+#ifdef NEXTVI_EMBEDDED
+	char buf[96];
+	(void)loc;
+	(void)cmd;
+	(void)arg;
+	typewrt_memory_get_status(buf, sizeof(buf));
+	ex_print(buf)
+	return NULL;
+#else
+	return "unsupported command";
+#endif
+}
+
 static void *ec_ble(char *loc, char *cmd, char *arg)
 {
 #ifdef NEXTVI_EMBEDDED
@@ -2568,6 +2585,8 @@ static struct excmd {
 	{"g!", ec_glob},
 	{"g", ec_glob},
 	EO(mpt),
+	{"memory", ec_memory},
+	{"mem", ec_memory},
 	{"menu", ec_menu},
 	{"m", ec_mark},
 	{"off", ec_off},

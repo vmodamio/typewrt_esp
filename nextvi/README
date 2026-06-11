@@ -784,6 +784,14 @@ EX COMMANDS
              Example: alternate time separator
              :rtc 2026-05-10 22 45 00
 
+     mem
+     memory  Print embedded heap memory status
+
+             Reports free heap, total heap, free percentage, and the largest
+             contiguous free block, for example:
+
+             mem 234K/388K free 60% max 128K
+
      help[topic]
              Open built-in help in the /help/ temporary buffer.
 

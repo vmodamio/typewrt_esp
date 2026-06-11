@@ -186,7 +186,7 @@ Dotfiles are hidden in the browser by default; use `:ls -a` to show them.
 
 Menu commands include `cd PATH`, `cd ..`, `cd -`, `ls`, `ls -a`, `ls -s`, `ls -rt`,
 `ls *pattern*`, `mkdir PATH`, `open PATH`, `gmarks`,
-`ble [send|recv|selected|PATH|status|off]`, `rtc [datetime]`, `battery`,
+`ble [send|recv|selected|PATH|status|off]`, `rtc [datetime]`, `battery`, `mem`,
 `off`, `rename`, `copy`, `delete`, and forwarded Nextvi ex commands.
 The command prompt temporarily
 replaces the bottom status row. Directory listing state is remembered per directory,

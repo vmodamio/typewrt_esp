@@ -1007,6 +1007,57 @@ void typewrt_sd_write_end(void)
     }
 }
 
+static void typewrt_memory_format_size(char *out, size_t out_len, size_t bytes)
+{
+    size_t tenths;
+
+    if (!out || !out_len) {
+        return;
+    }
+    if (bytes >= 1024U * 1024U) {
+        tenths = (bytes * 10U + 512U * 1024U) / (1024U * 1024U);
+        if (tenths < 100U)
+            snprintf(out, out_len, "%zu.%zuM", tenths / 10U, tenths % 10U);
+        else
+            snprintf(out, out_len, "%zuM", (bytes + 512U * 1024U) /
+                (1024U * 1024U));
+    } else if (bytes >= 1024U) {
+        snprintf(out, out_len, "%zuK", (bytes + 512U) / 1024U);
+    } else {
+        snprintf(out, out_len, "%zuB", bytes);
+    }
+}
+
+bool typewrt_memory_get_status(char *out, size_t out_len)
+{
+    size_t total = typewrt_heap_total_bytes();
+    size_t free = typewrt_heap_free_bytes();
+    size_t largest = typewrt_heap_largest_free_block();
+    unsigned pct = total ? (unsigned)((free * 100U + total / 2U) / total) : 0U;
+    char total_str[16];
+    char free_str[16];
+    char largest_str[16];
+
+    if (!out || !out_len) {
+        return false;
+    }
+    if (!total) {
+        snprintf(out, out_len, "mem unavailable");
+        return false;
+    }
+    typewrt_memory_format_size(total_str, sizeof(total_str), total);
+    typewrt_memory_format_size(free_str, sizeof(free_str), free);
+    typewrt_memory_format_size(largest_str, sizeof(largest_str), largest);
+    snprintf(out, out_len, "mem %s/%s free %u%% max %s", free_str, total_str,
+        pct, largest_str);
+    return true;
+}
+
+size_t typewrt_heap_total_bytes(void)
+{
+    return heap_caps_get_total_size(MALLOC_CAP_8BIT);
+}
+
 size_t typewrt_heap_free_bytes(void)
 {
     return heap_caps_get_free_size(MALLOC_CAP_8BIT);

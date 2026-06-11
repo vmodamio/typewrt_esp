@@ -17,6 +17,8 @@ void typewrt_sleep_set_ui_wakeup_us(uint64_t delay_us);
 void typewrt_light_sleep_if_idle(void);
 void typewrt_sd_write_begin(void);
 void typewrt_sd_write_end(void);
+bool typewrt_memory_get_status(char *out, size_t out_len);
+size_t typewrt_heap_total_bytes(void);
 size_t typewrt_heap_free_bytes(void);
 size_t typewrt_heap_largest_free_block(void);
 bool typewrt_usb_power_present(void);
