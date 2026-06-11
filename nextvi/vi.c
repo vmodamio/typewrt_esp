@@ -1235,7 +1235,7 @@ static void vi_regput(int c, const char *s, int lnmode)
 	ex_regput(tolower(c), s, isupper(c));
 }
 
-static void vc_status(int type)
+static void vc_status_draw(int type, int transient)
 {
 	int l, col;
 	unsigned int cp;
@@ -1261,7 +1261,15 @@ static void vc_status(int type)
 			snprintf(right, sizeof(right), "L%d C%d", xrow+1, col);
 		vi_status_path(vi_msg, sizeof(vi_msg), xb_path, xb->modified, right);
 	}
-	vi_drawmsg_mpt(vi_msg)
+	if (transient)
+		vi_drawmsg_mpt(vi_msg)
+	else
+		vi_drawmsg(vi_msg);
+}
+
+static void vc_status(int type)
+{
+	vc_status_draw(type, 1);
 }
 
 static void vc_status_defer(int type)
@@ -2682,15 +2690,19 @@ void vi(int init)
 		if (!vi_insert_screen_active() && vi_status && xmpt < 1) {
 			xrows -= term_resized != vi_status;
 			vi_status = term_resized;
-			vc_status(vi_tsm);
-			if (xmpt > 0)
-				xmpt = 0;
+			vc_status_draw(vi_tsm, 0);
 		}
 #ifdef NEXTVI_NOTERM
 		if (!vi_insert_screen_active() && vi_insert_status_dirty) {
 			vi_insert_status_dirty = 0;
-			vc_status(vi_tsm);
-		}
+			vc_status_draw(vi_status ? vi_tsm : 0, 0);
+		} else if (!vi_insert_screen_active() && !vi_status && xmpt < 1)
+			vc_status_draw(0, 0);
+		if (vi_status && xmpt > 0)
+			xmpt = 0;
+#else
+		if (vi_status && xmpt > 0)
+			xmpt = 0;
 #endif
 		if (!vi_backspace_reenter)
 			term_cursor(1);
