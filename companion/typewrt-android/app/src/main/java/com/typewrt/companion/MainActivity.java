@@ -73,6 +73,10 @@ import java.time.Instant;
 import java.security.GeneralSecurityException;
 import java.security.KeyStore;
 import java.security.MessageDigest;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CharsetDecoder;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -107,6 +111,11 @@ public class MainActivity extends Activity {
     private static final int REQUESTED_BLE_MTU = 247;
     private static final int MAX_BLE_WRITE_CHUNK = REQUESTED_BLE_MTU - 3;
     private static final long UNKNOWN_MTIME_SECONDS = -1L;
+    private static final int TYPEWRT_HARDWRAP_WIDTH = 40;
+    private static final int TYPEWRT_TAB_WIDTH = 3;
+    private static final char TYPEWRT_HARDWRAP_SPACE = '\u200b';
+    private static final char TYPEWRT_HARDWRAP_NOSPACE = '\u2060';
+    private static final String TYPEWRT_BREAK_PUNCT = ",.;:!?)]}>/-";
     private static final long GITHUB_ACCESS_CHECK_DELAY_MS = 900;
     private static final long PANDOC_SERVER_CHECK_DELAY_MS = 900;
     private static final int COLOR_BACKGROUND = 0xFF21211F;
@@ -317,7 +326,9 @@ public class MainActivity extends Activity {
     private Uri latestFileUri;
     private long latestFileMtimeSeconds = UNKNOWN_MTIME_SECONDS;
     private final ArrayList<FileSnapshot> pendingSendFiles = new ArrayList<>();
+    private final ArrayList<FileSnapshot> preparedSendFiles = new ArrayList<>();
     private boolean restorePending;
+    private boolean preparingSend;
     private FileSnapshot activeSendFile;
     private byte[][] outgoingParts;
     private int outgoingFileIndex;
@@ -1379,7 +1390,7 @@ public class MainActivity extends Activity {
             requestPermissions(requiredPermissions(), REQUEST_BLE_PERMISSIONS);
             return;
         }
-        startScan();
+        prepareSenderThenStartScan();
     }
 
     @Override
@@ -1393,11 +1404,67 @@ public class MainActivity extends Activity {
             return;
         }
         if (hasRequiredPermissions()) {
-            startScan();
+            if (transferMode == TransferMode.SEND_TO_TYPEWRT) {
+                prepareSenderThenStartScan();
+            } else {
+                startScan();
+            }
         } else {
             setStatus("Bluetooth permission denied", "The app needs BLE permission to find Typewrt.");
             appendLog("Permission denied.");
         }
+    }
+
+    private void prepareSenderThenStartScan() {
+        if (pendingSendFiles.isEmpty()) {
+            setStatus("No updates queued", "Pull or restore from GitHub, or request a delete first.");
+            return;
+        }
+
+        ArrayList<FileSnapshot> queued = new ArrayList<>(pendingSendFiles);
+        preparedSendFiles.clear();
+        resetOutgoingTransfer();
+        senderComplete = true;
+        preparingSend = true;
+        setStatus("Preparing files", "Wrapping Typewrt line breaks before BLE starts.");
+        appendLog("Preparing Typewrt wire format for " + queueSummary() + ".");
+        updateSendFileActions();
+
+        Thread thread = new Thread(() -> {
+            try {
+                ArrayList<FileSnapshot> prepared = buildTypewrtSendQueue(queued);
+                mainHandler.post(() -> {
+                    if (transferMode != TransferMode.SEND_TO_TYPEWRT) {
+                        preparingSend = false;
+                        updateSendFileActions();
+                        return;
+                    }
+                    if (prepared.isEmpty()) {
+                        preparedSendFiles.clear();
+                        preparingSend = false;
+                        setStatus("No updates queued", "No transferable files are queued.");
+                        setIdleButtons();
+                        return;
+                    }
+                    preparedSendFiles.clear();
+                    preparedSendFiles.addAll(prepared);
+                    preparingSend = false;
+                    appendLog("Prepared " + prepared.size() + " Typewrt update" +
+                        plural(prepared.size()) + " before scanning.");
+                    startScan();
+                });
+            } catch (IOException | RuntimeException e) {
+                mainHandler.post(() -> {
+                    preparedSendFiles.clear();
+                    senderComplete = true;
+                    preparingSend = false;
+                    setStatus("Send prepare failed", usefulMessage(e));
+                    appendLog("Send prepare failed: " + e);
+                    setIdleButtons();
+                });
+            }
+        }, "typewrt-prepare-send");
+        thread.start();
     }
 
     @Override
@@ -1466,6 +1533,12 @@ public class MainActivity extends Activity {
             resetReceiver();
         } else {
             resetOutgoingTransfer();
+            if (preparedSendFiles.isEmpty()) {
+                senderComplete = true;
+                setStatus("No prepared updates", "Prepare the Typewrt transfer before scanning.");
+                setIdleButtons();
+                return;
+            }
             senderComplete = false;
         }
         scanning = true;
@@ -1499,6 +1572,8 @@ public class MainActivity extends Activity {
         stopScan();
         if (transferMode == TransferMode.SEND_TO_TYPEWRT) {
             senderComplete = true;
+            preparedSendFiles.clear();
+            preparingSend = false;
         }
         setIdleButtons();
         if (transferMode == TransferMode.SEND_TO_TYPEWRT) {
@@ -1798,6 +1873,8 @@ public class MainActivity extends Activity {
 
     private void clearQueuedUpdates() {
         pendingSendFiles.clear();
+        preparedSendFiles.clear();
+        preparingSend = false;
         restorePending = false;
         setStatus("Cleared updates", "No updates queued.");
         appendLog("Cleared queued updates.");
@@ -1818,10 +1895,12 @@ public class MainActivity extends Activity {
         }
         if (sendTypewrtButton != null) {
             sendTypewrtButton.setEnabled(
-                hasPreparedFile && bluetoothAdapter != null && activeGatt == null && !scanning);
+                hasPreparedFile && bluetoothAdapter != null && activeGatt == null &&
+                    !scanning && !preparingSend);
         }
         if (clearUpdatesButton != null) {
-            clearUpdatesButton.setEnabled(hasPreparedFile && activeGatt == null && !scanning);
+            clearUpdatesButton.setEnabled(
+                hasPreparedFile && activeGatt == null && !scanning && !preparingSend);
         }
     }
 
@@ -1872,6 +1951,33 @@ public class MainActivity extends Activity {
         return total;
     }
 
+    private ArrayList<FileSnapshot> buildTypewrtSendQueue(
+        List<FileSnapshot> snapshots
+    ) throws IOException {
+        ArrayList<FileSnapshot> prepared = new ArrayList<>();
+
+        for (FileSnapshot snapshot : snapshots) {
+            if (isCompanionMetadataPath(snapshot.name)) {
+                continue;
+            }
+            if (snapshot.deleteMarker) {
+                prepared.add(snapshot);
+                continue;
+            }
+
+            byte[] wireData = encodeTypewrtWireBytes(snapshot.data);
+            if (wireData.length > MAX_FILE_BYTES) {
+                throw new IOException(snapshot.name + " is larger than 20 MB after wrapping.");
+            }
+            prepared.add(FileSnapshot.file(
+                snapshot.name,
+                wireData,
+                snapshot.uri,
+                snapshot.mtimeSeconds));
+        }
+        return prepared;
+    }
+
     private String plural(int count) {
         return count == 1 ? "" : "s";
     }
@@ -1887,7 +1993,7 @@ public class MainActivity extends Activity {
     }
 
     private void beginPreparedSend(BluetoothGatt gatt) {
-        if (pendingSendFiles.isEmpty()) {
+        if (preparedSendFiles.isEmpty()) {
             failOutgoingTransfer(gatt, "No updates queued.");
             return;
         }
@@ -1899,16 +2005,16 @@ public class MainActivity extends Activity {
     }
 
     private void beginNextOutgoingFile(BluetoothGatt gatt) {
-        while (outgoingFileIndex < pendingSendFiles.size() &&
-                isCompanionMetadataPath(pendingSendFiles.get(outgoingFileIndex).name)) {
+        while (outgoingFileIndex < preparedSendFiles.size() &&
+                isCompanionMetadataPath(preparedSendFiles.get(outgoingFileIndex).name)) {
             outgoingFileIndex++;
         }
-        if (outgoingFileIndex >= pendingSendFiles.size()) {
+        if (outgoingFileIndex >= preparedSendFiles.size()) {
             finishOutgoingTransfer(gatt);
             return;
         }
 
-        FileSnapshot snapshot = pendingSendFiles.get(outgoingFileIndex);
+        FileSnapshot snapshot = preparedSendFiles.get(outgoingFileIndex);
         String name = sanitizeTransferPath(snapshot.name, "typewrt.txt");
         activeSendFile = snapshot;
         if (snapshot.deleteMarker) {
@@ -2028,7 +2134,7 @@ public class MainActivity extends Activity {
     }
 
     private String outgoingFileOrdinal() {
-        int count = pendingSendFiles.size();
+        int count = preparedSendFiles.size();
 
         if (count <= 1) {
             return "";
@@ -2042,6 +2148,8 @@ public class MainActivity extends Activity {
         senderComplete = true;
         resetOutgoingTransfer();
         pendingSendFiles.clear();
+        preparedSendFiles.clear();
+        preparingSend = false;
         restorePending = false;
         mainHandler.post(() -> {
             setStatus("Sent " + label, "Applied in the Typewrt menu directory.");
@@ -2058,6 +2166,8 @@ public class MainActivity extends Activity {
     private void failOutgoingTransfer(BluetoothGatt gatt, String message) {
         senderComplete = true;
         resetOutgoingTransfer();
+        preparedSendFiles.clear();
+        preparingSend = false;
         mainHandler.post(() -> {
             setStatus("Send failed", message);
             appendLog(message);
@@ -2245,7 +2355,8 @@ public class MainActivity extends Activity {
     }
 
     private void finishReceiveLocked() {
-        byte[] data = fileBuffer.toByteArray();
+        byte[] rawData = fileBuffer.toByteArray();
+        byte[] data = decodeTypewrtReceivedBytes(rawData);
         String name = currentFileName;
         long mtime = currentFileMtimeSeconds;
         receivedFiles.add(FileSnapshot.file(name, data, null, mtime));
@@ -2255,8 +2366,9 @@ public class MainActivity extends Activity {
         currentFileName = "typewrt.txt";
         fileBuffer = new ByteArrayOutputStream();
         mainHandler.post(() -> {
-            setStatus("Received " + name, data.length + " bytes");
-            appendLog("Received: " + name + " (" + data.length + " bytes)");
+            setStatus("Received " + name, rawData.length + " bytes");
+            appendLog("Received: " + name + " (" + rawData.length + " bytes" +
+                (data.length != rawData.length ? ", cleaned to " + data.length : "") + ")");
         });
     }
 
@@ -4309,6 +4421,16 @@ public class MainActivity extends Activity {
         }
     }
 
+    private static final class HardwrapBreak {
+        final int end;
+        final int next;
+
+        HardwrapBreak(int end, int next) {
+            this.end = end;
+            this.next = next;
+        }
+    }
+
     private static final class PandocInput {
         final String text;
         final String outputBasePath;
@@ -5114,6 +5236,388 @@ public class MainActivity extends Activity {
             }
         }
         return limit == 0 || controls < Math.max(3, limit / 100);
+    }
+
+    private byte[] decodeTypewrtReceivedBytes(byte[] data) {
+        if (!looksLikeText(data) || !containsTypewrtHardwrapMarker(data)) {
+            return data;
+        }
+
+        String text = decodeUtf8Strict(data);
+        if (text == null) {
+            return data;
+        }
+
+        String clean = decodeTypewrtHardwrapText(text);
+        return clean.equals(text) ? data : clean.getBytes(StandardCharsets.UTF_8);
+    }
+
+    private byte[] encodeTypewrtWireBytes(byte[] data) {
+        if (!looksLikeText(data)) {
+            return data;
+        }
+
+        String text = decodeUtf8Strict(data);
+        if (text == null) {
+            return data;
+        }
+
+        String wrapped = encodeTypewrtHardwrapText(text);
+        return wrapped.equals(text) ? data : wrapped.getBytes(StandardCharsets.UTF_8);
+    }
+
+    private String decodeUtf8Strict(byte[] data) {
+        CharsetDecoder decoder = StandardCharsets.UTF_8.newDecoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT);
+
+        try {
+            return decoder.decode(ByteBuffer.wrap(data)).toString();
+        } catch (CharacterCodingException e) {
+            return null;
+        }
+    }
+
+    private boolean containsTypewrtHardwrapMarker(byte[] data) {
+        for (int i = 0; i + 2 < data.length; i++) {
+            if (data[i] != (byte) 0xe2) {
+                continue;
+            }
+            if (data[i + 1] == (byte) 0x80 && data[i + 2] == (byte) 0x8b) {
+                return true;
+            }
+            if (data[i + 1] == (byte) 0x81 && data[i + 2] == (byte) 0xa0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String decodeTypewrtHardwrapText(String text) {
+        StringBuilder out = new StringBuilder(text.length());
+        String pendingEol = "";
+        String blockIndent = "";
+        boolean haveLine = false;
+        int pos = 0;
+
+        while (pos < text.length()) {
+            int lineEnd = pos;
+            while (lineEnd < text.length() &&
+                    text.charAt(lineEnd) != '\n' &&
+                    text.charAt(lineEnd) != '\r') {
+                lineEnd++;
+            }
+            int eolEnd = lineEnd;
+            if (eolEnd < text.length()) {
+                char eol = text.charAt(eolEnd++);
+                if (eol == '\r' && eolEnd < text.length() && text.charAt(eolEnd) == '\n') {
+                    eolEnd++;
+                }
+            }
+
+            String line = text.substring(pos, lineEnd);
+            String eol = text.substring(lineEnd, eolEnd);
+            boolean forced = startsWithTypewrtHardwrapMarker(line);
+
+            if (forced && haveLine) {
+                appendDecodedTypewrtContinuation(out, line, blockIndent);
+                pendingEol = eol;
+            } else {
+                if (haveLine) {
+                    out.append(pendingEol);
+                }
+                String clean = removeTypewrtHardwrapMarkers(forced ? line.substring(1) : line);
+                out.append(clean);
+                pendingEol = eol;
+                blockIndent = leadingTypewrtIndent(clean);
+                haveLine = true;
+            }
+            pos = eolEnd;
+        }
+
+        if (haveLine) {
+            out.append(pendingEol);
+        }
+        return out.toString();
+    }
+
+    private void appendDecodedTypewrtContinuation(
+        StringBuilder out,
+        String line,
+        String blockIndent
+    ) {
+        char marker = line.charAt(0);
+        int start = 1;
+
+        if (!blockIndent.isEmpty() && line.startsWith(blockIndent, start)) {
+            start += blockIndent.length();
+        }
+        if (marker == TYPEWRT_HARDWRAP_SPACE) {
+            while (start < line.length()) {
+                int cp = line.codePointAt(start);
+                if (!isTypewrtWhitespace(cp)) {
+                    break;
+                }
+                start += Character.charCount(cp);
+            }
+            if (out.length() > 0 && out.charAt(out.length() - 1) != ' ') {
+                out.append(' ');
+            }
+        }
+        out.append(removeTypewrtHardwrapMarkers(line.substring(start)));
+    }
+
+    private String encodeTypewrtHardwrapText(String text) {
+        StringBuilder out = new StringBuilder(text.length());
+        int pos = 0;
+
+        while (pos < text.length()) {
+            int lineEnd = pos;
+            while (lineEnd < text.length() &&
+                    text.charAt(lineEnd) != '\n' &&
+                    text.charAt(lineEnd) != '\r') {
+                lineEnd++;
+            }
+            int eolEnd = lineEnd;
+            if (eolEnd < text.length()) {
+                char eol = text.charAt(eolEnd++);
+                if (eol == '\r' && eolEnd < text.length() && text.charAt(eolEnd) == '\n') {
+                    eolEnd++;
+                }
+            }
+
+            appendTypewrtWrappedLine(out, text.substring(pos, lineEnd));
+            if (lineEnd < eolEnd) {
+                out.append('\n');
+            }
+            pos = eolEnd;
+        }
+        return out.toString();
+    }
+
+    private void appendTypewrtWrappedLine(StringBuilder out, String line) {
+        if (line.isEmpty()) {
+            return;
+        }
+
+        String indent = leadingTypewrtIndent(line);
+        int indentCols = displayWidth(indent);
+        boolean first = true;
+        boolean markerSep = false;
+        int start = 0;
+
+        while (start < line.length()) {
+            int width = first ? TYPEWRT_HARDWRAP_WIDTH :
+                Math.max(1, TYPEWRT_HARDWRAP_WIDTH - indentCols);
+            HardwrapBreak brk = typewrtHardwrapBreak(line, start, width);
+
+            if (!first) {
+                out.append(markerSep ? TYPEWRT_HARDWRAP_SPACE : TYPEWRT_HARDWRAP_NOSPACE);
+                out.append(indent);
+            }
+            if (brk == null) {
+                out.append(line.substring(start));
+                return;
+            }
+
+            out.append(line, start, brk.end);
+            out.append('\n');
+            markerSep = brk.next > brk.end;
+            start = brk.next;
+            first = false;
+        }
+    }
+
+    private HardwrapBreak typewrtHardwrapBreak(String text, int start, int width) {
+        ArrayList<Integer> chrs = new ArrayList<>();
+        ArrayList<Integer> pos = new ArrayList<>();
+        ArrayList<Integer> wid = new ArrayList<>();
+        int col = 0;
+        int i = start;
+
+        while (i < text.length()) {
+            int cp = text.codePointAt(i);
+            int cw = typewrtCharWidth(cp, col);
+            chrs.add(i);
+            pos.add(col);
+            wid.add(cw);
+            col += cw;
+            i += Character.charCount(cp);
+        }
+        chrs.add(text.length());
+
+        int n = wid.size();
+        if (width <= 0 || n == 0 || col <= width) {
+            return null;
+        }
+
+        int cut = 0;
+        while (cut < n && pos.get(cut) + wid.get(cut) <= width) {
+            cut++;
+        }
+
+        int br = -1;
+        if (cut < n && isTypewrtWhitespace(text.codePointAt(chrs.get(cut)))) {
+            br = cut + 1;
+        } else {
+            for (int j = cut; j > 0; j--) {
+                int cp = text.codePointAt(chrs.get(j - 1));
+                if (isTypewrtWhitespace(cp) || isTypewrtBreakPunct(cp)) {
+                    br = j;
+                    break;
+                }
+            }
+        }
+
+        int end;
+        int next;
+        if (br > 0) {
+            end = br;
+            next = br;
+            if (isTypewrtWhitespace(text.codePointAt(chrs.get(br - 1)))) {
+                end = br - 1;
+                while (next < n && isTypewrtWhitespace(text.codePointAt(chrs.get(next)))) {
+                    next++;
+                }
+            }
+        } else {
+            end = cut;
+            next = cut;
+        }
+        if (end <= 0) {
+            end = cut > 0 ? cut : 1;
+        }
+        if (next <= end) {
+            next = end;
+        }
+        return new HardwrapBreak(chrs.get(end), chrs.get(next));
+    }
+
+    private boolean startsWithTypewrtHardwrapMarker(String line) {
+        return !line.isEmpty() &&
+            (line.charAt(0) == TYPEWRT_HARDWRAP_SPACE ||
+             line.charAt(0) == TYPEWRT_HARDWRAP_NOSPACE);
+    }
+
+    private String removeTypewrtHardwrapMarkers(String text) {
+        if (text.indexOf(TYPEWRT_HARDWRAP_SPACE) < 0 &&
+                text.indexOf(TYPEWRT_HARDWRAP_NOSPACE) < 0) {
+            return text;
+        }
+
+        StringBuilder out = new StringBuilder(text.length());
+        for (int i = 0; i < text.length();) {
+            int cp = text.codePointAt(i);
+            if (cp != TYPEWRT_HARDWRAP_SPACE && cp != TYPEWRT_HARDWRAP_NOSPACE) {
+                out.appendCodePoint(cp);
+            }
+            i += Character.charCount(cp);
+        }
+        return out.toString();
+    }
+
+    private String leadingTypewrtIndent(String text) {
+        int end = 0;
+
+        while (end < text.length()) {
+            char c = text.charAt(end);
+            if (c != ' ' && c != '\t') {
+                break;
+            }
+            end++;
+        }
+        return text.substring(0, end);
+    }
+
+    private int displayWidth(String text) {
+        int col = 0;
+
+        for (int i = 0; i < text.length();) {
+            int cp = text.codePointAt(i);
+            col += typewrtCharWidth(cp, col);
+            i += Character.charCount(cp);
+        }
+        return col;
+    }
+
+    private int typewrtCharWidth(int cp, int col) {
+        if (cp == '\t') {
+            return TYPEWRT_TAB_WIDTH == 0 ? 0 : TYPEWRT_TAB_WIDTH - (col % TYPEWRT_TAB_WIDTH);
+        }
+        if (cp == '\n') {
+            return 1;
+        }
+        if (cp == TYPEWRT_HARDWRAP_SPACE || cp == TYPEWRT_HARDWRAP_NOSPACE) {
+            return 0;
+        }
+        int type = Character.getType(cp);
+        if (type == Character.NON_SPACING_MARK ||
+                type == Character.ENCLOSING_MARK ||
+                type == Character.FORMAT) {
+            return 0;
+        }
+        return isWideCodePoint(cp) ? 2 : 1;
+    }
+
+    private boolean isTypewrtWhitespace(int cp) {
+        return cp < 0x7f && Character.isWhitespace(cp);
+    }
+
+    private boolean isTypewrtBreakPunct(int cp) {
+        return cp < 0x7f && TYPEWRT_BREAK_PUNCT.indexOf((char) cp) >= 0;
+    }
+
+    private boolean isWideCodePoint(int cp) {
+        return (cp >= 0x1100 && cp <= 0x115f) ||
+            (cp >= 0x231a && cp <= 0x231b) ||
+            (cp >= 0x2329 && cp <= 0x232a) ||
+            (cp >= 0x23e9 && cp <= 0x23ec) ||
+            cp == 0x23f0 ||
+            cp == 0x23f3 ||
+            (cp >= 0x25fd && cp <= 0x25fe) ||
+            (cp >= 0x2614 && cp <= 0x2615) ||
+            (cp >= 0x2648 && cp <= 0x2653) ||
+            cp == 0x267f ||
+            cp == 0x2693 ||
+            cp == 0x26a1 ||
+            (cp >= 0x26aa && cp <= 0x26ab) ||
+            (cp >= 0x26bd && cp <= 0x26be) ||
+            (cp >= 0x26c4 && cp <= 0x26c5) ||
+            cp == 0x26ce ||
+            cp == 0x26d4 ||
+            cp == 0x26ea ||
+            (cp >= 0x26f2 && cp <= 0x26f3) ||
+            cp == 0x26f5 ||
+            cp == 0x26fa ||
+            cp == 0x26fd ||
+            cp == 0x2705 ||
+            (cp >= 0x270a && cp <= 0x270b) ||
+            cp == 0x2728 ||
+            cp == 0x274c ||
+            cp == 0x274e ||
+            (cp >= 0x2753 && cp <= 0x2755) ||
+            cp == 0x2757 ||
+            (cp >= 0x2795 && cp <= 0x2797) ||
+            cp == 0x27b0 ||
+            cp == 0x27bf ||
+            (cp >= 0x2b1b && cp <= 0x2b1c) ||
+            cp == 0x2b50 ||
+            cp == 0x2b55 ||
+            (cp >= 0x2e80 && cp <= 0x303e) ||
+            (cp >= 0x3041 && cp <= 0x33ff) ||
+            (cp >= 0x3400 && cp <= 0x4dbf) ||
+            (cp >= 0x4e00 && cp <= 0x9fff) ||
+            (cp >= 0xa000 && cp <= 0xa4c6) ||
+            (cp >= 0xa960 && cp <= 0xa97c) ||
+            (cp >= 0xac00 && cp <= 0xd7a3) ||
+            (cp >= 0xf900 && cp <= 0xfaff) ||
+            (cp >= 0xfe10 && cp <= 0xfe19) ||
+            (cp >= 0xfe30 && cp <= 0xfe6b) ||
+            (cp >= 0xff01 && cp <= 0xff60) ||
+            (cp >= 0xffe0 && cp <= 0xffe6) ||
+            (cp >= 0x1f004 && cp <= 0x1f9ff) ||
+            (cp >= 0x1fa70 && cp <= 0x1faf8) ||
+            (cp >= 0x20000 && cp <= 0x3fffd);
     }
 
     private void showFileViewerDialog(String path, String text, boolean markdown) {
