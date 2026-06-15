@@ -200,13 +200,15 @@ The external LED is active-low on `PIN_LEDN`.
 | --- | --- |
 | USB powered, idle | Steady on |
 | Battery powered, idle | Off |
-| Boot | 2 visible pulses, 250 ms each |
+| Boot | 2 fast pulses |
 | SD card write | Fast blink until the write finishes |
+| BLE send starts | 1 fast blink |
+| BLE send finishes | 2 fast blinks |
 | Battery below 25%, discharging | 3 short pulses, repeated every 5 minutes |
 | Battery below 10% and at or above 7%, discharging | Rapid blink for 2 seconds, repeated every minute |
 | Battery below 7%, not USB-powered | `Battery low` popup every 30 seconds; no battery LED warning |
 
 Battery checks are periodic: every 10 minutes at 50% or above, every 5 minutes from
 25% to 49.9%, and every minute below 25%. SD card write notifications take priority over
-boot and battery warnings.
+boot, BLE send, and battery warnings.
  

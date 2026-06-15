@@ -32,6 +32,9 @@
 #define TYPEWRT_LED_BOOT_BLINKS 2
 #define TYPEWRT_LED_BOOT_PULSE_US 75000
 #define TYPEWRT_LED_SD_BLINK_PERIOD_US 75000
+#define TYPEWRT_LED_BLE_BLINK_US 75000
+#define TYPEWRT_LED_BLE_SEND_START_BLINKS 1
+#define TYPEWRT_LED_BLE_SEND_FINISH_BLINKS 2
 #define TYPEWRT_BATTERY_CHECK_HIGH_US (10ULL * 60ULL * 1000000ULL)
 #define TYPEWRT_BATTERY_CHECK_MED_US (5ULL * 60ULL * 1000000ULL)
 #define TYPEWRT_BATTERY_CHECK_LOW_US (1ULL * 60ULL * 1000000ULL)
@@ -70,9 +73,13 @@ static bool battery_gauge_available;
 static esp_timer_handle_t boot_led_timer;
 static esp_timer_handle_t battery_led_timer;
 static esp_timer_handle_t sd_write_led_timer;
+static esp_timer_handle_t ble_led_timer;
 static volatile uint32_t typewrt_sleep_locks;
 static volatile uint32_t boot_led_steps;
 static volatile bool boot_led_on;
+static volatile uint32_t ble_led_steps;
+static volatile bool ble_led_locked;
+static volatile bool ble_led_on;
 static volatile bool battery_led_active;
 static volatile bool battery_led_locked;
 static volatile bool battery_led_on;
@@ -97,6 +104,8 @@ typedef struct {
 
 static void typewrt_power_led_update(void);
 static void typewrt_led_boot_blink_start(void);
+static void typewrt_ble_led_cancel(void);
+static void typewrt_battery_led_cancel(void);
 static void typewrt_battery_monitor_check(bool force);
 static void typewrt_battery_monitor_start(void);
 static void typewrt_timer_wakeup_prepare(void);
@@ -700,6 +709,7 @@ static void typewrt_power_led_update(void)
 {
     if (__atomic_load_n(&typewrt_sd_write_locks, __ATOMIC_RELAXED) != 0 ||
             __atomic_load_n(&battery_led_active, __ATOMIC_RELAXED) ||
+            __atomic_load_n(&ble_led_steps, __ATOMIC_RELAXED) != 0 ||
             __atomic_load_n(&boot_led_steps, __ATOMIC_RELAXED) != 0) {
         return;
     }
@@ -794,6 +804,117 @@ static void typewrt_led_boot_blink_start(void)
         __atomic_store_n(&boot_led_steps, 0, __ATOMIC_RELAXED);
         typewrt_power_led_update();
     }
+}
+
+static void typewrt_ble_led_finish(void)
+{
+    bool locked = __atomic_exchange_n(&ble_led_locked, false,
+        __ATOMIC_RELAXED);
+
+    __atomic_store_n(&ble_led_steps, 0, __ATOMIC_RELAXED);
+    typewrt_power_led_update();
+    if (locked) {
+        typewrt_sleep_unlock();
+    }
+}
+
+static void typewrt_ble_led_cancel(void)
+{
+    if (ble_led_timer) {
+        esp_err_t ret = esp_timer_stop(ble_led_timer);
+        if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "Failed to stop BLE LED timer: %s",
+                esp_err_to_name(ret));
+        }
+    }
+    typewrt_ble_led_finish();
+}
+
+static void typewrt_ble_led_timer_callback(void *arg)
+{
+    uint32_t steps;
+
+    (void)arg;
+    if (__atomic_load_n(&typewrt_sd_write_locks, __ATOMIC_RELAXED) != 0) {
+        typewrt_ble_led_finish();
+        return;
+    }
+    steps = __atomic_load_n(&ble_led_steps, __ATOMIC_RELAXED);
+    if (!steps) {
+        typewrt_ble_led_finish();
+        return;
+    }
+
+    ble_led_on = !ble_led_on;
+    typewrt_led_set(ble_led_on);
+    steps = __atomic_sub_fetch(&ble_led_steps, 1, __ATOMIC_RELAXED);
+    if (!steps) {
+        typewrt_ble_led_finish();
+        return;
+    }
+    esp_err_t ret = esp_timer_start_once(ble_led_timer,
+        TYPEWRT_LED_BLE_BLINK_US);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to continue BLE LED timer: %s",
+            esp_err_to_name(ret));
+        typewrt_ble_led_finish();
+    }
+}
+
+static bool typewrt_ble_led_timer_prepare(void)
+{
+    const esp_timer_create_args_t timer_args = {
+        .callback = typewrt_ble_led_timer_callback,
+        .name = "ble_led",
+    };
+    esp_err_t ret;
+
+    if (ble_led_timer) {
+        return true;
+    }
+    ret = esp_timer_create(&timer_args, &ble_led_timer);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to create BLE LED timer: %s",
+            esp_err_to_name(ret));
+        return false;
+    }
+    return true;
+}
+
+static void typewrt_ble_led_blink(unsigned blinks)
+{
+    esp_err_t ret;
+
+    if (!blinks || !typewrt_ble_led_timer_prepare()) {
+        return;
+    }
+    typewrt_ble_led_cancel();
+    if (__atomic_load_n(&typewrt_sd_write_locks, __ATOMIC_RELAXED) != 0) {
+        return;
+    }
+    typewrt_boot_led_cancel();
+    typewrt_battery_led_cancel();
+    typewrt_sleep_lock();
+    __atomic_store_n(&ble_led_locked, true, __ATOMIC_RELAXED);
+    ble_led_on = !typewrt_usb_power_present();
+    __atomic_store_n(&ble_led_steps, blinks * 2 - 1, __ATOMIC_RELAXED);
+    typewrt_led_set(ble_led_on);
+    ret = esp_timer_start_once(ble_led_timer, TYPEWRT_LED_BLE_BLINK_US);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to start BLE LED timer: %s",
+            esp_err_to_name(ret));
+        typewrt_ble_led_finish();
+    }
+}
+
+void typewrt_ble_send_led_start(void)
+{
+    typewrt_ble_led_blink(TYPEWRT_LED_BLE_SEND_START_BLINKS);
+}
+
+void typewrt_ble_send_led_finish(void)
+{
+    typewrt_ble_led_blink(TYPEWRT_LED_BLE_SEND_FINISH_BLINKS);
 }
 
 static void typewrt_battery_led_finish(void)
@@ -959,6 +1080,7 @@ void typewrt_sd_write_begin(void)
 
     typewrt_sleep_lock();
     typewrt_boot_led_cancel();
+    typewrt_ble_led_cancel();
     typewrt_battery_led_cancel();
     locks = __atomic_add_fetch(&typewrt_sd_write_locks, 1, __ATOMIC_RELAXED);
     if (locks != 1) {

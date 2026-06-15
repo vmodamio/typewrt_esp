@@ -909,6 +909,9 @@ static void typewrt_ble_transfer_task(void *arg)
     typewrt_ble_set_msg_locked(msg);
     typewrt_ble_unlock();
 
+    if (files && count) {
+        typewrt_ble_send_led_start();
+    }
     if (!files || !count) {
         err = ENOENT;
     }
@@ -964,6 +967,7 @@ static void typewrt_ble_transfer_task(void *arg)
     if (err) {
         snprintf(msg, sizeof(msg), "ble send failed: %s", strerror(err));
         ESP_LOGW(TAG, "%s", msg);
+        typewrt_ble_send_led_finish();
         typewrt_ble_finish_transfer(msg, TYPEWRT_BLE_ERROR);
     } else {
         for (size_t i = 0; i < count; i++)
@@ -977,6 +981,7 @@ static void typewrt_ble_transfer_task(void *arg)
             snprintf(msg, sizeof(msg), "ble sent %u files",
                 (unsigned)count);
         ESP_LOGI(TAG, "%s", msg);
+        typewrt_ble_send_led_finish();
         typewrt_ble_finish_transfer(msg, TYPEWRT_BLE_DONE);
     }
     typewrt_ble_free_file_list(files, count);
